@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+Package.resolved
+
+# 録音生成物。ユーザーの発話が入るためコミットしない。
+transcripts/
+
+.DS_Store
