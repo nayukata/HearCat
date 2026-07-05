@@ -105,7 +105,10 @@ public final class SessionEngine {
     private func startResources(
         sessionDir: URL, startedAt: Date, record: Bool, transcribe: Bool
     ) async throws {
-        let transcriptURL = sessionDir.appendingPathComponent("transcript.md")
+        // 成果物のファイル名はディレクトリ名(日時)と同じ基底名にする。
+        // Finder で1ファイルだけ取り出しても、どのセッションのものか分かるように。
+        let transcriptURL = sessionDir.appendingPathComponent(
+            "\(sessionDir.lastPathComponent).md")
         let writer = try TranscriptWriter(fileURL: transcriptURL)
         await writer.writeHeader(sessionStart: startedAt)
         self.writer = writer
@@ -153,9 +156,9 @@ public final class SessionEngine {
             FileHandle.standardError.write(Data((systemAudioError! + "\n").utf8))
         }
 
-        // --- 録音(audio.m4a 1本、L=自分 / R=相手) ---
+        // --- 録音(1本のモノラルミックス。自分と相手を重ねて書く) ---
         let recorder = SessionRecorder(
-            url: sessionDir.appendingPathComponent("audio.m4a"),
+            url: sessionDir.appendingPathComponent("\(sessionDir.lastPathComponent).m4a"),
             includesSystemChannel: system != nil)
         await recorder.setGains(mic: micGain, system: systemGain)
         self.recorder = recorder

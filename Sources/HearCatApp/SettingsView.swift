@@ -32,7 +32,7 @@ struct SettingsView: View {
             } header: {
                 Text("録音の音量")
             } footer: {
-                Text("録音ファイル (audio.m4a) に書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
+                Text("録音ファイルに書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

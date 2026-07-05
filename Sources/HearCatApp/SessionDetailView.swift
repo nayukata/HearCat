@@ -31,8 +31,18 @@ struct SessionDetailView: View {
 
     private var header: some View {
         HStack {
-            Text(session.startDate.formatted(date: .complete, time: .shortened))
-                .font(.headline)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(
+                    session.name.isEmpty
+                        ? session.startDate.formatted(date: .complete, time: .shortened)
+                        : session.name)
+                    .font(.headline)
+                if !session.name.isEmpty {
+                    Text(session.startDate.formatted(date: .complete, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer()
             Button {
                 Task { await summarize() }

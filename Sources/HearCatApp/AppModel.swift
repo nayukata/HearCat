@@ -17,6 +17,8 @@ final class AppModel {
 
     private(set) var status = SessionEngine.Status()
     private(set) var sessions: [SessionInfo] = []
+    /// プロジェクトフォルダの一覧(空のフォルダも含む)。履歴のセクション表示に使う。
+    private(set) var folders: [String] = []
     var lastError: String?
     /// 開始/停止処理の実行中。パネルのボタン連打で二重開始しないよう UI を無効化する。
     private(set) var busy = false
@@ -224,6 +226,7 @@ final class AppModel {
 
     func refreshSessions() {
         sessions = SessionStore.list()
+        folders = SessionStore.listFolders()
     }
 
     func delete(_ session: SessionInfo) {
@@ -233,6 +236,67 @@ final class AppModel {
             lastError = error.localizedDescription
         }
         refreshSessions()
+    }
+
+    /// セッション名を変更し、変更後の ID を返す(履歴の選択の維持に使う)。失敗時は nil。
+    func rename(_ session: SessionInfo, to name: String) -> String? {
+        mutateSession(session) { try SessionStore.rename($0, to: name) }
+    }
+
+    /// セッションをプロジェクトフォルダへ移動し、移動後の ID を返す。nil で未分類へ戻す。
+    func move(_ session: SessionInfo, toFolder folder: String?) -> String? {
+        mutateSession(session) { try SessionStore.move($0, toFolder: folder) }
+    }
+
+    /// 空のプロジェクトフォルダを作る。
+    func createFolder(_ name: String) {
+        defer { refreshSessions() }
+        do {
+            try SessionStore.createFolder(name)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// フォルダ名を変更し、新しい名前を返す。失敗時は nil。
+    func renameFolder(_ folder: String, to newName: String) -> String? {
+        defer { refreshSessions() }
+        do {
+            return try SessionStore.renameFolder(folder, to: newName)
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// フォルダを削除する(中のセッションは未分類へ戻る)。
+    @discardableResult
+    func deleteFolder(_ folder: String) -> Bool {
+        defer { refreshSessions() }
+        do {
+            try SessionStore.deleteFolder(folder)
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    private func mutateSession(
+        _ session: SessionInfo, _ operation: (SessionInfo) throws -> SessionInfo
+    ) -> String? {
+        // 進行中のセッションはファイルを開いたまま書いているため動かせない。
+        guard session.directory.lastPathComponent != status.sessionID else {
+            lastError = "進行中のセッションは変更できません"
+            return nil
+        }
+        defer { refreshSessions() }
+        do {
+            return try operation(session).id
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
     }
 
     // MARK: - IPC (CLI / agent skill からの命令)
