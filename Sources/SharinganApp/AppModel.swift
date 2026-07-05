@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SharinganKit
@@ -16,6 +17,10 @@ final class AppModel {
     private(set) var status = SessionEngine.Status()
     private(set) var sessions: [SessionInfo] = []
     var lastError: String?
+
+    /// 履歴ウィンドウの実体。「履歴を開く」で確実に前面へ出すために保持する
+    /// (SwiftUI の openWindow は既に開いているウィンドウには何もしないため)。
+    @ObservationIgnored weak var mainWindow: NSWindow?
 
     /// ライブ表示用。確定した発話と、話者ごとの喋りかけ(暫定)テキスト。
     private(set) var liveFinals: [TranscriptSegment] = []

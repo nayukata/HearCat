@@ -41,6 +41,9 @@ struct MainWindow: View {
                     description: Text("左の一覧からセッションを選ぶと、文字起こしと録音をここで確認できます。"))
             }
         }
+        .background(WindowAccessor { window in
+            model.mainWindow = window
+        })
         .onAppear {
             model.refreshSessions()
             if selection == nil {
@@ -53,6 +56,20 @@ struct MainWindow: View {
     private var pastSessions: [SessionInfo] {
         model.sessions.filter { $0.id != model.status.sessionID }
     }
+}
+
+/// SwiftUI のビュー階層から NSWindow の実体を取り出す。
+private struct WindowAccessor: NSViewRepresentable {
+    let onResolve: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        // window はビューが階層に載った後でないと取れないため1サイクル遅らせる。
+        DispatchQueue.main.async { onResolve(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 struct SessionRow: View {

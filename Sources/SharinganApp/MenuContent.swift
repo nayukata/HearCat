@@ -37,9 +37,12 @@ struct MenuContent: View {
             // ウィンドウの生成を待ってから前面化する必要があるので1サイクル遅らせる。
             DispatchQueue.main.async {
                 NSApp.activate()
-                NSApp.windows
-                    .first { $0.identifier?.rawValue.hasPrefix("main") == true }?
-                    .makeKeyAndOrderFront(nil)
+                if let window = model.mainWindow {
+                    if window.isMiniaturized { window.deminiaturize(nil) }
+                    // orderFrontRegardless はアプリのアクティブ化に失敗しても最前面に出せる。
+                    window.makeKeyAndOrderFront(nil)
+                    window.orderFrontRegardless()
+                }
             }
         }
 
