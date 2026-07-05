@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreMedia
 import Foundation
 import Speech
 
@@ -19,6 +20,10 @@ public actor ChannelTranscriber {
     private let inputContinuation: AsyncStream<AnalyzerInput>.Continuation
     private var resultsTask: Task<Void, Never>?
     private var fedCount = 0
+
+    /// 直近1分の解析用音声。確定文の時刻範囲から発話末尾を切り出し、
+    /// ピッチ上昇(イントネーション疑問文)の判定に使う。
+    private var ring: AudioRing?
 
     public init(speaker: String, locale: Locale, sink: AsyncStream<TranscriberEvent>.Continuation) {
         self.speaker = speaker
@@ -44,19 +49,21 @@ public actor ChannelTranscriber {
         analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
         guard let format = analyzerFormat else { throw TranscriptionError.noAudioFormat }
         debugLog("\(speaker) analyzerFormat sr=\(format.sampleRate) ch=\(format.channelCount)")
+        ring = AudioRing(capacity: Int(format.sampleRate) * 60)
 
         let speaker = self.speaker
         let sink = self.sink
         resultsTask = Task {
             do {
-                for try await case let result in transcriber.results {
-                    let text = String(result.text.characters)
+                for try await result in transcriber.results {
+                    let raw = String(result.text.characters)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !text.isEmpty else { continue }
+                    guard !raw.isEmpty else { continue }
                     if result.isFinal {
+                        let text = self.finalizeText(raw, range: result.range)
                         sink.yield(.final(TranscriptSegment(speaker: speaker, text: text, timestamp: Date())))
                     } else {
-                        sink.yield(.volatile(speaker: speaker, text: text))
+                        sink.yield(.volatile(speaker: speaker, text: raw))
                     }
                 }
             } catch {
@@ -67,12 +74,43 @@ public actor ChannelTranscriber {
         try await analyzer?.start(inputSequence: inputStream)
     }
 
+    /// 確定文の仕上げ。疑問文(語彙 or 末尾のピッチ上昇)なら文末を「？」に直す。
+    private func finalizeText(_ text: String, range: CMTimeRange) -> String {
+        if QuestionDetector.isLexicalQuestion(text) {
+            return QuestionDetector.markAsQuestion(text)
+        }
+        guard let format = analyzerFormat, let ring else { return text }
+        let sampleRate = format.sampleRate
+        let endSeconds = range.end.seconds
+        guard endSeconds.isFinite, endSeconds > 0 else { return text }
+        // range.end は発話の終わりではなく、確定処理までの無音を含んだ広い範囲を指す。
+        // そのため範囲全体(上限10秒)を渡し、末尾の有声区間の探索は検出器側に任せる。
+        let endFrame = min(Int(endSeconds * sampleRate), ring.totalWritten)
+        let startFrame = max(Int(range.start.seconds * sampleRate), endFrame - Int(sampleRate * 10))
+        guard let tail = ring.slice(start: startFrame, end: endFrame) else {
+            debugLog("\(speaker) 疑問判定: '\(text)' リング範囲外 range=\(range.start.seconds)-\(endSeconds) written=\(ring.totalWritten)")
+            return text
+        }
+        let analysis = QuestionDetector.risingPitchAnalysis(tail: tail, sampleRate: sampleRate)
+        if sharinganDebug {
+            var sumSq: Float = 0
+            for v in tail { sumSq += v * v }
+            let rms = (sumSq / Float(max(tail.count, 1))).squareRoot()
+            debugLog("\(speaker) 疑問判定: '\(text)' rising=\(analysis.rising) voiced=\(analysis.voicedFrames)/\(analysis.totalVoiced)/\(analysis.windows) head=\(Int(analysis.headF0)) tail=\(Int(analysis.tailF0)) sliceRms=\(rms) range=\(String(format: "%.2f", range.start.seconds))-\(String(format: "%.2f", endSeconds))")
+        }
+        if analysis.rising {
+            return QuestionDetector.markAsQuestion(text)
+        }
+        return text
+    }
+
     /// 生バッファを受け取り、解析フォーマットへ変換して analyzer へ流す。
     public func feed(_ buffer: AVAudioPCMBuffer) {
         guard let format = analyzerFormat else { return }
         do {
             let converted = try converter.convert(buffer, to: format)
             inputContinuation.yield(AnalyzerInput(buffer: converted))
+            ring?.append(converted.monoFloatSamples())
             fedCount += 1
             if sharinganDebug && fedCount % 100 == 0 {
                 debugLog("\(speaker) fed=\(fedCount) level=\(rmsLevel(converted))")
