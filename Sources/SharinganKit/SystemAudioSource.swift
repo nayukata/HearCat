@@ -61,11 +61,20 @@ public final class SystemAudioSource {
         // 4. IO コールバックで届く AudioBufferList を AVAudioPCMBuffer にして流す。
         //    no-copy ラップは callback 内でしか有効でないため、必ず deepCopy してから yield する。
         let continuation = self.continuation
+        var callbackCount = 0
         let ioBlock: AudioDeviceIOBlock = { _, inInputData, _, _, _ in
             guard let wrapped = AVAudioPCMBuffer(pcmFormat: format,
                                                  bufferListNoCopy: inInputData,
                                                  deallocator: nil),
                   let copy = wrapped.deepCopy() else { return }
+            if sharinganDebug {
+                callbackCount += 1
+                if callbackCount <= 30 || callbackCount % 100 == 0 {
+                    let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+                    let sizes = abl.map { "\($0.mDataByteSize)B ch=\($0.mNumberChannels)" }.joined(separator: ",")
+                    debugLog("systemtap cb#\(callbackCount) abl=[\(sizes)] frames=\(copy.frameLength) rms=\(rmsLevel(copy))")
+                }
+            }
             continuation.yield(SendableBuffer(buffer: copy))
         }
         var proc: AudioDeviceIOProcID?

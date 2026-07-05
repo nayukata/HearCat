@@ -65,7 +65,7 @@ struct SessionRow: View {
                 if session.transcriptURL != nil {
                     Image(systemName: "text.quote")
                 }
-                if session.micAudioURL != nil || session.systemAudioURL != nil {
+                if session.audioURL != nil {
                     Image(systemName: "waveform")
                 }
                 if session.summaryURL != nil {

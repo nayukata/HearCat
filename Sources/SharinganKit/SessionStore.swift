@@ -1,15 +1,15 @@
 import Foundation
 
 /// 1セッション(=1会議)ぶんの成果物の置き場所。
-/// ディレクトリ名がセッション ID で、中身は固定ファイル名の transcript.md / mic.m4a / system.m4a / summary.md。
+/// ディレクトリ名がセッション ID で、中身は固定ファイル名の transcript.md / audio.m4a / summary.md。
 public struct SessionInfo: Identifiable, Sendable, Equatable {
     public let id: String
     public let directory: URL
     public let startDate: Date
 
     public var transcriptURL: URL? { existing("transcript.md") }
-    public var micAudioURL: URL? { existing("mic.m4a") }
-    public var systemAudioURL: URL? { existing("system.m4a") }
+    /// 録音(ステレオ、L=自分 / R=相手)。録音オフのセッションには無い。
+    public var audioURL: URL? { existing("audio.m4a") }
     public var summaryURL: URL? { existing("summary.md") }
 
     private func existing(_ name: String) -> URL? {

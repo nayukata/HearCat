@@ -59,8 +59,7 @@ public final class SessionEngine {
     private var system: SystemAudioSource?
     private var mine: ChannelTranscriber?
     private var theirs: ChannelTranscriber?
-    private var micRecorder: ChannelRecorder?
-    private var systemRecorder: ChannelRecorder?
+    private var recorder: StereoSessionRecorder?
     private var writer: TranscriptWriter?
     private var pumps: [Task<Void, Never>] = []
     private var eventTask: Task<Void, Never>?
@@ -123,46 +122,53 @@ public final class SessionEngine {
 
         var systemAudioError: String?
 
-        // --- 自分(マイク) ---
+        // --- 音源と文字起こしの用意 ---
         let mine = ChannelTranscriber(speaker: "自分", locale: locale, sink: eventSink)
         try await mine.start()
         self.mine = mine
         let mic = MicSource()
         try mic.start()
         self.mic = mic
-        let micRecorder = ChannelRecorder(url: sessionDir.appendingPathComponent("mic.m4a"))
-        self.micRecorder = micRecorder
 
+        // 相手(システム音声)は署名なしビルドなどで失敗しても、自分のマイクだけで継続する。
+        var theirs: ChannelTranscriber?
+        var system: SystemAudioSource?
+        do {
+            let transcriber = ChannelTranscriber(speaker: "相手", locale: locale, sink: eventSink)
+            try await transcriber.start()
+            let source = SystemAudioSource()
+            try source.start()
+            theirs = transcriber
+            system = source
+            self.theirs = transcriber
+            self.system = source
+        } catch {
+            systemAudioError = "システム音声を取得できません: \(error)"
+            FileHandle.standardError.write(Data((systemAudioError! + "\n").utf8))
+        }
+
+        // --- 録音(audio.m4a 1本、L=自分 / R=相手) ---
+        let recorder = StereoSessionRecorder(
+            url: sessionDir.appendingPathComponent("audio.m4a"),
+            includesSystemChannel: system != nil)
+        self.recorder = recorder
+
+        // --- pump: 音源 → 文字起こし/録音への分岐 ---
         let micBuffers = mic.buffers
         pumps.append(Task.detached(priority: .userInitiated) {
             for await item in micBuffers {
                 if toggles.transcribing.withLock({ $0 }) { await mine.feed(item.buffer) }
-                if toggles.recording.withLock({ $0 }) { await micRecorder.write(item.buffer) }
+                if toggles.recording.withLock({ $0 }) { await recorder.appendMic(item.buffer) }
             }
         })
-
-        // --- 相手(システム音声) ---
-        // 署名なしビルドなどで失敗しても、自分のマイクだけで継続する。
-        do {
-            let theirs = ChannelTranscriber(speaker: "相手", locale: locale, sink: eventSink)
-            try await theirs.start()
-            let system = SystemAudioSource()
-            try system.start()
-            self.theirs = theirs
-            self.system = system
-            let systemRecorder = ChannelRecorder(url: sessionDir.appendingPathComponent("system.m4a"))
-            self.systemRecorder = systemRecorder
-
+        if let theirs, let system {
             let systemBuffers = system.buffers
             pumps.append(Task.detached(priority: .userInitiated) {
                 for await item in systemBuffers {
                     if toggles.transcribing.withLock({ $0 }) { await theirs.feed(item.buffer) }
-                    if toggles.recording.withLock({ $0 }) { await systemRecorder.write(item.buffer) }
+                    if toggles.recording.withLock({ $0 }) { await recorder.appendSystem(item.buffer) }
                 }
             })
-        } catch {
-            systemAudioError = "システム音声を取得できません: \(error)"
-            FileHandle.standardError.write(Data((systemAudioError! + "\n").utf8))
         }
 
         var status = Status()
@@ -201,15 +207,13 @@ public final class SessionEngine {
         eventSink = nil
 
         await writer?.close()
-        await micRecorder?.close()
-        await systemRecorder?.close()
+        await recorder?.close()
 
         mic = nil
         system = nil
         mine = nil
         theirs = nil
-        micRecorder = nil
-        systemRecorder = nil
+        recorder = nil
         writer = nil
         toggles = nil
     }
@@ -218,6 +222,11 @@ public final class SessionEngine {
         guard status.active, let toggles else { throw EngineError.notActive }
         toggles.recording.withLock { $0 = on }
         status.recording = on
+        if !on {
+            // 中途半端に残ったサンプルを捨て、再開時に左右チャンネルが揃った状態から始める。
+            let recorder = self.recorder
+            Task { await recorder?.pause() }
+        }
     }
 
     public func setTranscribing(_ on: Bool) throws {

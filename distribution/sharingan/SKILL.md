@@ -68,7 +68,7 @@ sharingan latest
 セッションごとに `~/Library/Application Support/sharingan/sessions/<日時>/` へまとまる:
 
 - `transcript.md`: 文字起こし
-- `mic.m4a` / `system.m4a`: 録音(自分 / 相手)。録音オフのセッションには無い
+- `audio.m4a`: 録音(ステレオ1ファイル。左=自分、右=相手)。録音オフのセッションには無い
 - `summary.md`: アプリで生成した要約(あれば)
 
 過去セッションの閲覧・再生・削除・要約はアプリ(メニューバーの目のアイコン → 履歴を開く)でできる。

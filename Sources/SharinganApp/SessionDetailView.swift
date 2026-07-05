@@ -99,7 +99,7 @@ struct SessionDetailView: View {
     private func load() {
         transcript = session.transcriptURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
-        player = try? SessionPlayer(micURL: session.micAudioURL, systemURL: session.systemAudioURL)
+        player = SessionPlayer(audioURL: session.audioURL)
     }
 
     private func summarize() async {

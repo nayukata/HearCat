@@ -78,6 +78,53 @@ public enum SystemAudioError: Error {
 }
 
 extension AVAudioPCMBuffer {
+    /// 全チャンネルを平均したモノラル Float 列。
+    /// interleaved / deinterleaved、Float32 / Int16 の両対応。該当しないフォーマットは空を返す。
+    public func monoFloatSamples() -> [Float] {
+        let frames = Int(frameLength)
+        guard frames > 0 else { return [] }
+        let channels = Int(format.channelCount)
+        var mono = [Float](repeating: 0, count: frames)
+
+        if let data = floatChannelData {
+            if format.isInterleaved {
+                let p = data[0]
+                for i in 0..<frames {
+                    var sum: Float = 0
+                    for c in 0..<channels { sum += p[i * channels + c] }
+                    mono[i] = sum / Float(channels)
+                }
+            } else {
+                for c in 0..<channels {
+                    let p = data[c]
+                    for i in 0..<frames { mono[i] += p[i] }
+                }
+                let scale = 1 / Float(channels)
+                for i in 0..<frames { mono[i] *= scale }
+            }
+            return mono
+        }
+        if let data = int16ChannelData {
+            let scale = 1 / (Float(channels) * 32768)
+            if format.isInterleaved {
+                let p = data[0]
+                for i in 0..<frames {
+                    var sum: Float = 0
+                    for c in 0..<channels { sum += Float(p[i * channels + c]) }
+                    mono[i] = sum * scale
+                }
+            } else {
+                for c in 0..<channels {
+                    let p = data[c]
+                    for i in 0..<frames { mono[i] += Float(p[i]) }
+                }
+                for i in 0..<frames { mono[i] *= scale }
+            }
+            return mono
+        }
+        return []
+    }
+
     /// 音声スレッドが渡すバッファは即座に使い回される。
     /// 別スレッド(解析側)へ渡す前に深いコピーを取る。
     ///
@@ -86,22 +133,28 @@ extension AVAudioPCMBuffer {
     /// コピー(= 無音)になる。そのため型付きチャンネルデータ(floatChannelData など)を直接使い、
     /// 該当しない稀なフォーマットは src の mDataByteSize を優先した AudioBufferList コピーで
     /// フォールバックする。
+    ///
+    /// interleaved フォーマットはチャンネル全部が1本のバッファ(plane)に詰まっているため、
+    /// コピーする要素数は frames × channels。frames だけコピーすると後半が欠けて
+    /// 周期的なゲート状ノイズ(無音まじりの機械音)になる。
     public func deepCopy() -> AVAudioPCMBuffer? {
         guard frameLength > 0,
               let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else { return nil }
         copy.frameLength = frameLength
         let frames = Int(frameLength)
         let channels = Int(format.channelCount)
+        let planes = format.isInterleaved ? 1 : channels
+        let valuesPerPlane = format.isInterleaved ? frames * channels : frames
         if let src = floatChannelData, let dst = copy.floatChannelData {
-            for ch in 0..<channels { dst[ch].update(from: src[ch], count: frames) }
+            for p in 0..<planes { dst[p].update(from: src[p], count: valuesPerPlane) }
             return copy
         }
         if let src = int16ChannelData, let dst = copy.int16ChannelData {
-            for ch in 0..<channels { dst[ch].update(from: src[ch], count: frames) }
+            for p in 0..<planes { dst[p].update(from: src[p], count: valuesPerPlane) }
             return copy
         }
         if let src = int32ChannelData, let dst = copy.int32ChannelData {
-            for ch in 0..<channels { dst[ch].update(from: src[ch], count: frames) }
+            for p in 0..<planes { dst[p].update(from: src[p], count: valuesPerPlane) }
             return copy
         }
         let srcList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: audioBufferList))
