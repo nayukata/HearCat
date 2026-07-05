@@ -21,8 +21,11 @@ struct MenuContent: View {
                     .help(error)
             }
         } else {
-            Button("セッションを開始") {
-                Task { await model.startSession() }
+            Button("開始（録音＋文字起こし）") {
+                Task { await model.startSession(record: true, transcribe: true) }
+            }
+            Button("開始（文字起こしのみ）") {
+                Task { await model.startSession(record: false, transcribe: true) }
             }
         }
 
@@ -30,7 +33,14 @@ struct MenuContent: View {
 
         Button("履歴を開く") {
             openWindow(id: "main")
-            NSApp.activate()
+            // ウィンドウが既に開いている場合、openWindow は何もしないため明示的に前面へ出す。
+            // ウィンドウの生成を待ってから前面化する必要があるので1サイクル遅らせる。
+            DispatchQueue.main.async {
+                NSApp.activate()
+                NSApp.windows
+                    .first { $0.identifier?.rawValue.hasPrefix("main") == true }?
+                    .makeKeyAndOrderFront(nil)
+            }
         }
 
         Divider()
