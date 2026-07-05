@@ -25,6 +25,12 @@ final class AppModel {
     private(set) var micLevel: Float = 0
     private(set) var systemLevel: Float = 0
 
+    /// メニューバーに出す現在のフレーム。セッション中は Timer で回して動かす
+    /// (MenuBarExtra のラベルは SwiftUI アニメーションが効かないため、フレーム切替方式)。
+    private(set) var menuIcon = HCIcon.menuIdle[0]
+    @ObservationIgnored private var menuIconTimer: Timer?
+    @ObservationIgnored private var menuIconFrame = 0
+
     /// 各ウィンドウの実体。確実に前面へ出すために保持する
     /// (SwiftUI の openWindow は既に開いているウィンドウには何もしないため)。
     @ObservationIgnored weak var mainWindow: NSWindow?
@@ -42,6 +48,7 @@ final class AppModel {
     private init() {
         engine.onStatusChange = { [weak self] status in
             self?.status = status
+            self?.updateMenuIcon()
         }
         engine.onEvent = { [weak self] event in
             guard let self else { return }
@@ -117,6 +124,36 @@ final class AppModel {
     func setTranscribing(_ on: Bool) {
         try? engine.setTranscribing(on)
         if !on { liveVolatile = [:] }
+    }
+
+    // MARK: - メニューバーアイコン
+
+    /// 状態に合ったフレーム一式へ切り替える。複数フレームある(=セッション中)なら
+    /// Timer で回してアニメーションさせ、待機中は止めて静止画にする。
+    private func updateMenuIcon() {
+        let frames: [NSImage] =
+            switch (status.active, status.recording, status.transcribing) {
+            case (false, _, _): HCIcon.menuIdle
+            case (true, true, true): HCIcon.menuRecordingAndTranscribing
+            case (true, true, false): HCIcon.menuRecording
+            case (true, false, true): HCIcon.menuTranscribing
+            case (true, false, false): HCIcon.menuActive
+            }
+        menuIconTimer?.invalidate()
+        menuIconTimer = nil
+        menuIconFrame = 0
+        menuIcon = frames[0]
+        guard frames.count > 1 else { return }
+        menuIconTimer = Timer.scheduledTimer(
+            withTimeInterval: HCIcon.frameInterval, repeats: true
+        ) { [weak self] _ in
+            // Timer はメインの RunLoop に載せているため、メインスレッド上で発火する。
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.menuIconFrame = (self.menuIconFrame + 1) % frames.count
+                self.menuIcon = frames[self.menuIconFrame]
+            }
+        }
     }
 
     // MARK: - ホットキー

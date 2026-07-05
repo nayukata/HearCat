@@ -31,7 +31,8 @@ struct HearCatApp: App {
     }
 }
 
-/// メニューバーに出す猫アイコン。稼働中は塗りつぶし(耳が立って目が開いている状態)で示す。
+/// メニューバーに出す猫アイコン。フレームは AppModel が状態に応じて回す
+/// (待機中は静止、録音/文字起こし中はそれぞれのアニメーション)。
 /// openWindow は SwiftUI の Environment からしか取れないため、
 /// 常に生きているこのビューからモデルへ注入する(ホットキー等、ビューの外から使うため)。
 private struct MenuBarLabel: View {
@@ -39,7 +40,7 @@ private struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(nsImage: model.status.active ? HCIcon.menuActive : HCIcon.menuIdle)
+        Image(nsImage: model.menuIcon)
             .onAppear {
                 model.openWindowAction = { id in openWindow(id: id) }
             }

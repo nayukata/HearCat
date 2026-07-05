@@ -101,7 +101,7 @@ struct MenuPanel: View {
                 Label("文字起こしのみ開始", systemImage: "text.quote")
                     .frame(maxWidth: .infinity)
             }
-            .controlSize(.large)
+            .buttonStyle(PanelButtonStyle())
         }
         .disabled(model.busy)
     }
@@ -110,8 +110,8 @@ struct MenuPanel: View {
 
     private var activeSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("録音", isOn: recordingBinding)
-            Toggle("文字起こし", isOn: transcribingBinding)
+            toggleRow("録音", isOn: recordingBinding)
+            toggleRow("文字起こし", isOn: transcribingBinding)
 
             VStack(alignment: .leading, spacing: 6) {
                 meterRow(label: "自分", level: model.micLevel)
@@ -128,17 +128,27 @@ struct MenuPanel: View {
                     .help(model.status.systemAudioError ?? "")
             }
 
-            Button(role: .destructive) {
+            Button {
                 Task { await model.stopSession() }
             } label: {
                 Label("セッションを停止", systemImage: "stop.circle")
                     .frame(maxWidth: .infinity)
             }
-            .controlSize(.large)
+            .buttonStyle(PanelButtonStyle(foreground: HCColor.rec))
             .disabled(model.busy)
         }
         .toggleStyle(.switch)
         .controlSize(.small)
+    }
+
+    /// ラベル左・スイッチ右端のトグル行。スイッチの縦の列を揃える。
+    private func toggleRow(_ label: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Toggle(label, isOn: isOn)
+                .labelsHidden()
+        }
     }
 
     private func meterRow(label: String, level: Float) -> some View {
@@ -154,15 +164,27 @@ struct MenuPanel: View {
     // MARK: - フッター
 
     private var footer: some View {
-        HStack {
-            Button("履歴") { model.showHistory() }
-            Button("設定") { model.showSettings() }
-            Spacer()
-            Button("終了") { NSApp.terminate(nil) }
+        HStack(spacing: 8) {
+            Button {
+                model.showHistory()
+            } label: {
+                Label("履歴", systemImage: "clock.arrow.circlepath")
+                    .frame(maxWidth: .infinity)
+            }
+            Button {
+                model.showSettings()
+            } label: {
+                Label("設定", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity)
+            }
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Image(systemName: "power")
+            }
+            .help("HearCat を終了")
         }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .foregroundStyle(HCColor.whiteDim)
+        .buttonStyle(PanelButtonStyle())
     }
 
     private var recordingBinding: Binding<Bool> {
@@ -175,6 +197,24 @@ struct MenuPanel: View {
         Binding(
             get: { model.status.transcribing },
             set: { model.setTranscribing($0) })
+    }
+}
+
+/// パネル用の控えめなボタン。ネイビー地に白の半透明で描き、
+/// 青は主ボタン(開始)だけに残して色の役割を分ける(青=開始 / 赤=停止 / 無彩色=その他)。
+struct PanelButtonStyle: ButtonStyle {
+    var foreground: Color = .white.opacity(0.85)
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .medium))
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(.white.opacity(configuration.isPressed ? 0.18 : 0.08)))
+            .foregroundStyle(foreground)
+            .contentShape(RoundedRectangle(cornerRadius: 7))
     }
 }
 
