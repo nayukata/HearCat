@@ -9,6 +9,9 @@ struct MainWindow: View {
     @State private var selection: String?
     /// 折りたたんだフォルダ。既定は全部展開。
     @State private var collapsedFolders: Set<String> = []
+    /// 全文検索。入力中はフォルダ構造の代わりに横断ヒットの一覧を出す。
+    @State private var searchText = ""
+    @State private var searchResults: [SessionInfo] = []
 
     // ダイアログの対象と入力値。target が nil でない間だけ表示される。
     @State private var renameTarget: SessionInfo?
@@ -119,34 +122,64 @@ struct MainWindow: View {
 
     private var sidebar: some View {
         List(selection: $selection) {
-            if model.status.active {
-                Section("進行中") {
-                    Label("ライブ", systemImage: "dot.radiowaves.left.and.right")
-                        .tag(Self.liveID)
-                }
-            }
-            if !model.folders.isEmpty {
-                Section("フォルダ") {
-                    ForEach(model.folders, id: \.self) { folder in
-                        folderGroup(folder)
+            if isSearching {
+                searchSection
+            } else {
+                if model.status.active {
+                    Section("進行中") {
+                        Label("ライブ", systemImage: "dot.radiowaves.left.and.right")
+                            .tag(Self.liveID)
                     }
                 }
-            }
-            // フォルダ分けが始まったら、直下は「未分類」という位置づけになる。
-            Section {
-                ForEach(pastSessions.filter { $0.folder == nil }) { session in
-                    sessionRow(session)
-                }
-            } header: {
-                Text(model.folders.isEmpty ? "履歴" : "未分類")
-                    .dropDestination(for: String.self) { ids, _ in
-                        _ = moveSessions(ids, toFolder: nil)
+                if !model.folders.isEmpty {
+                    Section("フォルダ") {
+                        ForEach(model.folders, id: \.self) { folder in
+                            folderGroup(folder)
+                        }
                     }
+                }
+                // フォルダ分けが始まったら、直下は「未分類」という位置づけになる。
+                Section {
+                    ForEach(pastSessions.filter { $0.folder == nil }) { session in
+                        sessionRow(session)
+                    }
+                } header: {
+                    Text(model.folders.isEmpty ? "履歴" : "未分類")
+                        .dropDestination(for: String.self) { ids, _ in
+                            _ = moveSessions(ids, toFolder: nil)
+                        }
+                }
             }
         }
+        .searchable(text: $searchText, placement: .sidebar, prompt: "名前と本文を検索")
+        // 検索中の名前変更や移動で一覧が変わっても、結果が古いまま残らないようにする。
+        .onChange(of: searchText) { refreshSearch() }
+        .onChange(of: model.sessions) { refreshSearch() }
         .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             newFolderBar
+        }
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func refreshSearch() {
+        searchResults = isSearching ? pastSessions.filter { $0.matches(searchText) } : []
+    }
+
+    /// 検索中はフォルダをまたいだフラットな結果一覧に切り替える。
+    private var searchSection: some View {
+        Section("検索結果") {
+            if searchResults.isEmpty {
+                Text("一致するセッションがありません")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(searchResults) { session in
+                    sessionRow(session)
+                }
+            }
         }
     }
 

@@ -28,6 +28,19 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
         let url = directory.appendingPathComponent(name)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
+
+    /// 検索クエリに一致するか。セッション名・ディレクトリ名(日時)に加え、
+    /// 文字起こしと要約の本文まで横断して見る(「あの話どの会議だっけ」を引けるように)。
+    public func matches(_ query: String) -> Bool {
+        if name.localizedCaseInsensitiveContains(query)
+            || directory.lastPathComponent.localizedCaseInsensitiveContains(query) {
+            return true
+        }
+        return [transcriptURL, summaryURL].compactMap { $0 }.contains { url in
+            (try? String(contentsOf: url, encoding: .utf8))?
+                .localizedCaseInsensitiveContains(query) ?? false
+        }
+    }
 }
 
 /// セッションの保存先(Application Support)と IPC ソケットのパスを一元管理する。
