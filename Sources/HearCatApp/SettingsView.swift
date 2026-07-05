@@ -38,26 +38,26 @@ struct SettingsView: View {
             }
 
             Section {
-                LabeledContent("skill") {
+                LabeledContent("skill (使い方の説明書)") {
                     statusLabel(installed: skillInstalled)
                 }
-                LabeledContent("CLI (hearcat)") {
+                LabeledContent("CLI (操作コマンド hearcat)") {
                     statusLabel(installed: cliInstalled)
                 }
-                HStack {
-                    Button(skillInstalled && cliInstalled ? "再導入" : "導入する") {
+                if !(skillInstalled && cliInstalled) {
+                    Button("導入する") {
                         installSkill()
                     }
-                    if let skillMessage {
-                        Text(skillMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                }
+                if let skillMessage {
+                    Text(skillMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("agent skill")
+                Text("AI エージェント連携")
             } footer: {
-                Text("SKILL.md を共通の置き場 (~/.agents/skills/) と、使用中の各エージェント (~/.claude や ~/.codex など) の skills フォルダへ配置します。CLI は ~/.local/bin/hearcat へ配置します (PATH に ~/.local/bin が必要)。導入すると agent skill 対応の AI エージェント (Claude Code / Codex / Copilot / Gemini など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。")
+                Text("導入すると、AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。エージェントは skill で使い方を知り、CLI でこのアプリを動かします。skill の実体は ~/.agents/skills/ に置き、使用中の各エージェントへはリンクを張ります。CLI は ~/.local/bin へ置きます。導入後はアプリを起動するたびに自動で最新の内容へ更新されます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -92,8 +92,8 @@ struct SettingsView: View {
 
     private func installSkill() {
         do {
-            let count = try SkillInstaller.install()
-            skillMessage = "配置しました (skill \(count)箇所 + CLI)"
+            try SkillInstaller.install()
+            skillMessage = "配置しました"
         } catch {
             skillMessage = error.localizedDescription
         }
@@ -120,18 +120,23 @@ struct HotkeyRecorderField: View {
                     .frame(minWidth: 96)
             }
             // 割り当て済みのキーだけ消せるように、xmark は別ボタンで出す。
-            if settings.hotkeys[action] != nil, !recording {
-                Button {
-                    settings.hotkeys[action] = nil
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("割り当てを削除")
+            // 場所は常に確保し、未設定時は透明にする(行ごとにボタンの位置がずれないように)。
+            Button {
+                settings.hotkeys[action] = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
             }
+            .buttonStyle(.plain)
+            .help("割り当てを削除")
+            .opacity(clearable ? 1 : 0)
+            .disabled(!clearable)
         }
         .onDisappear { endRecording() }
+    }
+
+    private var clearable: Bool {
+        settings.hotkeys[action] != nil && !recording
     }
 
     private var buttonTitle: String {

@@ -86,6 +86,8 @@ final class AppModel {
         SessionStore.migrateLegacyStorage()
         refreshSessions()
         startIPCServer()
+        // アプリ更新で新しくなった SKILL.md / CLI を、導入済みなら起動時に反映する。
+        SkillInstaller.refreshIfInstalled()
     }
 
     // MARK: - セッション操作

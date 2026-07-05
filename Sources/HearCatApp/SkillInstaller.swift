@@ -3,14 +3,14 @@ import Foundation
 /// agent skill と CLI をワンクリックで導入する。
 /// SKILL.md と CLI 本体はアプリバンドルに同梱されている(Makefile がコピーする)。
 enum SkillInstaller {
-    /// エージェント非依存の共通置き場。ここへは常に配置する。
-    /// (VS Code / Copilot / Warp などが対応するユーザーレベルの標準ディレクトリ)
+    /// skill の実体を置く唯一の場所。エージェント非依存の標準ディレクトリ。
     static var universalSkillDirectory: URL {
         home.appendingPathComponent(".agents/skills/hearcat")
     }
 
     /// 固有の skills ディレクトリを持つ主要エージェント。
-    /// `~/.<名前>` が存在する(=そのエージェントを使っている)場合にだけ追加で配置する。
+    /// Claude Code などは ~/.agents を探索しないため、`~/.<名前>` が存在する
+    /// (=そのエージェントを使っている)場合は実体へのリンクを張って見つけられるようにする。
     private static let agentDirectoryNames = ["claude", "codex", "cursor", "copilot", "gemini"]
 
     static var cliDestination: URL {
@@ -21,16 +21,16 @@ enum SkillInstaller {
         FileManager.default.homeDirectoryForCurrentUser
     }
 
-    /// SKILL.md の配置先一覧(共通置き場 + 検出されたエージェント)。
-    static func skillDestinations() -> [URL] {
-        var dirs = [universalSkillDirectory]
+    /// 実体へのリンクを張る先(検出されたエージェントの skills ディレクトリ)。
+    static func agentLinkDestinations() -> [URL] {
+        var links: [URL] = []
         for name in agentDirectoryNames {
             let agentRoot = home.appendingPathComponent(".\(name)")
             if FileManager.default.fileExists(atPath: agentRoot.path) {
-                dirs.append(agentRoot.appendingPathComponent("skills/hearcat"))
+                links.append(agentRoot.appendingPathComponent("skills/hearcat"))
             }
         }
-        return dirs
+        return links
     }
 
     static var skillInstalled: Bool {
@@ -58,10 +58,9 @@ enum SkillInstaller {
         }
     }
 
-    /// SKILL.md を各エージェントの skills ディレクトリへ、CLI を ~/.local/bin/hearcat へ配置する。
-    /// 戻り値は SKILL.md を配置した数。
-    @discardableResult
-    static func install() throws -> Int {
+    /// SKILL.md の実体を共通置き場へ、各エージェントへはリンクを、
+    /// CLI を ~/.local/bin/hearcat へ配置する。
+    static func install() throws {
         guard let skillSource = Bundle.main.url(forResource: "SKILL", withExtension: "md") else {
             throw InstallError.notBundled("SKILL.md")
         }
@@ -70,10 +69,16 @@ enum SkillInstaller {
         }
         let fm = FileManager.default
 
-        let destinations = skillDestinations()
-        for dir in destinations {
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            try replace(at: dir.appendingPathComponent("SKILL.md"), with: skillSource)
+        try fm.createDirectory(at: universalSkillDirectory, withIntermediateDirectories: true)
+        try replace(
+            at: universalSkillDirectory.appendingPathComponent("SKILL.md"), with: skillSource)
+
+        for link in agentLinkDestinations() {
+            try fm.createDirectory(
+                at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+            // 旧バージョンが実体のコピーを置いていた場合も、リンクに置き換える。
+            try? fm.removeItem(at: link)
+            try fm.createSymbolicLink(at: link, withDestinationURL: universalSkillDirectory)
         }
 
         try fm.createDirectory(
@@ -82,8 +87,13 @@ enum SkillInstaller {
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cliDestination.path)
 
         removeLegacyArtifacts()
+    }
 
-        return destinations.count
+    /// 導入済みなら黙って配置し直す(アプリ起動時に呼ぶ)。
+    /// アプリ更新で同梱の SKILL.md / CLI が新しくなっても、手動の再導入なしで反映されるように。
+    static func refreshIfInstalled() {
+        guard skillInstalled else { return }
+        try? install()
     }
 
     /// 旧名(sharingan)時代に配置した skill と CLI を消す。名前が変わった残骸は動かないだけなので掃除する。
