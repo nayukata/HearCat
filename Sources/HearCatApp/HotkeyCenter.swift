@@ -7,6 +7,7 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
     case toggleRecording
     case toggleTranscribing
     case openHistory
+    case openSettings
 
     var id: String { rawValue }
 
@@ -16,6 +17,7 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleRecording: "録音オン/オフ"
         case .toggleTranscribing: "文字起こしオン/オフ"
         case .openHistory: "履歴ウィンドウを開く"
+        case .openSettings: "設定を開く"
         }
     }
 
@@ -26,6 +28,7 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleRecording: 2
         case .toggleTranscribing: 3
         case .openHistory: 4
+        case .openSettings: 5
         }
     }
 }

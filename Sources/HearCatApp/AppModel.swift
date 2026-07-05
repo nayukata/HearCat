@@ -172,14 +172,24 @@ final class AppModel {
                     await startSession()
                 }
             }
+        // 録音/文字起こしのキーはセッション外では「その機能だけオンで開始」。
+        // 押して何も起きないデッドゾーンを作らない。
         case .toggleRecording:
-            guard status.active else { return }
-            setRecording(!status.recording)
+            if status.active {
+                setRecording(!status.recording)
+            } else {
+                Task { await startSession(record: true, transcribe: false) }
+            }
         case .toggleTranscribing:
-            guard status.active else { return }
-            setTranscribing(!status.transcribing)
+            if status.active {
+                setTranscribing(!status.transcribing)
+            } else {
+                Task { await startSession(record: false, transcribe: true) }
+            }
         case .openHistory:
             showHistory()
+        case .openSettings:
+            showSettings()
         }
     }
 

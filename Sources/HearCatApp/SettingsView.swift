@@ -21,7 +21,7 @@ struct SettingsView: View {
             } header: {
                 Text("ホットキー")
             } footer: {
-                Text("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。")
+                Text("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。録音/文字起こしのキーは、セッション外で押すとその機能だけオンでセッションを開始します。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
