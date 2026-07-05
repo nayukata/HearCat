@@ -5,8 +5,8 @@ import Foundation
 
 /// Mac から出る音声(通話相手など)を Core Audio プロセスタップで取得する。
 /// 画面録画許可は不要だが、バイナリが署名されていないと無音で失敗する点に注意。
-final class SystemAudioSource {
-    let buffers: AsyncStream<SendableBuffer>
+public final class SystemAudioSource {
+    public let buffers: AsyncStream<SendableBuffer>
     private let continuation: AsyncStream<SendableBuffer>.Continuation
     private let queue = DispatchQueue(label: "sharingan.systemaudio", qos: .userInitiated)
 
@@ -14,13 +14,13 @@ final class SystemAudioSource {
     private var aggregateID: AudioObjectID = 0
     private var procID: AudioDeviceIOProcID?
 
-    init() {
+    public init() {
         let (stream, continuation) = AsyncStream<SendableBuffer>.makeStream()
         self.buffers = stream
         self.continuation = continuation
     }
 
-    func start() throws {
+    public func start() throws {
         // 1. システム全体を対象にしたタップを作る。muteBehavior=.unmuted なので相手の声は普通に聞こえる。
         let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         tapDescription.uuid = UUID()
@@ -77,7 +77,7 @@ final class SystemAudioSource {
         guard err == noErr else { throw SystemAudioError.startFailed(err) }
     }
 
-    func stop() {
+    public func stop() {
         if aggregateID != 0, let proc = procID {
             AudioDeviceStop(aggregateID, proc)
             AudioDeviceDestroyIOProcID(aggregateID, proc)

@@ -2,12 +2,12 @@ import Foundation
 
 /// 複数チャンネルの確定セグメントを1ファイルへ直列に追記する。
 /// actor にすることで、自分/相手の2系統が同時に届いても行が壊れない(書き込み競合の防止)。
-actor TranscriptWriter {
+public actor TranscriptWriter {
     private let fileURL: URL
     private let handle: FileHandle
     private let timeFormatter: DateFormatter
 
-    init(fileURL: URL) throws {
+    public init(fileURL: URL) throws {
         self.fileURL = fileURL
         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
         self.handle = try FileHandle(forWritingTo: fileURL)
@@ -17,18 +17,18 @@ actor TranscriptWriter {
         self.timeFormatter = f
     }
 
-    func writeHeader(sessionStart: Date) {
+    public func writeHeader(sessionStart: Date) {
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd HH:mm:ss"
         df.locale = Locale(identifier: "en_US_POSIX")
         write("# 文字起こし \(df.string(from: sessionStart))\n\n")
     }
 
-    func append(_ segment: TranscriptSegment) {
+    public func append(_ segment: TranscriptSegment) {
         write("[\(timeFormatter.string(from: segment.timestamp))] \(segment.speaker): \(segment.text)\n")
     }
 
-    func close() {
+    public func close() {
         try? handle.close()
     }
 

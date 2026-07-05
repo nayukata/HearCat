@@ -2,18 +2,18 @@
 import Foundation
 
 /// 自分のマイク入力を AVAudioEngine で取得し、コピー済みバッファを stream に流す。
-final class MicSource {
-    let buffers: AsyncStream<SendableBuffer>
+public final class MicSource {
+    public let buffers: AsyncStream<SendableBuffer>
     private let continuation: AsyncStream<SendableBuffer>.Continuation
     private let engine = AVAudioEngine()
 
-    init() {
+    public init() {
         let (stream, continuation) = AsyncStream<SendableBuffer>.makeStream()
         self.buffers = stream
         self.continuation = continuation
     }
 
-    func start() throws {
+    public func start() throws {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         debugLog("mic capture format sr=\(format.sampleRate) ch=\(format.channelCount)")
@@ -28,7 +28,7 @@ final class MicSource {
         try engine.start()
     }
 
-    func stop() {
+    public func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         continuation.finish()

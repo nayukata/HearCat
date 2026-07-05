@@ -2,30 +2,47 @@
 import Foundation
 
 /// 確定した1発話ぶんの文字起こし。話者ラベルと壁時計の時刻を持つ。
-struct TranscriptSegment: Sendable {
-    let speaker: String
-    let text: String
-    let timestamp: Date
+public struct TranscriptSegment: Sendable {
+    public let speaker: String
+    public let text: String
+    public let timestamp: Date
+
+    public init(speaker: String, text: String, timestamp: Date) {
+        self.speaker = speaker
+        self.text = text
+        self.timestamp = timestamp
+    }
+}
+
+/// 文字起こしの途中経過。ファイルには確定(final)だけを書き、
+/// 暫定(volatile)は UI のライブ表示にだけ使う。
+public enum TranscriberEvent: Sendable {
+    case volatile(speaker: String, text: String)
+    case final(TranscriptSegment)
 }
 
 /// AVAudioPCMBuffer は Sendable でない。
 /// ここでは「コピー済みバッファを音声スレッドから消費側へ1回だけ受け渡す」用途に限定するため、
 /// @unchecked Sendable で包んで安全に運ぶ。
-struct SendableBuffer: @unchecked Sendable {
-    let buffer: AVAudioPCMBuffer
+public struct SendableBuffer: @unchecked Sendable {
+    public let buffer: AVAudioPCMBuffer
+
+    public init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
 }
 
 // SHARINGAN_DEBUG=1 で診断ログを stderr に出す(音声レベル・フォーマット・認識の生結果)。
-let sharinganDebug = ProcessInfo.processInfo.environment["SHARINGAN_DEBUG"] != nil
+public let sharinganDebug = ProcessInfo.processInfo.environment["SHARINGAN_DEBUG"] != nil
 
-func debugLog(_ message: String) {
+public func debugLog(_ message: String) {
     guard sharinganDebug else { return }
     FileHandle.standardError.write(Data(("[debug] " + message + "\n").utf8))
 }
 
 /// バッファの音量(RMS)。音声が届いているか(無音でないか)の切り分けに使う。
 /// Float32 / Int16 の両方に対応する(SpeechAnalyzer 側は Int16 で来ることが多い)。
-func rmsLevel(_ buffer: AVAudioPCMBuffer) -> Float {
+public func rmsLevel(_ buffer: AVAudioPCMBuffer) -> Float {
     let frames = Int(buffer.frameLength)
     guard frames > 0 else { return -1 }
     if let channel = buffer.floatChannelData {
@@ -46,12 +63,12 @@ func rmsLevel(_ buffer: AVAudioPCMBuffer) -> Float {
     return -1
 }
 
-enum TranscriptionError: Error {
+public enum TranscriptionError: Error {
     case localeNotSupported
     case noAudioFormat
 }
 
-enum SystemAudioError: Error {
+public enum SystemAudioError: Error {
     case tapCreateFailed(OSStatus)
     case aggregateCreateFailed(OSStatus)
     case formatFailed
@@ -69,7 +86,7 @@ extension AVAudioPCMBuffer {
     /// コピー(= 無音)になる。そのため型付きチャンネルデータ(floatChannelData など)を直接使い、
     /// 該当しない稀なフォーマットは src の mDataByteSize を優先した AudioBufferList コピーで
     /// フォールバックする。
-    func deepCopy() -> AVAudioPCMBuffer? {
+    public func deepCopy() -> AVAudioPCMBuffer? {
         guard frameLength > 0,
               let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else { return nil }
         copy.frameLength = frameLength

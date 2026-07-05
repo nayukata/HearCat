@@ -3,12 +3,12 @@ import Foundation
 import Speech
 
 /// 1チャンネル分(自分 or 相手)のライブ文字起こし。
-/// 生の AVAudioPCMBuffer を受け取り、確定したテキストだけを sink へ流す。
-@MainActor
-final class ChannelTranscriber {
+/// 生の AVAudioPCMBuffer を受け取り、確定/暫定のイベントを sink へ流す。
+/// actor なのは、バッファ変換や解析投入を UI(メインスレッド)から切り離すため。
+public actor ChannelTranscriber {
     private let speaker: String
     private let locale: Locale
-    private let sink: AsyncStream<TranscriptSegment>.Continuation
+    private let sink: AsyncStream<TranscriberEvent>.Continuation
 
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
@@ -20,7 +20,7 @@ final class ChannelTranscriber {
     private var resultsTask: Task<Void, Never>?
     private var fedCount = 0
 
-    init(speaker: String, locale: Locale, sink: AsyncStream<TranscriptSegment>.Continuation) {
+    public init(speaker: String, locale: Locale, sink: AsyncStream<TranscriberEvent>.Continuation) {
         self.speaker = speaker
         self.locale = locale
         self.sink = sink
@@ -29,11 +29,11 @@ final class ChannelTranscriber {
         self.inputContinuation = continuation
     }
 
-    func start() async throws {
+    public func start() async throws {
         let transcriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
-            // 暫定結果も受け取るが、書き出すのは確定分のみ(ファイルを安定させるため)。
+            // 暫定結果はライブ表示用。ファイルへ書くのは確定分のみ(ファイルを安定させるため)。
             reportingOptions: [.volatileResults],
             attributeOptions: [.audioTimeRange])
         self.transcriber = transcriber
@@ -47,15 +47,17 @@ final class ChannelTranscriber {
 
         let speaker = self.speaker
         let sink = self.sink
-        resultsTask = Task { @MainActor in
+        resultsTask = Task {
             do {
                 for try await case let result in transcriber.results {
-                    // 確定した結果だけをファイルへ。暫定(volatile)は捨てる。
-                    guard result.isFinal else { continue }
                     let text = String(result.text.characters)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !text.isEmpty else { continue }
-                    sink.yield(TranscriptSegment(speaker: speaker, text: text, timestamp: Date()))
+                    if result.isFinal {
+                        sink.yield(.final(TranscriptSegment(speaker: speaker, text: text, timestamp: Date())))
+                    } else {
+                        sink.yield(.volatile(speaker: speaker, text: text))
+                    }
                 }
             } catch {
                 FileHandle.standardError.write(Data("[\(speaker)] 認識エラー: \(error)\n".utf8))
@@ -66,7 +68,7 @@ final class ChannelTranscriber {
     }
 
     /// 生バッファを受け取り、解析フォーマットへ変換して analyzer へ流す。
-    func feed(_ buffer: AVAudioPCMBuffer) {
+    public func feed(_ buffer: AVAudioPCMBuffer) {
         guard let format = analyzerFormat else { return }
         do {
             let converted = try converter.convert(buffer, to: format)
@@ -80,7 +82,7 @@ final class ChannelTranscriber {
         }
     }
 
-    func stop() async {
+    public func stop() async {
         inputContinuation.finish()
         // 末尾に残った音声を確定結果として吐き出してから停止する。
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()

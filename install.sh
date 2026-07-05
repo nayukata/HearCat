@@ -6,25 +6,30 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="${SHARINGAN_BIN:-$HOME/.local/bin}"
-mkdir -p "$BIN_DIR"
+APP_DIR="${SHARINGAN_APP:-$HOME/Applications}"
+mkdir -p "$BIN_DIR" "$APP_DIR"
 
-echo "==> release ビルド"
-swift build -c release --package-path "$DIR"
+echo "==> release ビルドと .app の組み立て(署名込み)"
+make -C "$DIR" app CONFIG=release
 
-echo "==> 署名(システム音声キャプチャに安定署名が必須)"
 IDENTITY="$(security find-identity -v -p codesigning | awk '/Apple Development|Developer ID Application/ {print $2; exit}')"
 if [ -z "${IDENTITY}" ]; then
   echo "エラー: codesigning 用の証明書が見つかりません。" >&2
   echo "Xcode > Settings > Accounts でアカウントを追加し、Apple Development 証明書を作成してください。" >&2
   exit 1
 fi
-codesign --force --sign "${IDENTITY}" "$DIR/.build/release/sharingan"
 
-echo "==> ${BIN_DIR} へ配置"
+echo "==> ${APP_DIR}/sharingan.app へ配置"
+# 起動中の旧アプリが残っていると差し替え後も旧プロセスが生き続けるため、先に終了させる。
+osascript -e 'quit app id "dev.nayukata.sharingan"' >/dev/null 2>&1 || true
+rm -rf "$APP_DIR/sharingan.app"
+cp -R "$DIR/.build/release/sharingan.app" "$APP_DIR/sharingan.app"
+
+echo "==> ${BIN_DIR}/sharingan へ CLI を配置"
 install -m 0755 "$DIR/.build/release/sharingan" "$BIN_DIR/sharingan"
-install -m 0755 "$DIR/distribution/sharingan/assets/sharingan-session.sh" "$BIN_DIR/sharingan-session"
 
-echo "完了: $BIN_DIR/sharingan / $BIN_DIR/sharingan-session"
+echo "完了: $APP_DIR/sharingan.app / $BIN_DIR/sharingan"
+echo "初回は「sharingan start」かアプリ起動時に、マイク・音声認識の許可ダイアログが出ます。"
 case ":$PATH:" in
   *":$BIN_DIR:"*) : ;;
   *) echo "注意: PATH に $BIN_DIR が含まれていません。シェル設定に追加してください。" >&2 ;;

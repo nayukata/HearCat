@@ -4,8 +4,8 @@ import os
 
 /// 入力バッファを SpeechAnalyzer が要求するフォーマットへ変換する。
 /// マイクとシステム音声でサンプルレート/チャンネル数が異なるため、チャンネルごとに1インスタンス持つ。
-final class BufferConverter {
-    enum ConvertError: Error {
+public final class BufferConverter {
+    public enum ConvertError: Error {
         case failedToCreateConverter
         case failedToCreateConversionBuffer
         case conversionFailed(NSError?)
@@ -13,7 +13,9 @@ final class BufferConverter {
 
     private var converter: AVAudioConverter?
 
-    func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
+    public init() {}
+
+    public func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
         let inputFormat = buffer.format
         // すでに目的フォーマットなら変換しない(無駄なコピーと遅延を避ける)。
         guard inputFormat != format else { return buffer }

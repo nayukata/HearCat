@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ja</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.nayukata.sharingan</string>
+    <key>CFBundleName</key>
+    <string>sharingan</string>
+    <key>CFBundleDisplayName</key>
+    <string>sharingan</string>
+    <key>CFBundleExecutable</key>
+    <string>sharingan</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.2.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <!-- メニューバー常駐アプリ。Dock には出さない。 -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>sharingan は自分の発話をリアルタイム文字起こし・録音するためにマイクを使用します。</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>sharingan は音声をテキストに変換するために音声認識を使用します。</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>sharingan は通話相手など、Mac から出る音声を文字起こし・録音するためにシステム音声を録音します。</string>
+</dict>
+</plist>
