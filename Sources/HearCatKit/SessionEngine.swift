@@ -33,6 +33,29 @@ public final class SessionEngine {
         public init() {}
     }
 
+    /// 無音区間を文字起こしに流さないゲート。
+    /// 無音でも音声認識は架空の文を生成することがある(幻覚)ため、音量が閾値を
+    /// 下回るバッファは解析へ渡さない。発話の間の短い沈黙でブツ切りにならないよう、
+    /// 無音が一定時間続くまでは開いたままにする。pump タスク内でだけ使う(排他不要)。
+    private struct SilenceGate {
+        /// これ未満を無音とみなす RMS。システム音声の「何も再生していない」区間(ほぼ0)を
+        /// 主な標的にした控えめな値。通常の発話は 0.01 前後なので発話を削ることはない。
+        private static let threshold: Float = 0.001
+        /// 無音がこの秒数続いたら閉じる。文中の間(ポーズ)より長く取る。
+        private static let hangover: TimeInterval = 2.0
+        /// 開始直後は「最初の音が鳴るまで閉じたまま」にするため、無音継続扱いで始める。
+        private var silentSeconds: TimeInterval = .greatestFiniteMagnitude
+
+        mutating func allows(_ buffer: AVAudioPCMBuffer, level: Float) -> Bool {
+            if level >= Self.threshold {
+                silentSeconds = 0
+                return true
+            }
+            silentSeconds += Double(buffer.frameLength) / buffer.format.sampleRate
+            return silentSeconds < Self.hangover
+        }
+    }
+
     /// 音声バッファごとに参照するオンオフ状態。
     /// pump(音声転送タスク)は MainActor の外で回るため、actor 越しでなくロックで読む。
     private final class Toggles: Sendable {
@@ -167,18 +190,27 @@ public final class SessionEngine {
         let onLevel = self.onLevel
         let micBuffers = mic.buffers
         pumps.append(Task.detached(priority: .userInitiated) {
+            var gate = SilenceGate()
             for await item in micBuffers {
-                onLevel?("自分", rmsLevel(item.buffer))
-                if toggles.transcribing.withLock({ $0 }) { await mine.feed(item.buffer) }
+                let level = rmsLevel(item.buffer)
+                onLevel?("自分", level)
+                // ゲートは文字起こしにだけ効かせる。録音は無音も含めて忠実に残す。
+                if toggles.transcribing.withLock({ $0 }), gate.allows(item.buffer, level: level) {
+                    await mine.feed(item.buffer)
+                }
                 if toggles.recording.withLock({ $0 }) { await recorder.appendMic(item.buffer) }
             }
         })
         if let theirs, let system {
             let systemBuffers = system.buffers
             pumps.append(Task.detached(priority: .userInitiated) {
+                var gate = SilenceGate()
                 for await item in systemBuffers {
-                    onLevel?("相手", rmsLevel(item.buffer))
-                    if toggles.transcribing.withLock({ $0 }) { await theirs.feed(item.buffer) }
+                    let level = rmsLevel(item.buffer)
+                    onLevel?("相手", level)
+                    if toggles.transcribing.withLock({ $0 }), gate.allows(item.buffer, level: level) {
+                        await theirs.feed(item.buffer)
+                    }
                     if toggles.recording.withLock({ $0 }) { await recorder.appendSystem(item.buffer) }
                 }
             })
