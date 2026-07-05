@@ -34,8 +34,9 @@ struct MenuContent: View {
         Button("履歴を開く") {
             openWindow(id: "main")
             // ウィンドウが既に開いている場合、openWindow は何もしないため明示的に前面へ出す。
-            // ウィンドウの生成を待ってから前面化する必要があるので1サイクル遅らせる。
-            DispatchQueue.main.async {
+            // メニューが閉じる際に macOS は直前のアプリを再アクティブ化するため、
+            // その処理が終わった後に前面化しないと一瞬だけ前面に出て背面に戻される。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 NSApp.activate()
                 if let window = model.mainWindow {
                     if window.isMiniaturized { window.deminiaturize(nil) }
