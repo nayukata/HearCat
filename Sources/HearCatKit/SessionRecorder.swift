@@ -1,14 +1,18 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-/// セッションの録音を audio.m4a 1本(ステレオ、L=自分マイク、R=相手システム音声)に書く。
+/// セッションの録音を audio.m4a 1本(モノラル、自分と相手のミックス)に書く。
+///
+/// なぜモノラルミックスか: 再生時に両者の声が左右どちらかに寄らず、
+/// 両耳から自然に聞こえるようにするため。話者の区別は文字起こし側(話者ラベル)が担保する。
+/// 音量設定(micGain / systemGain)は、そのままミックスバランスとして効く。
 ///
 /// 設計メモ(なぜ AVAudioConverter を使わないか):
 /// interleaved→deinterleaved の同レート変換に AVAudioConverter を使ったところ、
 /// 各バッファの約半分が無音に置き換わる破損が実測で確認された(周期的なゲート状ノイズ)。
 /// 録音のチャンネル取り出し・モノラル化・レート合わせはここで手書きの決定的な処理で行う。
 /// (文字起こし側の 16kHz モノラル変換は実績があるためそのまま)
-public actor StereoSessionRecorder {
+public actor SessionRecorder {
     /// 書き出しのサンプルレート。ソースが異なるレートの場合は線形補間で合わせる。
     public static let sampleRate: Double = 48_000
 
@@ -17,11 +21,15 @@ public actor StereoSessionRecorder {
     private var file: AVAudioFile?
     private var failed = false
 
-    /// 各チャンネルの待ち行列。両方が揃った分だけブロック単位でファイルへ書く。
+    /// 各音源の待ち行列。ミックスは時間軸が揃っていないと成立しないため、
+    /// 両方が揃った分だけブロック単位で合成してファイルへ書く。
     private var micQueue: [Float] = []
     private var systemQueue: [Float] = []
+    /// 録音音量(設定画面から変更)。1.0 が原音。ミックス時の重みとして掛ける。
+    private var micGain: Float = 1
+    private var systemGain: Float = 1
     /// マイクはシステム音声より先に動き出すため、相手側の最初のバッファが届いた時点で
-    /// 先行分を捨てて2チャンネルの開始位置を揃える。
+    /// 先行分を捨てて2音源の開始位置を揃える。
     private var alignedToSystemStart = false
 
     /// 0.1秒ぶんずつ書く。小さすぎる書き込みはエンコーダに優しくない。
@@ -48,8 +56,14 @@ public actor StereoSessionRecorder {
         drain()
     }
 
+    /// 録音音量(ミックスバランス)を変える。セッション中でも即座に(次のブロックから)反映される。
+    public func setGains(mic: Float, system: Float) {
+        micGain = mic
+        systemGain = system
+    }
+
     /// 録音トグルをオフにした時に呼ぶ。中途半端に残った分は捨てて、
-    /// 再開時に両チャンネルが揃った状態から始める(チャンネル間のずれを溜めないため)。
+    /// 再開時に両音源が揃った状態から始める(音源間のずれを溜めないため)。
     public func pause() {
         micQueue.removeAll()
         systemQueue.removeAll()
@@ -95,21 +109,29 @@ public actor StereoSessionRecorder {
                 let settings: [String: Any] = [
                     AVFormatIDKey: kAudioFormatMPEG4AAC,
                     AVSampleRateKey: Self.sampleRate,
-                    AVNumberOfChannelsKey: 2,
-                    AVEncoderBitRateKey: 128_000,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 96_000,
                 ]
                 file = try AVAudioFile(forWriting: url, settings: settings)
             }
             guard let file else { return }
             let format = file.processingFormat
             guard let block = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-                  let data = block.floatChannelData, format.channelCount == 2 else {
+                  let data = block.floatChannelData, format.channelCount == 1 else {
                 failed = true
                 return
             }
             block.frameLength = AVAudioFrameCount(frames)
-            micQueue.withUnsafeBufferPointer { data[0].update(from: $0.baseAddress!, count: frames) }
-            systemQueue.withUnsafeBufferPointer { data[1].update(from: $0.baseAddress!, count: frames) }
+            // 2音源を重み付きで足し込む。同時発話で振り切れると折り返しノイズになるため [-1, 1] に収める。
+            let out = data[0]
+            micQueue.withUnsafeBufferPointer { mic in
+                systemQueue.withUnsafeBufferPointer { system in
+                    for i in 0..<frames {
+                        let mixed = mic[i] * micGain + system[i] * systemGain
+                        out[i] = max(-1, min(1, mixed))
+                    }
+                }
+            }
             try file.write(from: block)
             micQueue.removeFirst(frames)
             systemQueue.removeFirst(frames)

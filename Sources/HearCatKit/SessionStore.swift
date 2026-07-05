@@ -8,7 +8,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     public let startDate: Date
 
     public var transcriptURL: URL? { existing("transcript.md") }
-    /// 録音(ステレオ、L=自分 / R=相手)。録音オフのセッションには無い。
+    /// 録音(モノラル、自分と相手のミックス)。録音オフのセッションには無い。
     public var audioURL: URL? { existing("audio.m4a") }
     public var summaryURL: URL? { existing("summary.md") }
 
@@ -21,14 +21,32 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
 /// セッションの保存先(Application Support)と IPC ソケットのパスを一元管理する。
 /// アプリと CLI が同じパスを見ることが IPC 成立の前提なので、ここ以外にパスを書かない。
 public enum SessionStore {
-    public static let bundleIdentifier = "dev.nayukata.sharingan"
+    public static let bundleIdentifier = "dev.nayukata.hearcat"
 
     /// セッションディレクトリ名 = セッション ID のフォーマット。
     private static let idFormat = "yyyy-MM-dd_HHmmss"
 
     public static var rootDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("HearCat", isDirectory: true)
+    }
+
+    /// 旧名(sharingan)時代の保存先からの引っ越し。アプリ起動時に1回呼ぶ。
+    /// 新しい保存先がまだ無い場合にだけ、ディレクトリごと移動する。
+    public static func migrateLegacyStorage() {
+        let fm = FileManager.default
+        let legacy = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("sharingan", isDirectory: true)
+        guard fm.fileExists(atPath: legacy.path), !fm.fileExists(atPath: rootDirectory.path) else {
+            return
+        }
+        do {
+            try fm.moveItem(at: legacy, to: rootDirectory)
+            // 移動してきた旧ソケットファイルは無効なので消す(サーバー起動時に作り直される)。
+            try? fm.removeItem(at: rootDirectory.appendingPathComponent("control.sock"))
+        } catch {
+            FileHandle.standardError.write(Data("旧保存先の引っ越しに失敗: \(error)\n".utf8))
+        }
     }
 
     public static var sessionsDirectory: URL {

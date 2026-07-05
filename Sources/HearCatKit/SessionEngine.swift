@@ -52,6 +52,9 @@ public final class SessionEngine {
     /// 確定/暫定の文字起こしイベント。UI のライブ表示用。MainActor 上で呼ばれる。
     public var onEvent: ((TranscriberEvent) -> Void)?
     public var onStatusChange: ((Status) -> Void)?
+    /// 入力レベル(RMS)の通知。UI のメーター表示用。
+    /// pump(音声転送タスク)から MainActor の外で呼ばれるため Sendable であること。
+    public var onLevel: (@Sendable (_ speaker: String, _ level: Float) -> Void)?
 
     private let locale: Locale
     private var toggles: Toggles?
@@ -59,11 +62,14 @@ public final class SessionEngine {
     private var system: SystemAudioSource?
     private var mine: ChannelTranscriber?
     private var theirs: ChannelTranscriber?
-    private var recorder: StereoSessionRecorder?
+    private var recorder: SessionRecorder?
     private var writer: TranscriptWriter?
     private var pumps: [Task<Void, Never>] = []
     private var eventTask: Task<Void, Never>?
     private var eventSink: AsyncStream<TranscriberEvent>.Continuation?
+    /// 録音音量。セッション開始前に設定された値も、開始時に recorder へ引き継ぐ。
+    private var micGain: Float = 1
+    private var systemGain: Float = 1
 
     public init(locale: Locale = Locale(identifier: "ja-JP")) {
         self.locale = locale
@@ -148,15 +154,18 @@ public final class SessionEngine {
         }
 
         // --- 録音(audio.m4a 1本、L=自分 / R=相手) ---
-        let recorder = StereoSessionRecorder(
+        let recorder = SessionRecorder(
             url: sessionDir.appendingPathComponent("audio.m4a"),
             includesSystemChannel: system != nil)
+        await recorder.setGains(mic: micGain, system: systemGain)
         self.recorder = recorder
 
         // --- pump: 音源 → 文字起こし/録音への分岐 ---
+        let onLevel = self.onLevel
         let micBuffers = mic.buffers
         pumps.append(Task.detached(priority: .userInitiated) {
             for await item in micBuffers {
+                onLevel?("自分", rmsLevel(item.buffer))
                 if toggles.transcribing.withLock({ $0 }) { await mine.feed(item.buffer) }
                 if toggles.recording.withLock({ $0 }) { await recorder.appendMic(item.buffer) }
             }
@@ -165,6 +174,7 @@ public final class SessionEngine {
             let systemBuffers = system.buffers
             pumps.append(Task.detached(priority: .userInitiated) {
                 for await item in systemBuffers {
+                    onLevel?("相手", rmsLevel(item.buffer))
                     if toggles.transcribing.withLock({ $0 }) { await theirs.feed(item.buffer) }
                     if toggles.recording.withLock({ $0 }) { await recorder.appendSystem(item.buffer) }
                 }
@@ -233,6 +243,15 @@ public final class SessionEngine {
         guard status.active, let toggles else { throw EngineError.notActive }
         toggles.transcribing.withLock { $0 = on }
         status.transcribing = on
+    }
+
+    /// 録音音量を変える。セッション中でなくても呼べる(次のセッションに引き継がれる)。
+    public func setGains(mic: Float, system: Float) {
+        micGain = mic
+        systemGain = system
+        if let recorder {
+            Task { await recorder.setGains(mic: mic, system: system) }
+        }
     }
 
     // SFSpeechRecognizer.requestAuthorization の完了ハンドラは TCC が背景スレッドで呼ぶ。

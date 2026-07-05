@@ -32,11 +32,11 @@ public struct SendableBuffer: @unchecked Sendable {
     }
 }
 
-// SHARINGAN_DEBUG=1 で診断ログを stderr に出す(音声レベル・フォーマット・認識の生結果)。
-public let sharinganDebug = ProcessInfo.processInfo.environment["SHARINGAN_DEBUG"] != nil
+// HEARCAT_DEBUG=1 で診断ログを stderr に出す(音声レベル・フォーマット・認識の生結果)。
+public let hearcatDebug = ProcessInfo.processInfo.environment["HEARCAT_DEBUG"] != nil
 
 public func debugLog(_ message: String) {
-    guard sharinganDebug else { return }
+    guard hearcatDebug else { return }
     FileHandle.standardError.write(Data(("[debug] " + message + "\n").utf8))
 }
 

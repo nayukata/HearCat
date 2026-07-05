@@ -1,4 +1,4 @@
-import SharinganKit
+import HearCatKit
 import SwiftUI
 
 /// 履歴ウィンドウ。左にセッション一覧(進行中は先頭に固定)、右に詳細。
@@ -59,7 +59,7 @@ struct MainWindow: View {
 }
 
 /// SwiftUI のビュー階層から NSWindow の実体を取り出す。
-private struct WindowAccessor: NSViewRepresentable {
+struct WindowAccessor: NSViewRepresentable {
     let onResolve: (NSWindow?) -> Void
 
     func makeNSView(context: Context) -> NSView {

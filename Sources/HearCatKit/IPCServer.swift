@@ -6,7 +6,7 @@ import Foundation
 public final class IPCServer: @unchecked Sendable {
     private let socketPath: String
     private let handler: @Sendable (IPCRequest) async -> IPCResponse
-    private let queue = DispatchQueue(label: "sharingan.ipc.accept")
+    private let queue = DispatchQueue(label: "hearcat.ipc.accept")
     private var serverFD: Int32 = -1
 
     public init(socketPath: String, handler: @escaping @Sendable (IPCRequest) async -> IPCResponse) {

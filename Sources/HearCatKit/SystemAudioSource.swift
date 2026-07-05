@@ -8,7 +8,7 @@ import Foundation
 public final class SystemAudioSource {
     public let buffers: AsyncStream<SendableBuffer>
     private let continuation: AsyncStream<SendableBuffer>.Continuation
-    private let queue = DispatchQueue(label: "sharingan.systemaudio", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "hearcat.systemaudio", qos: .userInitiated)
 
     private var tapID: AudioObjectID = 0
     private var aggregateID: AudioObjectID = 0
@@ -34,7 +34,7 @@ public final class SystemAudioSource {
         // 2. 既定の出力デバイスを親にした private な集約デバイスを作り、その中にタップを載せる。
         let outputUID = try Self.defaultOutputDeviceUID()
         let description: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "sharingan-tap",
+            kAudioAggregateDeviceNameKey: "hearcat-tap",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
             kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
@@ -67,7 +67,7 @@ public final class SystemAudioSource {
                                                  bufferListNoCopy: inInputData,
                                                  deallocator: nil),
                   let copy = wrapped.deepCopy() else { return }
-            if sharinganDebug {
+            if hearcatDebug {
                 callbackCount += 1
                 if callbackCount <= 30 || callbackCount % 100 == 0 {
                     let abl = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))

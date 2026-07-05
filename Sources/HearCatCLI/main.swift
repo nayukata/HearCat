@@ -1,17 +1,17 @@
 import Foundation
-import SharinganKit
+import HearCatKit
 
 // アプリ(常駐エンジン)へ命令を送るだけの薄い CLI。音声には触らない。
 // agent skill(Claude Code)からの操作口として、出力はパース前提のシンプルな行にする。
 
 let usage = """
 使い方:
-  sharingan start [--no-record] [--no-transcribe]  セッションを開始する(アプリ未起動なら起動する)
-  sharingan stop                                   セッションを停止して保存する
-  sharingan status                                 現在の状態を表示する
-  sharingan latest                                 最新の文字起こしファイルのパスを表示する
-  sharingan set record on|off                      録音だけを切り替える
-  sharingan set transcribe on|off                  文字起こしだけを切り替える
+  hearcat start [--no-record] [--no-transcribe]  セッションを開始する(アプリ未起動なら起動する)
+  hearcat stop                                   セッションを停止して保存する
+  hearcat status                                 現在の状態を表示する
+  hearcat latest                                 最新の文字起こしファイルのパスを表示する
+  hearcat set record on|off                      録音だけを切り替える
+  hearcat set transcribe on|off                  文字起こしだけを切り替える
 """
 
 func fail(_ message: String) -> Never {
@@ -42,8 +42,8 @@ func launchAppAndWait() -> Bool {
     var launched = open(["-b", SessionStore.bundleIdentifier])
     if !launched {
         let candidates = [
-            "\(NSHomeDirectory())/Applications/sharingan.app",
-            "/Applications/sharingan.app",
+            "\(NSHomeDirectory())/Applications/HearCat.app",
+            "/Applications/HearCat.app",
         ]
         for path in candidates where FileManager.default.fileExists(atPath: path) {
             if open([path]) {
@@ -76,7 +76,7 @@ func printStatus(_ status: SessionEngine.Status) {
 
 func requireResponse(_ request: IPCRequest) -> IPCResponse {
     guard let response = send(request) else {
-        fail("アプリ(sharingan.app)が起動していません。`sharingan start` で起動できます。")
+        fail("アプリ(HearCat.app)が起動していません。`hearcat start` で起動できます。")
     }
     guard response.ok else {
         fail("エラー: \(response.error ?? "不明")")
@@ -97,7 +97,7 @@ case "start":
     let transcribe = !arguments.contains("--no-transcribe")
     if send(IPCRequest(command: .status)) == nil {
         guard launchAppAndWait() else {
-            fail("sharingan.app を起動できません。install.sh で導入されているか確認してください。")
+            fail("HearCat.app を起動できません。install.sh で導入されているか確認してください。")
         }
     }
     let response = requireResponse(IPCRequest(command: .start, record: record, transcribe: transcribe))

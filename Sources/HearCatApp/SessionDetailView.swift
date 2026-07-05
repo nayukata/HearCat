@@ -1,5 +1,5 @@
 import AppKit
-import SharinganKit
+import HearCatKit
 import SwiftUI
 
 /// 過去セッションの詳細。文字起こしの閲覧、録音の再生、要約の生成、削除ができる。

@@ -92,7 +92,7 @@ public actor ChannelTranscriber {
             return text
         }
         let analysis = QuestionDetector.risingPitchAnalysis(tail: tail, sampleRate: sampleRate)
-        if sharinganDebug {
+        if hearcatDebug {
             var sumSq: Float = 0
             for v in tail { sumSq += v * v }
             let rms = (sumSq / Float(max(tail.count, 1))).squareRoot()
@@ -112,7 +112,7 @@ public actor ChannelTranscriber {
             inputContinuation.yield(AnalyzerInput(buffer: converted))
             ring?.append(converted.monoFloatSamples())
             fedCount += 1
-            if sharinganDebug && fedCount % 100 == 0 {
+            if hearcatDebug && fedCount % 100 == 0 {
                 debugLog("\(speaker) fed=\(fedCount) level=\(rmsLevel(converted))")
             }
         } catch {
