@@ -32,17 +32,24 @@ final class AppSettings {
         }
     }
 
+    /// セッション開始時、カレンダーの今の予定名をセッション名に自動で付けるか。
+    var calendarNaming: Bool {
+        didSet { UserDefaults.standard.set(calendarNaming, forKey: Self.calendarNamingKey) }
+    }
+
     @ObservationIgnored var gainsChanged: (() -> Void)?
     @ObservationIgnored var hotkeysChanged: (() -> Void)?
 
     private static let micGainKey = "micGain"
     private static let systemGainKey = "systemGain"
     private static let hotkeysKey = "hotkeys"
+    private static let calendarNamingKey = "calendarNaming"
 
     private init() {
         let defaults = UserDefaults.standard
         micGain = defaults.object(forKey: Self.micGainKey) as? Double ?? 1.0
         systemGain = defaults.object(forKey: Self.systemGainKey) as? Double ?? 1.0
+        calendarNaming = defaults.object(forKey: Self.calendarNamingKey) as? Bool ?? true
         if let data = defaults.data(forKey: Self.hotkeysKey),
             let decoded = try? JSONDecoder().decode([HotkeyAction: Hotkey].self, from: data)
         {

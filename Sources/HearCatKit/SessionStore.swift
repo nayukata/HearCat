@@ -104,9 +104,13 @@ public enum SessionStore {
     }
 
     /// 新しいセッションディレクトリを作って返す。
-    public static func createSessionDirectory(startDate: Date) throws -> URL {
+    /// name(カレンダーの予定名など)があれば「日時 名前」の形で最初から名前付きにする。
+    /// 開始後のリネームは書き込み中のパスとずれるため、名前は作成時に決める。
+    public static func createSessionDirectory(startDate: Date, name: String = "") throws -> URL {
+        let cleaned = sanitize(name)
+        let datePart = makeFormatter().string(from: startDate)
         let dir = sessionsDirectory.appendingPathComponent(
-            makeFormatter().string(from: startDate), isDirectory: true)
+            cleaned.isEmpty ? datePart : "\(datePart) \(cleaned)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

@@ -38,6 +38,16 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("カレンダーの予定名を自動で付ける", isOn: $settings.calendarNaming)
+            } header: {
+                Text("セッション名")
+            } footer: {
+                Text("セッション開始時、今の時刻に重なる予定 (5分後までに始まる予定も含む) のタイトルをセッション名にします。macOS のカレンダーに追加したアカウント (Google など) の予定も対象です。初回はカレンダーへのアクセス許可を求めます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 LabeledContent("skill (使い方の説明書)") {
                     statusLabel(installed: skillInstalled)
                 }

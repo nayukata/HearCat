@@ -98,7 +98,7 @@ public final class SessionEngine {
         self.locale = locale
     }
 
-    public func start(record: Bool, transcribe: Bool) async throws {
+    public func start(record: Bool, transcribe: Bool, name: String = "") async throws {
         guard !status.active else { throw EngineError.alreadyActive }
 
         // 許可が下りなくても止めない(マイクだけ・システム音声だけでも価値があるため)。
@@ -113,7 +113,7 @@ public final class SessionEngine {
         }
 
         let startedAt = Date()
-        let sessionDir = try SessionStore.createSessionDirectory(startDate: startedAt)
+        let sessionDir = try SessionStore.createSessionDirectory(startDate: startedAt, name: name)
         do {
             try await startResources(sessionDir: sessionDir, startedAt: startedAt, record: record, transcribe: transcribe)
         } catch {

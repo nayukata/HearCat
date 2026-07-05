@@ -31,5 +31,7 @@
     <string>HearCat は音声をテキストに変換するために音声認識を使用します。</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>HearCat は通話相手など、Mac から出る音声を文字起こし・録音するためにシステム音声を録音します。</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>HearCat はセッション開始時に今の予定名をセッション名として自動で付けるためにカレンダーを読み取ります。</string>
 </dict>
 </plist>

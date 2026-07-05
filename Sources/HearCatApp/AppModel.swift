@@ -103,7 +103,9 @@ final class AppModel {
         do {
             liveFinals = []
             liveVolatile = [:]
-            try await engine.start(record: record, transcribe: transcribe)
+            // カレンダーの今の予定名をセッション名にする(設定でオフにできる)。
+            let name = settings.calendarNaming ? await CalendarNamer.currentEventTitle() ?? "" : ""
+            try await engine.start(record: record, transcribe: transcribe, name: name)
             refreshSessions()
         } catch {
             lastError = error.localizedDescription
