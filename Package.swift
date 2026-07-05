@@ -34,5 +34,13 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        .testTarget(
+            name: "HearCatKitTests",
+            dependencies: ["HearCatKit"],
+            path: "Tests/HearCatKitTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
     ]
 )

@@ -9,6 +9,7 @@ struct SessionDetailView: View {
     let onDelete: () -> Void
 
     @State private var transcript: String?
+    @State private var transcriptLines: [TranscriptLine] = []
     @State private var summary: String?
     @State private var player: SessionPlayer?
     @State private var isSummarizing = false
@@ -95,10 +96,18 @@ struct SessionDetailView: View {
                 }
                 if let transcript {
                     GroupBox("文字起こし") {
-                        Text(transcript.isEmpty ? "(文字起こしなし)" : transcript)
-                            .textSelection(.enabled)
-                            .foregroundStyle(transcript.isEmpty ? .secondary : .primary)
+                        if transcript.isEmpty {
+                            Text("(文字起こしなし)")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            VStack(alignment: .leading, spacing: 3) {
+                                ForEach(transcriptLines) { line in
+                                    transcriptRow(line)
+                                }
+                            }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }
@@ -106,8 +115,37 @@ struct SessionDetailView: View {
         }
     }
 
+    /// 1行ぶんの文字起こし。時刻付きの行は、時刻クリックで録音のその位置から再生する。
+    @ViewBuilder
+    private func transcriptRow(_ line: TranscriptLine) -> some View {
+        if let stamp = line.stamp, let offset = line.offset {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let player, player.hasAudio {
+                    Button(stamp) {
+                        player.playFrom(offset)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tint)
+                    .help("この位置から再生")
+                } else {
+                    Text(stamp)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Text(line.body)
+                    .textSelection(.enabled)
+            }
+        } else {
+            Text(line.body)
+                .textSelection(.enabled)
+        }
+    }
+
     private func load() {
         transcript = session.transcriptURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        transcriptLines = TranscriptParser.lines(
+            from: transcript ?? "", sessionStart: session.startDate)
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         player = SessionPlayer(audioURL: session.audioURL)
     }

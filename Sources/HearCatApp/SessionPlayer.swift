@@ -2,7 +2,7 @@
 import Foundation
 import Observation
 
-/// 録音(audio.m4a)の再生。L=自分、R=相手のステレオ1ファイル。
+/// 録音(自分と相手をミックスした1ファイル)の再生。
 @MainActor
 @Observable
 final class SessionPlayer {
@@ -40,6 +40,12 @@ final class SessionPlayer {
         let clamped = min(max(0, time), duration)
         player.currentTime = clamped
         currentTime = clamped
+    }
+
+    /// 指定位置へ飛んで再生を始める。文字起こしの行クリックからのジャンプ用。
+    func playFrom(_ time: TimeInterval) {
+        seek(to: time)
+        if !isPlaying { togglePlayback() }
     }
 
     /// View が消えるときに呼ぶ。deinit は MainActor の外なのでここで止める。
