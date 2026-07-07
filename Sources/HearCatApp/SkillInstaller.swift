@@ -85,8 +85,6 @@ enum SkillInstaller {
             at: cliDestination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try replace(at: cliDestination, with: cliSource)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cliDestination.path)
-
-        removeLegacyArtifacts()
     }
 
     /// 導入済みなら黙って配置し直す(アプリ起動時に呼ぶ)。
@@ -94,19 +92,6 @@ enum SkillInstaller {
     static func refreshIfInstalled() {
         guard skillInstalled else { return }
         try? install()
-    }
-
-    /// 旧名(sharingan)時代に配置した skill と CLI を消す。名前が変わった残骸は動かないだけなので掃除する。
-    private static func removeLegacyArtifacts() {
-        let fm = FileManager.default
-        var legacy = [home.appendingPathComponent(".agents/skills/sharingan")]
-        for name in agentDirectoryNames {
-            legacy.append(home.appendingPathComponent(".\(name)/skills/sharingan"))
-        }
-        legacy.append(home.appendingPathComponent(".local/bin/sharingan"))
-        for url in legacy where fm.fileExists(atPath: url.path) {
-            try? fm.removeItem(at: url)
-        }
     }
 
     private static func replace(at destination: URL, with source: URL) throws {

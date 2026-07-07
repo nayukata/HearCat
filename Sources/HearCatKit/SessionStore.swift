@@ -57,24 +57,6 @@ public enum SessionStore {
             .appendingPathComponent("HearCat", isDirectory: true)
     }
 
-    /// 旧名(sharingan)時代の保存先からの引っ越し。アプリ起動時に1回呼ぶ。
-    /// 新しい保存先がまだ無い場合にだけ、ディレクトリごと移動する。
-    public static func migrateLegacyStorage() {
-        let fm = FileManager.default
-        let legacy = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("sharingan", isDirectory: true)
-        guard fm.fileExists(atPath: legacy.path), !fm.fileExists(atPath: rootDirectory.path) else {
-            return
-        }
-        do {
-            try fm.moveItem(at: legacy, to: rootDirectory)
-            // 移動してきた旧ソケットファイルは無効なので消す(サーバー起動時に作り直される)。
-            try? fm.removeItem(at: rootDirectory.appendingPathComponent("control.sock"))
-        } catch {
-            FileHandle.standardError.write(Data("旧保存先の引っ越しに失敗: \(error)\n".utf8))
-        }
-    }
-
     public static var sessionsDirectory: URL {
         rootDirectory.appendingPathComponent("sessions", isDirectory: true)
     }
