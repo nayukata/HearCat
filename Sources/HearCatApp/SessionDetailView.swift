@@ -12,9 +12,13 @@ struct SessionDetailView: View {
     @State private var transcriptLines: [TranscriptLine] = []
     @State private var summary: String?
     @State private var player: SessionPlayer?
-    @State private var isSummarizing = false
     @State private var summaryError: String?
     @State private var confirmingDelete = false
+
+    /// 生成中の表示は AppModel の状態に従う(停止直後の自動生成でも進捗が見えるように)。
+    private var isSummarizing: Bool {
+        model.summarizingSessionID == session.id
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -175,15 +179,9 @@ struct SessionDetailView: View {
 
     private func summarize() async {
         guard let transcript, !transcript.isEmpty else { return }
-        isSummarizing = true
         summaryError = nil
-        defer { isSummarizing = false }
         do {
-            let result = try await TranscriptSummarizer.summarize(transcript: transcript)
-            let url = session.directory.appendingPathComponent("summary.md")
-            try result.write(to: url, atomically: true, encoding: .utf8)
-            summary = result
-            model.refreshSessions()
+            summary = try await model.generateSummary(for: session, transcript: transcript)
         } catch {
             summaryError = "要約に失敗しました: \(error.localizedDescription)"
         }

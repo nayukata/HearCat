@@ -219,6 +219,44 @@ final class AppModel {
         micLevel = 0
         systemLevel = 0
         refreshSessions()
+        if let lastEndedSessionID {
+            autoSummarize(sessionID: lastEndedSessionID)
+        }
+    }
+
+    // MARK: - 要約
+
+    /// いま要約を生成中のセッション ID(自動・手動共通)。詳細画面の
+    /// ボタン表示と二重実行の防止に使う。
+    private(set) var summarizingSessionID: String?
+
+    /// 要約を生成して summary.md に保存し、履歴を読み直す。
+    /// 停止直後の自動生成と詳細画面のボタンの共通経路。
+    func generateSummary(for session: SessionInfo, transcript: String) async throws -> String {
+        summarizingSessionID = session.id
+        defer { summarizingSessionID = nil }
+        let result = try await TranscriptSummarizer.summarize(transcript: transcript)
+        let url = session.directory.appendingPathComponent("summary.md")
+        try result.write(to: url, atomically: true, encoding: .utf8)
+        refreshSessions()
+        return result
+    }
+
+    /// 停止直後の自動要約。失敗しても何も出さない(履歴の手動ボタンで
+    /// いつでも作り直せるため)。要約済みのセッションには手を出さない。
+    private func autoSummarize(sessionID: String) {
+        Task {
+            // 最後の発話の確定は、停止よりファイル書き込みがわずかに遅れることがある。
+            try? await Task.sleep(for: .seconds(2))
+            guard summarizingSessionID == nil,
+                let session = SessionStore.list().first(where: { $0.id == sessionID }),
+                session.summaryURL == nil,
+                let url = session.transcriptURL,
+                let transcript = try? String(contentsOf: url, encoding: .utf8),
+                !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return }
+            _ = try? await generateSummary(for: session, transcript: transcript)
+        }
     }
 
     func setRecording(_ on: Bool) {
