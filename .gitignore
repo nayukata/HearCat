@@ -6,3 +6,10 @@ Package.resolved
 transcripts/
 
 .DS_Store
+
+# LP(web/) のビルド生成物と依存
+web/node_modules/
+web/dist/
+
+# Firebase CLI のローカルログ
+firebase-debug.log

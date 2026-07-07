@@ -1,0 +1,21 @@
+---
+import Logo from "./Logo.astro";
+---
+<nav class="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-line">
+  <div class="wrap flex items-center justify-between h-[60px]">
+    <div class="flex items-center gap-[9px] font-head font-black text-[17px]">
+      <Logo />
+      HearCat
+    </div>
+    <ul class="hidden md:flex gap-[26px] list-none text-[13px] text-ink-dim">
+      <li><a href="#features" class="hover:text-ink transition-colors">できること</a></li>
+      <li><a href="#history" class="hover:text-ink transition-colors">整理と検索</a></li>
+      <li><a href="#ai" class="hover:text-ink transition-colors">AI と使う</a></li>
+      <li><a href="#privacy" class="hover:text-ink transition-colors">プライバシー</a></li>
+    </ul>
+    <a
+      href="#get"
+      class="text-[13px] font-bold text-white bg-ink px-[18px] py-[9px] rounded-full no-underline hover:bg-blue transition-colors"
+    >インストール</a>
+  </div>
+</nav>

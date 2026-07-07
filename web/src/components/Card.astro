@@ -1,0 +1,37 @@
+---
+interface Props {
+  title: string;
+  variant?: "light" | "dark";
+}
+const { title, variant = "light" } = Astro.props;
+
+const wrapClasses = variant === "light"
+  ? "bg-bg border border-line hover:-translate-y-1 hover:shadow-[0_16px_40px_rgba(17,19,24,.09)] hover:border-[#D4DBE8]"
+  : "bg-white/[.04] border";
+
+const iconWrapClasses = variant === "light"
+  ? "bg-[#EDF3FF]"
+  : "";
+---
+<div
+  class:list={[
+    "card reveal rounded-2xl p-7 min-w-0 transition-all duration-[250ms]",
+    wrapClasses,
+  ]}
+  style={variant === "dark" ? "border-color: rgba(255,255,255,.14);" : ""}
+>
+  <div
+    class:list={["w-11 h-11 rounded-[12px] flex items-center justify-center mb-[18px]", iconWrapClasses]}
+    style={variant === "dark" ? "background: rgba(61,123,255,.16);" : ""}
+  >
+    <slot name="icon" />
+  </div>
+  <h3
+    class="font-head font-bold text-[16.5px] mb-2"
+    style={variant === "dark" ? "font-size: 16px;" : ""}
+  >{title}</h3>
+  <p
+    class="text-[13.5px]"
+    style={variant === "dark" ? "color: rgba(255,255,255,.62);" : "color: var(--color-ink-dim);"}
+  ><slot /></p>
+</div>

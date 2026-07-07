@@ -1,0 +1,157 @@
+---
+import Logo from "./Logo.astro";
+---
+<div
+  class="live-win min-w-0 rounded-[16px] overflow-hidden backdrop-blur-sm"
+  style="background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.14); box-shadow: 0 32px 80px rgba(0,0,0,.5); opacity: 0; animation: up .9s .35s cubic-bezier(.2,.7,.2,1) forwards;"
+  role="figure"
+  aria-label="ライブ文字起こしの画面イメージ"
+>
+  <div
+    class="flex items-center gap-3 px-4 py-3"
+    style="border-bottom: 1px solid rgba(255,255,255,.1);"
+  >
+    <div class="flex gap-[7px]">
+      <i class="w-[11px] h-[11px] rounded-full" style="background: rgba(255,255,255,.18);"></i>
+      <i class="w-[11px] h-[11px] rounded-full" style="background: rgba(255,255,255,.18);"></i>
+      <i class="w-[11px] h-[11px] rounded-full" style="background: rgba(255,255,255,.18);"></i>
+    </div>
+    <div class="flex items-center gap-2 text-[12px]" style="color: rgba(255,255,255,.62);">
+      <Logo size={14} stroke="rgba(255,255,255,.6)" fillDots="rgba(255,255,255,.6)" />
+      HearCat — ライブ
+    </div>
+    <div class="eq flex items-center gap-[3px] h-4 ml-[14px]" aria-hidden="true">
+      <b class="w-[3px] h-full rounded-[2px] bg-blue-soft origin-bottom" style="animation: eq 1s ease-in-out infinite alternate; animation-delay: 0s;"></b>
+      <b class="w-[3px] h-full rounded-[2px] bg-blue-soft origin-bottom" style="animation: eq 1s ease-in-out infinite alternate; animation-delay: .18s;"></b>
+      <b class="w-[3px] h-full rounded-[2px] bg-blue-soft origin-bottom" style="animation: eq 1s ease-in-out infinite alternate; animation-delay: .36s;"></b>
+      <b class="w-[3px] h-full rounded-[2px] bg-blue-soft origin-bottom" style="animation: eq 1s ease-in-out infinite alternate; animation-delay: .1s;"></b>
+      <b class="w-[3px] h-full rounded-[2px] bg-blue-soft origin-bottom" style="animation: eq 1s ease-in-out infinite alternate; animation-delay: .28s;"></b>
+    </div>
+    <div class="ml-auto flex items-center gap-[7px] text-[11px] font-bold tracking-[.1em]" style="color: #FF7A7A;">
+      <i class="w-2 h-2 rounded-full" style="background: #FF5C5C; animation: blink 1.3s infinite;"></i>REC
+    </div>
+  </div>
+  <div id="live" class="live-body px-[22px] pt-5 pb-6 h-[308px] flex flex-col justify-end gap-[14px] overflow-hidden"></div>
+</div>
+
+<style>
+  .live-body :global(.u) {
+    display: grid;
+    grid-template-columns: 66px 44px minmax(0, 1fr);
+    gap: 10px;
+    font-size: 13.5px;
+    line-height: 1.8;
+    align-items: baseline;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity .45s, transform .45s;
+  }
+  .live-body :global(.u.show) { opacity: 1; transform: none; }
+  .live-body :global(.u .t) {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: rgba(255, 255, 255, .34);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .live-body :global(.u.partial .t) { text-align: center; justify-self: center; }
+  .live-body :global(.u .s) {
+    justify-self: start;
+    text-align: center;
+    font-weight: 700;
+    font-size: 12px;
+    padding: 1px 9px;
+    border-radius: 99px;
+    white-space: nowrap;
+  }
+  .live-body :global(.u.me .s) { color: #BFD6FF; background: rgba(61, 123, 255, .22); }
+  .live-body :global(.u.you .s) { color: #FFE1B8; background: rgba(255, 176, 74, .16); }
+  .live-body :global(.u .b) { color: rgba(255, 255, 255, .88); overflow-wrap: anywhere; }
+  .live-body :global(.u.partial .b) { color: rgba(255, 255, 255, .5); }
+  .live-body :global(.u.partial .b::after) {
+    content: "";
+    display: inline-block;
+    width: 2px;
+    height: 14px;
+    background: var(--color-blue-soft);
+    margin-left: 3px;
+    vertical-align: -2px;
+    animation: blink 1s infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .live-win { animation: none !important; opacity: 1 !important; }
+    .eq b, .live-body :global(.u.partial .b::after) { animation: none !important; }
+  }
+</style>
+
+<script>
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const live = document.getElementById("live");
+  if (!live) throw new Error("live element missing");
+
+  interface Line { who: "me" | "you"; t: string; text: string; }
+  const script: Line[] = [
+    { who: "you", t: "10:02:14", text: "前回の障害の再発防止策はどうなっていますか？" },
+    { who: "me",  t: "10:02:31", text: "リトライ処理を見直して、監視も追加しました。" },
+    { who: "you", t: "10:02:58", text: "リリースは今週中にいけそうですか？" },
+    { who: "me",  t: "10:03:07", text: "はい、金曜のデプロイ枠を確保しています。" },
+    { who: "you", t: "10:03:26", text: "では、その前提で進めましょう。" },
+  ];
+  const MAX = 4;
+
+  function makeLine(item: Line, partial: boolean): HTMLDivElement {
+    const d = document.createElement("div");
+    d.className = "u " + item.who + (partial ? " partial" : "");
+    const t = document.createElement("span"); t.className = "t"; t.textContent = partial ? "認識中" : "[" + item.t + "]";
+    const s = document.createElement("span"); s.className = "s"; s.textContent = item.who === "me" ? "自分" : "相手";
+    const b = document.createElement("span"); b.className = "b";
+    d.appendChild(t); d.appendChild(s); d.appendChild(b);
+    return d;
+  }
+  function trim() {
+    while (live!.children.length > MAX) live!.removeChild(live!.firstChild!);
+  }
+
+  if (reduced) {
+    script.forEach((item) => {
+      const line = makeLine(item, false);
+      (line.querySelector(".b") as HTMLElement).textContent = item.text;
+      line.classList.add("show");
+      live.appendChild(line);
+    });
+    trim();
+  } else {
+    let idx = 0;
+    const playNext = (): void => {
+      const item = script[idx];
+      const line = makeLine(item, true);
+      live.appendChild(line);
+      requestAnimationFrame(() => line.classList.add("show"));
+      trim();
+      const b = line.querySelector(".b") as HTMLElement;
+      let i = 0;
+      const typer = setInterval(() => {
+        i++;
+        b.textContent = item.text.slice(0, i);
+        if (i >= item.text.length) {
+          clearInterval(typer);
+          setTimeout(() => {
+            line.classList.remove("partial");
+            (line.querySelector(".t") as HTMLElement).textContent = "[" + item.t + "]";
+            idx++;
+            if (idx >= script.length) {
+              idx = 0;
+              setTimeout(() => {
+                Array.prototype.forEach.call(live.children, (c: Element) => c.classList.remove("show"));
+                setTimeout(() => { live.innerHTML = ""; playNext(); }, 500);
+              }, 2600);
+            } else {
+              setTimeout(playNext, 700);
+            }
+          }, 480);
+        }
+      }, 62);
+    };
+    setTimeout(playNext, 900);
+  }
+</script>

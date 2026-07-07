@@ -1,0 +1,71 @@
+---
+import Logo from "./Logo.astro";
+import LiveTranscript from "./LiveTranscript.astro";
+---
+<header
+  class="hero relative overflow-hidden text-white py-[88px] md:py-[96px]"
+  style="background:
+    radial-gradient(900px 480px at 74% 8%, rgba(61,123,255,.22), transparent 62%),
+    radial-gradient(640px 420px at 12% 96%, rgba(61,123,255,.12), transparent 60%),
+    linear-gradient(175deg, var(--color-navy) 0%, var(--color-navy-2) 100%);"
+>
+  <div class="wrap hero-grid grid gap-[56px] items-center">
+    <div>
+      <div class="listen inline-flex items-center gap-3 mb-[26px]" aria-hidden="true">
+        <div class="pulse relative w-11 h-11 flex-none">
+          <i class="ring absolute inset-0 rounded-full" style="border: 1.5px solid rgba(143,180,255,.5); animation: ring 2.6s ease-out infinite;"></i>
+          <i class="ring absolute inset-0 rounded-full" style="border: 1.5px solid rgba(143,180,255,.5); animation: ring 2.6s ease-out infinite; animation-delay: 1.3s;"></i>
+          <div class="absolute inset-2 rounded-full flex items-center justify-center" style="background: rgba(61,123,255,.16);">
+            <Logo size={20} stroke="#8FB4FF" fillDots="#8FB4FF" />
+          </div>
+        </div>
+        <span class="text-[12.5px] tracking-[.12em] text-blue-soft font-bold">LISTENING</span>
+      </div>
+      <h1 class="font-head font-black leading-[1.5] tracking-[.01em]" style="font-size: clamp(32px, 4.6vw, 52px);">
+        <span class="l block" style="opacity: 0; transform: translateY(22px); animation: up .8s cubic-bezier(.2,.7,.2,1) forwards;">会議の声が、</span>
+        <span class="l block" style="opacity: 0; transform: translateY(22px); animation: up .8s cubic-bezier(.2,.7,.2,1) forwards; animation-delay: .12s;">
+          いま<em class="not-italic text-blue-soft">文字になる</em>。
+        </span>
+      </h1>
+      <p
+        class="mt-6 max-w-[42ch]"
+        style="color: rgba(255,255,255,.62); opacity: 0; animation: up .8s .3s cubic-bezier(.2,.7,.2,1) forwards;"
+      >
+        HearCat は、自分の声と通話相手の声をリアルタイムで日本語の文字にして残す、メニューバー常駐アプリ。録音も文字起こしも要約も、すべてお使いの Mac の中だけで完結します。
+      </p>
+      <div class="mt-[34px] flex gap-[14px] flex-wrap" style="opacity: 0; animation: up .8s .45s cubic-bezier(.2,.7,.2,1) forwards;">
+        <a
+          href="#get"
+          class="font-bold text-[14px] px-7 py-[14px] rounded-[12px] no-underline text-white transition-all"
+          style="background: var(--color-blue); box-shadow: 0 8px 28px rgba(61,123,255,.42);"
+          onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 12px 34px rgba(61,123,255,.55)';"
+          onmouseout="this.style.transform=''; this.style.boxShadow='0 8px 28px rgba(61,123,255,.42)';"
+        >インストール</a>
+        <a
+          href="#ai"
+          class="font-bold text-[14px] px-7 py-[14px] rounded-[12px] no-underline text-white transition-colors"
+          style="border: 1px solid rgba(255,255,255,.28);"
+          onmouseover="this.style.borderColor='rgba(255,255,255,.6)';"
+          onmouseout="this.style.borderColor='rgba(255,255,255,.28)';"
+        >AI と使う</a>
+      </div>
+      <p class="mt-5 text-[12px]" style="color: rgba(255,255,255,.42); opacity: 0; animation: up .8s .55s forwards;">
+        macOS 26 以降 / Apple Silicon。会議の内容がインターネットへ送られることはありません。
+      </p>
+    </div>
+
+    <LiveTranscript />
+  </div>
+</header>
+
+<style>
+  .hero-grid { grid-template-columns: minmax(0, 10fr) minmax(0, 11fr); }
+  @media (max-width: 880px) {
+    .hero { padding: 64px 0 72px !important; }
+    .hero-grid { grid-template-columns: 1fr !important; gap: 44px !important; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse .ring { animation: none; }
+    h1 .l, .hero p, .hero div[style*="animation"] { animation: none !important; opacity: 1 !important; transform: none !important; }
+  }
+</style>

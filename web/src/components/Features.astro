@@ -1,0 +1,35 @@
+---
+import Card from "./Card.astro";
+---
+<section id="features" class="py-24 bg-bg-soft">
+  <div class="wrap">
+    <div class="reveal">
+      <p class="kicker">できること</p>
+      <h2 class="sec-h2">会議のあいだ、静かに、確かに。</h2>
+      <p class="sec-lead">操作はメニューバーから「セッションを開始」するだけ。あとは HearCat が両方の声を聞き分けて、読める記録に変えていきます。</p>
+    </div>
+    <div class="mt-12 grid gap-[18px]" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+      <Card title="両方の声を聞き分ける">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        マイクの声は「自分」、通話相手など Mac から出る音は「相手」。発言が確定するたび、時刻と話者付きで記録に追記されます。
+      </Card>
+      <Card title="会議をまるごと録音">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="#3D7BFF" stroke="none"/></svg>
+        文字起こしと同時に、会議の音声も保存します。録音だけを止めて文字起こしは続ける、といった使い分けもできます。
+      </Card>
+      <Card title="質問を聞き逃さない">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        言葉の形と声の上がり方から疑問文を推定し、「？」を付けます。「大丈夫？」のような短い質問にも反応します。
+        <small class="block text-[12px] mt-[6px]" style="color:#9AA0AC;">実験的な機能です。</small>
+      </Card>
+      <Card title="途中経過もその場で見える">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        話している最中の暫定テキストは、ライブ画面でリアルタイムに確認できます。記録ファイルには確定した発言だけが残ります。
+      </Card>
+      <Card title="あとから要約できる">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" y1="10" x2="7" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="7" y2="18"/></svg>
+        Apple Intelligence を使って、その場で要点をまとめます。過去のセッションからも、ボタンひとつで生成できます。
+      </Card>
+    </div>
+  </div>
+</section>
