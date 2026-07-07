@@ -72,12 +72,8 @@ enum TranscriptSummarizer {
         """
 
     static func summarize(transcript: String) async throws -> String {
-        let model = SystemLanguageModel.default
-        switch model.availability {
-        case .available:
-            break
-        case .unavailable(let reason):
-            throw SummarizerError.unavailable(describe(reason))
+        if let reason = OnDeviceModel.unavailableReason() {
+            throw SummarizerError.unavailable(reason)
         }
 
         do {
@@ -297,19 +293,6 @@ enum TranscriptSummarizer {
         }
         if !current.isEmpty { chunks.append(current) }
         return chunks.isEmpty ? [""] : chunks
-    }
-
-    private static func describe(_ reason: SystemLanguageModel.Availability.UnavailableReason) -> String {
-        switch reason {
-        case .deviceNotEligible:
-            return "この Mac はオンデバイスモデル(Apple Intelligence)に対応していません"
-        case .appleIntelligenceNotEnabled:
-            return "Apple Intelligence が無効です。システム設定で有効にしてください"
-        case .modelNotReady:
-            return "モデルの準備中です。しばらくしてからもう一度お試しください"
-        @unknown default:
-            return "オンデバイスモデルを利用できません"
-        }
     }
 
     /// GenerationError を英語のまま UI に漏らさず、日本語の SummarizerError に変換する。

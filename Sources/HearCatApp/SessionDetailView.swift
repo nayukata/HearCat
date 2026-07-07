@@ -14,10 +14,20 @@ struct SessionDetailView: View {
     @State private var player: SessionPlayer?
     @State private var summaryError: String?
     @State private var confirmingDelete = false
+    /// AI 清書(cleaned.md)。原文と同じ形式なので行の表示・再生ジャンプを共用する。
+    @State private var cleaned: String?
+    @State private var cleanedLines: [TranscriptLine] = []
+    /// 文字起こし欄に清書を出すか。清書があるセッションでは既定でオン。
+    @State private var showCleaned = false
+    @State private var cleanError: String?
 
     /// 生成中の表示は AppModel の状態に従う(停止直後の自動生成でも進捗が見えるように)。
     private var isSummarizing: Bool {
         model.summarizingSessionID == session.id
+    }
+
+    private var isCleaning: Bool {
+        model.cleaningSessionID == session.id
     }
 
     var body: some View {
@@ -61,7 +71,22 @@ struct SessionDetailView: View {
                     Label(summary == nil ? "要約を生成" : "要約を再生成", systemImage: "list.bullet.rectangle")
                 }
             }
-            .disabled(isSummarizing || (transcript?.isEmpty ?? true))
+            .disabled(isSummarizing || isCleaning || (transcript?.isEmpty ?? true))
+            Button {
+                Task { await cleanUp() }
+            } label: {
+                if isCleaning {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("\(Int(model.cleaningProgress * 100))%")
+                            .font(.caption.monospacedDigit())
+                    }
+                } else {
+                    Label(cleaned == nil ? "AI 清書" : "清書し直す", systemImage: "wand.and.stars")
+                }
+            }
+            .help("音声認識の誤変換を、会話の文脈からオンデバイス AI が直します")
+            .disabled(isSummarizing || isCleaning || (transcript?.isEmpty ?? true))
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([session.directory])
             } label: {
@@ -94,6 +119,10 @@ struct SessionDetailView: View {
                     Label(summaryError, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
+                if let cleanError {
+                    Label(cleanError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
                 if let summary {
                     GroupBox {
                         Text(summary)
@@ -115,7 +144,7 @@ struct SessionDetailView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
                             VStack(alignment: .leading, spacing: 3) {
-                                ForEach(transcriptLines) { line in
+                                ForEach(showCleaned ? cleanedLines : transcriptLines) { line in
                                     transcriptRow(line)
                                 }
                             }
@@ -124,9 +153,21 @@ struct SessionDetailView: View {
                     } label: {
                         HStack {
                             Text("文字起こし")
+                            if cleaned != nil {
+                                Picker("表示", selection: $showCleaned) {
+                                    Text("清書").tag(true)
+                                    Text("原文").tag(false)
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .fixedSize()
+                            }
                             Spacer()
                             if !transcript.isEmpty {
-                                CopyButton { TranscriptParser.bodyText(from: transcript) }
+                                CopyButton {
+                                    TranscriptParser.bodyText(
+                                        from: showCleaned ? (cleaned ?? transcript) : transcript)
+                                }
                             }
                         }
                     }
@@ -172,8 +213,27 @@ struct SessionDetailView: View {
         transcriptLines = TranscriptParser.lines(
             from: transcript ?? "", sessionStart: session.startDate)
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        cleaned = session.cleanedURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        cleanedLines = TranscriptParser.lines(from: cleaned ?? "", sessionStart: session.startDate)
+        if forceNewPlayer {
+            // セッションを切り替えた時だけ既定表示を決め直す(再読込でトグルを勝手に戻さない)。
+            showCleaned = cleaned != nil
+        }
         if forceNewPlayer || player?.hasAudio != true {
             player = SessionPlayer(audioURL: session.audioURL)
+        }
+    }
+
+    private func cleanUp() async {
+        guard let transcript, !transcript.isEmpty else { return }
+        cleanError = nil
+        do {
+            cleaned = try await model.generateCleanTranscript(for: session, transcript: transcript)
+            cleanedLines = TranscriptParser.lines(
+                from: cleaned ?? "", sessionStart: session.startDate)
+            showCleaned = true
+        } catch {
+            cleanError = "清書に失敗しました: \(error.localizedDescription)"
         }
     }
 
