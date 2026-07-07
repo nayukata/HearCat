@@ -1,5 +1,14 @@
 import AppKit
+import Foundation
+import HearCatKit
 import SwiftUI
+
+/// マイクの入力デバイス選択肢。nil(システム標準)を含めて Picker で扱えるようにする。
+private struct MicDeviceOption: Identifiable, Hashable {
+    let uid: String?
+    let name: String
+    var id: String { uid ?? "" }
+}
 
 /// 設定ウィンドウ。ホットキー・録音音量・agent skill の導入をここに集約する。
 struct SettingsView: View {
@@ -9,6 +18,7 @@ struct SettingsView: View {
     @State private var skillInstalled = SkillInstaller.skillInstalled
     @State private var cliInstalled = SkillInstaller.cliInstalled
     @State private var skillMessage: String?
+    @State private var inputDevices: [MicDeviceOption] = [MicDeviceOption(uid: nil, name: "システム標準")]
 
     var body: some View {
         Form {
@@ -33,6 +43,37 @@ struct SettingsView: View {
                 Text("録音の音量")
             } footer: {
                 Text("録音ファイルに書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("入力デバイス", selection: $settings.micDeviceUID) {
+                    ForEach(inputDevices) { option in
+                        Text(option.name).tag(option.uid)
+                    }
+                }
+                Text("デバイスの変更は次のセッションから有効です。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("エコー除去", isOn: $settings.echoRemoval)
+                Text("スピーカーから出た相手の声が、自分の発言として文字起こしされるのを防ぎます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("入力感度を自動調整", isOn: $settings.micSensitivityAuto)
+                if !settings.micSensitivityAuto {
+                    micSensitivitySlider
+                    // メーターの表示/非表示を伝えるだけで、実際にプローブを動かすかどうかの
+                    // 判定(セッション中でないか等)は AppModel.updateMicProbe に集約している。
+                    // デバイス変更時の作り直しも settings.micDeviceChanged 経由で同じ場所に集約される。
+                    micLevelMeter
+                        .onAppear { model.setMicMeterVisible(true) }
+                        .onDisappear { model.setMicMeterVisible(false) }
+                }
+            } header: {
+                Text("マイク")
+            } footer: {
+                Text("入力感度は、マイクの音量がこの値を下回る間は文字起こしに流しません。低すぎると回り込みを拾い、高すぎると小さな声を取りこぼします。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -74,6 +115,20 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 520, height: 680)
+        .onAppear { refreshInputDevices() }
+    }
+
+    /// 入力デバイスの一覧を取得し直す。動的な抜き差し監視はスコープ外なので、
+    /// 設定画面を開いた時点のスナップショットでよい。
+    private func refreshInputDevices() {
+        let available = MicSource.availableInputDevices()
+        var options = [MicDeviceOption(uid: nil, name: "システム標準")]
+        options += available.map { MicDeviceOption(uid: $0.uid, name: $0.name) }
+        // 保存済みのデバイスが今は繋がっていなくても選択肢に残し、Picker の選択状態を壊さない。
+        if let savedUID = settings.micDeviceUID, !available.contains(where: { $0.uid == savedUID }) {
+            options.append(MicDeviceOption(uid: savedUID, name: "(未接続) \(savedUID)"))
+        }
+        inputDevices = options
     }
 
     private func gainSlider(label: String, value: Binding<Double>) -> some View {
@@ -89,6 +144,65 @@ struct SettingsView: View {
                     .controlSize(.small)
                     .disabled(value.wrappedValue == 1.0)
             }
+        }
+    }
+
+    /// 入力感度の下限/上限(RMS)。回り込み(≈0.001)と発話(≈0.01)の間を、
+    /// スライダーの分解能に余裕を持たせて挟む範囲。
+    private static let micSensitivityMin: Double = 0.0002
+    private static let micSensitivityMax: Double = 0.02
+
+    /// RMS(0.0002〜0.02)を対数マッピングで UI 値(0〜1)へ変換する。
+    /// RMS は低域(0.001前後)の違いが重要なため、線形マッピングだと低い側が
+    /// スライダーの端に張り付いてしまう。
+    private func rmsToUI(_ rms: Double) -> Double {
+        let clamped = max(Self.micSensitivityMin, min(Self.micSensitivityMax, rms))
+        return log(clamped / Self.micSensitivityMin) / log(Self.micSensitivityMax / Self.micSensitivityMin)
+    }
+
+    private func uiToRMS(_ ui: Double) -> Double {
+        Self.micSensitivityMin * pow(Self.micSensitivityMax / Self.micSensitivityMin, ui)
+    }
+
+    private var micSensitivitySlider: some View {
+        LabeledContent("入力感度") {
+            HStack(spacing: 8) {
+                Slider(
+                    value: Binding(
+                        get: { rmsToUI(settings.micSensitivity) },
+                        set: { settings.micSensitivity = uiToRMS($0) }
+                    ),
+                    in: 0...1
+                )
+                .frame(width: 180)
+                Text(String(format: "%.4f", settings.micSensitivity))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 56, alignment: .trailing)
+            }
+        }
+    }
+
+    /// マイク音量のレベルメーター。しきい値の位置を縦線マーカーで重ねて表示する
+    /// (Discord の入力感度 UI のイメージ)。バーもしきい値と同じ対数マッピングで描く。
+    private var micLevelMeter: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            GeometryReader { geometry in
+                let levelFraction = rmsToUI(Double(model.micLevel))
+                let thresholdFraction = rmsToUI(settings.micSensitivity)
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(.quaternary)
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(.tint)
+                        .frame(width: geometry.size.width * levelFraction)
+                    Rectangle()
+                        .fill(.secondary)
+                        .frame(width: 2)
+                        .offset(x: geometry.size.width * thresholdFraction - 1)
+                }
+            }
+            .frame(height: 8)
         }
     }
 
