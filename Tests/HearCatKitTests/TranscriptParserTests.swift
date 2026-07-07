@@ -14,23 +14,32 @@ struct TranscriptParserTests {
 
     @Test func 発話行から経過秒を割り出す() {
         let text = """
-            # 文字起こし 2026-07-05 10:00:00
-
             [10:00:05] 自分: おはようございます
             [10:01:30] 相手: こんにちは
             """
         let lines = TranscriptParser.lines(from: text, sessionStart: date(hour: 10, minute: 0, second: 0))
 
-        #expect(lines.count == 4)
-        // ヘッダと空行は時刻なし。
-        #expect(lines[0].stamp == nil)
-        #expect(lines[0].body == "# 文字起こし 2026-07-05 10:00:00")
-        #expect(lines[1].offset == nil)
+        #expect(lines.count == 2)
         // 発話行は開始からの経過秒になる。
-        #expect(lines[2].stamp == "10:00:05")
-        #expect(lines[2].body == "自分: おはようございます")
-        #expect(lines[2].offset == 5)
-        #expect(lines[3].offset == 90)
+        #expect(lines[0].stamp == "10:00:05")
+        #expect(lines[0].body == "自分: おはようございます")
+        #expect(lines[0].offset == 5)
+        #expect(lines[1].offset == 90)
+    }
+
+    /// 旧バージョンが書いていたヘッダー行(廃止済み)が残るファイルを開いても、
+    /// 表示・オフセット計算の対象は発話行だけになることを確認する。
+    @Test func 旧ヘッダー行と直後の空行はスキップされる() {
+        let text = """
+            # 文字起こし 2026-07-05 10:00:00
+
+            [10:00:05] 自分: おはようございます
+            """
+        let lines = TranscriptParser.lines(from: text, sessionStart: date(hour: 10, minute: 0, second: 0))
+
+        #expect(lines.count == 1)
+        #expect(lines[0].stamp == "10:00:05")
+        #expect(lines[0].body == "自分: おはようございます")
     }
 
     @Test func 日をまたいだ行は翌日として扱う() {

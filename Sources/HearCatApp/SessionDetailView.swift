@@ -26,7 +26,10 @@ struct SessionDetailView: View {
             }
             content
         }
-        .task(id: session.id) { load() }
+        .task(id: session.id) { load(forceNewPlayer: true) }
+        // 停止直後に詳細へ遷移した場合、最後の発話の確定はまだファイルに
+        // 書かれていないことがある。refreshSessions のたびに読み直して追従する。
+        .onChange(of: model.sessionsVersion) { load(forceNewPlayer: false) }
         .onDisappear { player?.teardown() }
     }
 
@@ -88,14 +91,20 @@ struct SessionDetailView: View {
                         .foregroundStyle(.orange)
                 }
                 if let summary {
-                    GroupBox("要約") {
+                    GroupBox {
                         Text(summary)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        HStack {
+                            Text("要約")
+                            Spacer()
+                            CopyButton { summary }
+                        }
                     }
                 }
                 if let transcript {
-                    GroupBox("文字起こし") {
+                    GroupBox {
                         if transcript.isEmpty {
                             Text("(文字起こしなし)")
                                 .foregroundStyle(.secondary)
@@ -108,6 +117,14 @@ struct SessionDetailView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                    } label: {
+                        HStack {
+                            Text("文字起こし")
+                            Spacer()
+                            if !transcript.isEmpty {
+                                CopyButton { TranscriptParser.bodyText(from: transcript) }
+                            }
+                        }
                     }
                 }
             }
@@ -115,13 +132,15 @@ struct SessionDetailView: View {
         }
     }
 
-    /// 1行ぶんの文字起こし。時刻付きの行は、時刻クリックで録音のその位置から再生する。
+    /// 1行ぶんの文字起こし。録音内の経過時間(再生バーと同じ物差し)を出し、
+    /// クリックで録音のその位置から再生する。ファイル内の実時刻は表示しない
+    /// (再生位置と対応づかない表示には意味がないため)。
     @ViewBuilder
     private func transcriptRow(_ line: TranscriptLine) -> some View {
-        if let stamp = line.stamp, let offset = line.offset {
+        if let offset = line.offset {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if let player, player.hasAudio {
-                    Button(stamp) {
+                    Button(formatPlaybackTime(offset)) {
                         player.playFrom(offset)
                     }
                     .buttonStyle(.plain)
@@ -129,7 +148,7 @@ struct SessionDetailView: View {
                     .foregroundStyle(.tint)
                     .help("この位置から再生")
                 } else {
-                    Text(stamp)
+                    Text(formatPlaybackTime(offset))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -142,12 +161,16 @@ struct SessionDetailView: View {
         }
     }
 
-    private func load() {
+    /// forceNewPlayer が false の再読込(sessionsVersion 変化時)では、再生中に
+    /// 途切れさせないよう、既に音声を持っているプレーヤーは作り直さない。
+    private func load(forceNewPlayer: Bool) {
         transcript = session.transcriptURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         transcriptLines = TranscriptParser.lines(
             from: transcript ?? "", sessionStart: session.startDate)
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
-        player = SessionPlayer(audioURL: session.audioURL)
+        if forceNewPlayer || player?.hasAudio != true {
+            player = SessionPlayer(audioURL: session.audioURL)
+        }
     }
 
     private func summarize() async {
@@ -182,7 +205,7 @@ struct PlayerView: View {
             }
             .buttonStyle(.plain)
 
-            Text(format(scrubTime ?? player.currentTime))
+            Text(formatPlaybackTime(scrubTime ?? player.currentTime))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
 
@@ -198,7 +221,7 @@ struct PlayerView: View {
                     }
                 })
 
-            Text(format(player.duration))
+            Text(formatPlaybackTime(player.duration))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -206,8 +229,10 @@ struct PlayerView: View {
         .padding(.vertical, 10)
     }
 
-    private func format(_ time: TimeInterval) -> String {
-        let seconds = Int(time.rounded())
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
+}
+
+/// 録音内の経過時間の表示。再生バーと文字起こしの行で同じ物差し・同じ見た目にする。
+private func formatPlaybackTime(_ time: TimeInterval) -> String {
+    let seconds = Int(time.rounded())
+    return String(format: "%d:%02d", seconds / 60, seconds % 60)
 }
