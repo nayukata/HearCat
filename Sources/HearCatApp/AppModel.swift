@@ -27,6 +27,15 @@ final class AppModel {
     private(set) var micLevel: Float = 0
     private(set) var systemLevel: Float = 0
 
+    /// 設定画面のレベルメーター用に、セッション外でもマイクを一時的に拾う「プローブ」。
+    /// セッション中は engine.onLevel が既に micLevel を更新しているため、プローブとして
+    /// 同じマイクを二重にキャプチャしない(掴んだままのデバイスは初期化に失敗し得る)。
+    @ObservationIgnored private var micProbe: MicSource?
+    @ObservationIgnored private var micProbeTask: Task<Void, Never>?
+    /// 設定画面のメーターが今表示されているか。updateMicProbe の判定に使う
+    /// (プローブを動かすべきかは「表示中 && セッション非アクティブ」で決まる)。
+    @ObservationIgnored private var micMeterVisible = false
+
     /// メニューバーに出す現在のフレーム。セッション中は Timer で回して動かす
     /// (MenuBarExtra のラベルは SwiftUI アニメーションが効かないため、フレーム切替方式)。
     private(set) var menuIcon = HCIcon.menuIdle[0]
@@ -43,23 +52,37 @@ final class AppModel {
     /// 常に生きているメニューバーのラベルビューから注入してもらう。
     @ObservationIgnored var openWindowAction: ((String) -> Void)?
 
-    /// ライブ表示用。確定した発話と、話者ごとの喋りかけ(暫定)テキスト。
+    /// ライブ表示用。liveTimeline は画面の並び(行の席は固定)、liveFinals は
+    /// 確定分の時系列(コピー用。ファイルと同じ発話開始時刻順)。
     private(set) var liveFinals: [TranscriptSegment] = []
-    private(set) var liveVolatile: [String: String] = [:]
+    private(set) var liveTimeline = LiveTimeline()
+
+    /// MainWindow へ「この選択にしてほしい」と伝えるための一方向リクエスト。
+    /// MainWindow が受け取ったら nil に戻す(ウィンドウを開き直しても再送されないように)。
+    var mainWindowSelectionRequest: String?
+    /// 直前に終了したセッションの ID。停止直後、ライブ画面からその詳細へ
+    /// 自然に遷移させるために MainWindow が参照する。
+    private(set) var lastEndedSessionID: String?
+    /// refreshSessions が呼ばれるたびに増える版数。停止直後は最終行の書き込みが
+    /// 完了直前まで遅れるため、SessionDetailView が読み直すきっかけに使う。
+    private(set) var sessionsVersion = 0
 
     private init() {
         engine.onStatusChange = { [weak self] status in
             self?.status = status
             self?.updateMenuIcon()
+            // セッションが終わってメーターの表示フラグがまだ立っていれば、プローブを再開する
+            // (セッション開始時に止めた分、終了時にここで元へ戻す)。
+            self?.updateMicProbe()
         }
         engine.onEvent = { [weak self] event in
             guard let self else { return }
             switch event {
-            case .volatile(let speaker, let text):
-                liveVolatile[speaker] = text
+            case .volatile(let speaker, let text, let startedAt):
+                liveTimeline.setVolatile(speaker: speaker, text: text, startedAt: startedAt)
             case .final(let segment):
-                liveFinals.append(segment)
-                liveVolatile[segment.speaker] = nil
+                insertLiveFinal(segment)
+                liveTimeline.finalize(segment)
             }
         }
         engine.onLevel = { [weak self] speaker, level in
@@ -77,6 +100,14 @@ final class AppModel {
             guard let self else { return }
             engine.setGains(mic: Float(settings.micGain), system: Float(settings.systemGain))
         }
+        applyMicGate()
+        settings.micGateChanged = { [weak self] in
+            self?.applyMicGate()
+        }
+        applyMicDevice()
+        settings.micDeviceChanged = { [weak self] in
+            self?.applyMicDevice()
+        }
         settings.hotkeysChanged = { [weak self] in
             guard let self else { return }
             HotkeyCenter.shared.apply(settings.hotkeys)
@@ -85,11 +116,73 @@ final class AppModel {
             self?.handleHotkey(action)
         }
         HotkeyCenter.shared.apply(settings.hotkeys)
-        SessionStore.migrateLegacyStorage()
         refreshSessions()
         startIPCServer()
         // アプリ更新で新しくなった SKILL.md / CLI を、導入済みなら起動時に反映する。
         SkillInstaller.refreshIfInstalled()
+    }
+
+    /// エコー除去/入力感度の設定をエンジンへ反映する。自動時は threshold を nil にして
+    /// エンジン側の既定値(SilenceGate.defaultThreshold)に委ねる。
+    private func applyMicGate() {
+        let threshold = settings.micSensitivityAuto ? nil : Float(settings.micSensitivity)
+        engine.setMicGate(echoRemoval: settings.echoRemoval, threshold: threshold)
+    }
+
+    /// 入力デバイスの設定をエンジンへ反映する。次にセッションを開始した時から有効になる。
+    private func applyMicDevice() {
+        engine.setMicDevice(uid: settings.micDeviceUID)
+        // プローブが動いていればデバイス変更を即反映したいので、選び直したデバイスで作り直す。
+        updateMicProbe()
+    }
+
+    // MARK: - マイクプローブ(設定画面のレベルメーター用)
+
+    /// 設定画面のメーターが表示されているかを伝える唯一の入口。SettingsView は
+    /// startMicProbe/stopMicProbe を直接呼ばず、必ずこちらを経由する。
+    func setMicMeterVisible(_ visible: Bool) {
+        micMeterVisible = visible
+        updateMicProbe()
+    }
+
+    /// プローブが動くべきか(「メーター表示中」かつ「セッション非アクティブ」)を
+    /// 一箇所で判定する。表示フラグの変化・セッション状態の変化・デバイス変更の
+    /// すべてがここを経由するため、開始/終了/デバイス切り替えの分岐がここに集約される。
+    private func updateMicProbe() {
+        stopMicProbe()
+        guard micMeterVisible, !status.active else { return }
+        startMicProbe()
+    }
+
+    /// セッション中は何もしない(engine.onLevel が動いている上に、マイクを
+    /// 二重に掴むと失敗するデバイスがあるため)。呼び出しは updateMicProbe に集約する。
+    private func startMicProbe() {
+        guard !status.active else { return }
+        let probe = MicSource(deviceUID: settings.micDeviceUID)
+        do {
+            try probe.start()
+        } catch {
+            // プローブはメーター表示の補助でしかないため、失敗してもエラー表示はしない。
+            return
+        }
+        micProbe = probe
+        let buffers = probe.buffers
+        micProbeTask = Task.detached(priority: .userInitiated) { [weak self] in
+            for await item in buffers {
+                let level = rmsLevel(item.buffer)
+                await MainActor.run {
+                    self?.micLevel = level
+                }
+            }
+        }
+    }
+
+    private func stopMicProbe() {
+        micProbeTask?.cancel()
+        micProbeTask = nil
+        micProbe?.stop()
+        micProbe = nil
+        micLevel = 0
     }
 
     // MARK: - セッション操作
@@ -100,9 +193,12 @@ final class AppModel {
         defer { busy = false }
         // 過去の無関係なエラーを引きずって「開始失敗」と誤報告しないようにする。
         lastError = nil
+        // プローブ稼働中(設定画面のメーターが動いている)にセッションを始めると、
+        // 同じマイクを二重に掴んでしまうため、セッション側を優先してプローブを止める。
+        stopMicProbe()
         do {
             liveFinals = []
-            liveVolatile = [:]
+            liveTimeline.removeAll()
             // カレンダーの今の予定名をセッション名にする(設定でオフにできる)。
             let name = settings.calendarNaming ? await CalendarNamer.currentEventTitle() ?? "" : ""
             try await engine.start(record: record, transcribe: transcribe, name: name)
@@ -116,8 +212,10 @@ final class AppModel {
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        // 停止完了後は status.sessionID が消えるため、遷移先として使えるよう先に控える。
+        lastEndedSessionID = status.sessionID
         await engine.stop()
-        liveVolatile = [:]
+        liveTimeline.clearVolatiles()
         micLevel = 0
         systemLevel = 0
         refreshSessions()
@@ -129,7 +227,19 @@ final class AppModel {
 
     func setTranscribing(_ on: Bool) {
         try? engine.setTranscribing(on)
-        if !on { liveVolatile = [:] }
+        if !on { liveTimeline.clearVolatiles() }
+    }
+
+    /// 確定はチャンネルごとに遅延が違い、発話順と届く順が入れ替わることがある。
+    /// liveFinals はコピー用なので、ファイルと同じタイムスタンプ(発話開始時刻)順を保つ。
+    /// 画面の並びは liveTimeline が持ち、こちらは席を固定する(LiveTimeline のコメント参照)。
+    private func insertLiveFinal(_ segment: TranscriptSegment) {
+        if let last = liveFinals.last, last.timestamp > segment.timestamp {
+            let index = liveFinals.lastIndex(where: { $0.timestamp <= segment.timestamp }).map { $0 + 1 } ?? 0
+            liveFinals.insert(segment, at: index)
+        } else {
+            liveFinals.append(segment)
+        }
     }
 
     // MARK: - メニューバーアイコン
@@ -199,6 +309,11 @@ final class AppModel {
 
     func showHistory() {
         dismissPanel()
+        // セッション中に開く場合は、既に開いたことのあるウィンドウでも必ずライブへ
+        // 戻す(前回選んでいたセッションのまま止まってしまわないように)。
+        if status.active {
+            mainWindowSelectionRequest = MainWindow.liveID
+        }
         openWindowAction?("main")
         bringToFrontLater { AppModel.shared.mainWindow }
     }
@@ -239,6 +354,7 @@ final class AppModel {
     func refreshSessions() {
         sessions = SessionStore.list()
         folders = SessionStore.listFolders()
+        sessionsVersion += 1
     }
 
     func delete(_ session: SessionInfo) {
@@ -362,7 +478,7 @@ final class AppModel {
                 if let record = request.record { try engine.setRecording(record) }
                 if let transcribe = request.transcribe {
                     try engine.setTranscribing(transcribe)
-                    if !transcribe { liveVolatile = [:] }
+                    if !transcribe { liveTimeline.clearVolatiles() }
                 }
                 return IPCResponse(ok: true, status: status)
             } catch {
@@ -373,6 +489,7 @@ final class AppModel {
 
     /// 終了前の後始末。進行中ならセッションを保存し、ソケットファイルを消す。
     func shutdown() async {
+        stopMicProbe()
         if status.active {
             await stopSession()
         }

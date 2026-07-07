@@ -12,7 +12,7 @@ struct LiveSessionView: View {
             Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
             transcriptList
         }
-        .background(HCColor.navyGradient)
+        .background(HCColor.navyBackground)
         // ライブ画面はシステムの外観設定に関わらずネイビー基調(LP と同じ)。
         .environment(\.colorScheme, .dark)
     }
@@ -21,6 +21,7 @@ struct LiveSessionView: View {
         HStack(spacing: 12) {
             CatHeadShape()
                 .stroke(.white.opacity(0.6), style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
+                .overlay(CatHeadShape.Eyes().fill(.white.opacity(0.6)))
                 .frame(width: 15, height: 15)
             Text("HearCat — ライブ")
                 .font(.system(size: 12))
@@ -36,6 +37,11 @@ struct LiveSessionView: View {
             Toggle("文字起こし", isOn: Binding(
                 get: { model.status.transcribing },
                 set: { model.setTranscribing($0) }))
+            if !model.liveFinals.isEmpty {
+                CopyButton {
+                    model.liveFinals.map(TranscriptWriter.line(for:)).joined(separator: "\n")
+                }
+            }
             Button("停止", role: .destructive) {
                 Task { await model.stopSession() }
             }
@@ -55,23 +61,18 @@ struct LiveSessionView: View {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
                     }
-                    ForEach(Array(model.liveFinals.enumerated()), id: \.offset) { _, segment in
+                    // 並びは LiveTimeline が管理する(一度出た行はその場から動かさない)。
+                    ForEach(model.liveTimeline.rows) { row in
                         segmentLine(
-                            time: segment.timestamp, speaker: segment.speaker, text: segment.text,
-                            volatile: false)
-                    }
-                    ForEach(model.liveVolatile.sorted(by: { $0.key < $1.key }), id: \.key) { speaker, text in
-                        segmentLine(time: nil, speaker: speaker, text: text, volatile: true)
+                            time: row.volatile ? nil : row.time, speaker: row.speaker,
+                            text: row.text, volatile: row.volatile)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: model.liveFinals.count) {
-                proxy.scrollTo("bottom")
-            }
-            .onChange(of: model.liveVolatile) {
+            .onChange(of: model.liveTimeline.rows) {
                 proxy.scrollTo("bottom")
             }
         }
@@ -82,15 +83,12 @@ struct LiveSessionView: View {
             Text(time.map { "[" + $0.formatted(date: .omitted, time: .standard) + "]" } ?? "認識中")
                 .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.34))
-                .frame(width: 66, alignment: .leading)
+                .frame(width: 66, alignment: time == nil ? .center : .leading)
             SpeakerChip(speaker: speaker)
             if volatile {
-                HStack(alignment: .lastTextBaseline, spacing: 3) {
-                    Text(text)
-                        .foregroundStyle(.white.opacity(0.5))
-                        .font(.system(size: 13.5))
-                    BlinkingCursor()
-                }
+                StreamingText(target: text)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .font(.system(size: 13.5))
             } else {
                 Text(text)
                     .foregroundStyle(.white.opacity(0.88))
@@ -101,16 +99,56 @@ struct LiveSessionView: View {
     }
 }
 
-/// 暫定テキストの末尾で点滅するキャレット(LP の .u.partial .b::after と同じ)。
-private struct BlinkingCursor: View {
-    @State private var dimmed = false
+/// 暫定テキストを1文字ずつ追いかけて表示する(AI チャットのストリーム出力風)。
+/// 認識器の暫定結果は文節単位の塊で丸ごと置き換わるため、そのまま出すと
+/// 数語ずつ飛んで見える。表示側だけで目標テキストへ少しずつ追いつかせ、
+/// 内容は変えずに見え方を滑らかにする。
+private struct StreamingText: View {
+    let target: String
+    @State private var displayed = ""
+    @State private var caretOn = true
+
+    /// キャレットの画像。LP の .u.partial .b::after と同じ 2×14px の棒 + 左に 3px の間隔。
+    /// Text 内には図形ビューを置けないため画像として補間する(ビューを横に並べると、
+    /// テキストが折り返した時に最終文字の隣でなく段落全体の右側に出てしまう)。
+    /// 点滅で本文の折り返しが変わらないよう、消えている間も同じ寸法の透明画像で場所を確保する。
+    private static func makeCaret(visible: Bool) -> NSImage {
+        NSImage(size: NSSize(width: 5, height: 14), flipped: false) { _ in
+            if visible {
+                NSColor(HCColor.blueSoft).setFill()
+                NSBezierPath(
+                    roundedRect: NSRect(x: 3, y: 0, width: 2, height: 14), xRadius: 1, yRadius: 1
+                ).fill()
+            }
+            return true
+        }
+    }
+    private static let caretShown = makeCaret(visible: true)
+    private static let caretHidden = makeCaret(visible: false)
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 1)
-            .fill(HCColor.blueSoft)
-            .frame(width: 2, height: 14)
-            .opacity(dimmed ? 0 : 1)
-            .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: dimmed)
-            .onAppear { dimmed = true }
+        Text("\(displayed)\(Image(nsImage: caretOn ? Self.caretShown : Self.caretHidden))")
+            .task(id: target) {
+                // 仮説が途中から書き換わった場合は、一致している先頭部分まで戻してから追う。
+                let common = displayed.commonPrefix(with: target)
+                if common.count < displayed.count { displayed = common }
+                while displayed.count < target.count {
+                    // 離れているほど速く追いつく(長文の一括置き換えでも1秒以内に追いつき、
+                    // 末尾に近づくほど1文字ずつの見え方になる)。
+                    let backlog = target.count - displayed.count
+                    let step = max(1, backlog / 8)
+                    displayed = String(target.prefix(displayed.count + step))
+                    do { try await Task.sleep(for: .milliseconds(33)) } catch { return }
+                }
+            }
+            .task {
+                // 追いついて待っている間だけ点滅させる(流れている間は実線)。
+                // 点滅で幅が変わらないよう、消えている間も透明で場所は確保する。
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if Task.isCancelled { return }
+                    caretOn = displayed == target ? !caretOn : true
+                }
+            }
     }
 }

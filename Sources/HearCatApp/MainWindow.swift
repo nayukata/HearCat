@@ -24,7 +24,8 @@ struct MainWindow: View {
     @State private var folderRenameText = ""
     @State private var folderDeleteTarget: String?
 
-    private static let liveID = "live"
+    /// ライブ行の選択タグ。AppModel からも選択リクエストの値として参照するため internal にする。
+    static let liveID = "live"
 
     var body: some View {
         NavigationSplitView {
@@ -41,7 +42,7 @@ struct MainWindow: View {
             } else {
                 ContentUnavailableView(
                     "セッションを選択",
-                    systemImage: "eye",
+                    systemImage: "text.bubble",
                     description: Text("左の一覧からセッションを選ぶと、文字起こしと録音をここで確認できます。"))
             }
         }
@@ -52,6 +53,21 @@ struct MainWindow: View {
             model.refreshSessions()
             if selection == nil {
                 selection = model.status.active ? Self.liveID : model.sessions.first?.id
+            }
+        }
+        // AppModel からの明示的な選択リクエスト(例: セッション中に履歴を開いた時のライブ選択)。
+        // 一方向のリクエストなので、受け取ったら消費して nil に戻す。
+        .onChange(of: model.mainWindowSelectionRequest) {
+            guard let request = model.mainWindowSelectionRequest else { return }
+            selection = request
+            model.mainWindowSelectionRequest = nil
+        }
+        // ライブ画面を見ている最中に停止すると status.active が false になり、
+        // そのままだと selection がライブの ID を指し続けてプレースホルダに落ちる。
+        // 今終わったセッションの詳細へ自然に遷移させる。
+        .onChange(of: model.status.active) {
+            if !model.status.active, selection == Self.liveID {
+                selection = model.lastEndedSessionID
             }
         }
         .alert(
