@@ -16,8 +16,10 @@ public struct TranscriptSegment: Sendable {
 
 /// 文字起こしの途中経過。ファイルには確定(final)だけを書き、
 /// 暫定(volatile)は UI のライブ表示にだけ使う。
+/// startedAt はその発話が始まった実時刻。ライブ表示が「認識中」の行を
+/// 確定行と同じ時系列(話し始めた順)に並べるために使う。
 public enum TranscriberEvent: Sendable {
-    case volatile(speaker: String, text: String)
+    case volatile(speaker: String, text: String, startedAt: Date)
     case final(TranscriptSegment)
 }
 
@@ -32,12 +34,59 @@ public struct SendableBuffer: @unchecked Sendable {
     }
 }
 
-// HEARCAT_DEBUG=1 で診断ログを stderr に出す(音声レベル・フォーマット・認識の生結果)。
+// HEARCAT_DEBUG=1 で診断ログを出す(音声レベル・フォーマット・認識の生結果)。
 public let hearcatDebug = ProcessInfo.processInfo.environment["HEARCAT_DEBUG"] != nil
+
+/// 診断ログの書き込み先。stderr は open/Finder 経由の起動で失われるため、
+/// HEARCAT_DEBUG 時はファイル(~/Library/Application Support/HearCat/debug.log)にも残す。
+/// 複数 actor から呼ばれるためロックで直列化する。
+private final class DebugLogFile: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handle: FileHandle?
+    private let formatter: DateFormatter
+
+    init() {
+        formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        guard hearcatDebug else {
+            handle = nil
+            return
+        }
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("HearCat")
+        let url = dir.appendingPathComponent("debug.log")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        handle = try? FileHandle(forWritingTo: url)
+        _ = try? handle?.seekToEnd()
+        write("==== 起動 \(Date().formatted()) ====")
+    }
+
+    func write(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let line = "[debug] \(formatter.string(from: Date())) \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+        try? handle?.write(contentsOf: Data(line.utf8))
+    }
+}
+
+private let debugLogFile = DebugLogFile()
 
 public func debugLog(_ message: String) {
     guard hearcatDebug else { return }
-    FileHandle.standardError.write(Data(("[debug] " + message + "\n").utf8))
+    debugLogFile.write(message)
+}
+
+/// エラーの報告。常に stderr へ出し、HEARCAT_DEBUG 時は診断ファイルにも残す。
+public func errorLog(_ message: String) {
+    if hearcatDebug {
+        debugLogFile.write(message)
+    } else {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
 }
 
 /// バッファの音量(RMS)。音声が届いているか(無音でないか)の切り分けに使う。
