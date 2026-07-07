@@ -35,7 +35,7 @@ struct MenuPanel: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 300)
-        .background(HCColor.navyGradient)
+        .background(HCColor.navyBackground)
         // パネルは LP と同じネイビー基調で固定する。
         .environment(\.colorScheme, .dark)
         .tint(HCColor.blue)

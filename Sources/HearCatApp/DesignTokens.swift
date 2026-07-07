@@ -17,8 +17,17 @@ enum HCColor {
     static let youText = Color(red: 255 / 255, green: 225 / 255, blue: 184 / 255)  // #FFE1B8
     static let youBackground = Color(red: 255 / 255, green: 176 / 255, blue: 74 / 255).opacity(0.16)
 
-    static var navyGradient: LinearGradient {
-        LinearGradient(colors: [navy, navy2], startPoint: .top, endPoint: .bottom)
+    /// LP のライブカードの見た目(ネイビー地 + 上端に広がるヒーローの blue glow + ガラス面)を、
+    /// カードのスクリーンショット実測色 3 点の縦グラデーションとして焼き込んだ背景。
+    /// グラデーション + glow + 白膜を積む合成方式は、ウィンドウサイズや配置の違いで LP とずれるため採らない。
+    static var navyBackground: some View {
+        LinearGradient(
+            stops: [
+                .init(color: Color(red: 29 / 255, green: 42 / 255, blue: 75 / 255), location: 0),  // #1D2A4B
+                .init(color: Color(red: 26 / 255, green: 33 / 255, blue: 57 / 255), location: 0.55),  // #1A2139
+                .init(color: Color(red: 27 / 255, green: 35 / 255, blue: 60 / 255), location: 1),  // #1B233C
+            ],
+            startPoint: .top, endPoint: .bottom)
     }
 }
 
@@ -263,6 +272,9 @@ struct EQBars: View {
     var active = true
     @State private var animating = false
 
+    /// LP の .eq の delay と同じ値。線形でなくランダム風に位相をずらして自然な揺れに見せる。
+    private static let delays: [Double] = [0, 0.18, 0.36, 0.1, 0.28]
+
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<5, id: \.self) { i in
@@ -272,8 +284,8 @@ struct EQBars: View {
                     .scaleEffect(y: animating && active ? 1 : 0.25, anchor: .bottom)
                     .animation(
                         active
-                            ? .easeInOut(duration: 0.5).repeatForever(autoreverses: true)
-                                .delay(Double(i) * 0.09)
+                            ? .easeInOut(duration: 1.0).repeatForever(autoreverses: true)
+                                .delay(Self.delays[i])
                             : .default,
                         value: animating && active)
             }
