@@ -27,9 +27,10 @@ public enum QuestionDetector {
     }
 
     /// 文末の句点などを「？」に置き換える。すでに「？」ならそのまま。
+    /// 末尾の空白も剥がしてから付ける(「〜なん ？」を作らないため)。
     public static func markAsQuestion(_ text: String) -> String {
         var body = text
-        while let last = body.last, "。．.、!！".contains(last) {
+        while let last = body.last, "。．.、!！ 　".contains(last) {
             body.removeLast()
         }
         if body.hasSuffix("?") || body.hasSuffix("？") { return body }

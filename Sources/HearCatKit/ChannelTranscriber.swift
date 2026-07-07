@@ -68,8 +68,9 @@ public actor ChannelTranscriber {
         resultsTask = Task {
             do {
                 for try await result in transcriber.results {
-                    let raw = String(result.text.characters)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let raw = Self.tightenPunctuation(
+                        String(result.text.characters)
+                            .trimmingCharacters(in: .whitespacesAndNewlines))
                     // 表示に値しない結果(空・記号のみ)でも、認識器が動いた事実は
                     // watchdog へ伝える。特に確定は「どこまで確定済みか」を進めないと、
                     // 破棄した確定に対して強制確定を要求し続けてしまう。
@@ -168,6 +169,23 @@ public actor ChannelTranscriber {
         var sumSq: Float = 0
         for v in samples { sumSq += v * v }
         return (sumSq / Float(samples.count)).squareRoot()
+    }
+
+    /// 認識器は「〜なん ？」のように句読点の前へ半角スペースを入れることがある。
+    /// 句読点直前の空白だけを詰める(数字や英語の前のスペースは読みやすさに
+    /// 寄与するため残す)。
+    static func tightenPunctuation(_ text: String) -> String {
+        var out = ""
+        out.reserveCapacity(text.count)
+        for ch in text {
+            if "。．.、，,？?！!".contains(ch) {
+                while let last = out.last, last == " " || last == "　" {
+                    out.removeLast()
+                }
+            }
+            out.append(ch)
+        }
+        return out
     }
 
     /// 確定文の仕上げ。疑問文(語彙 or 末尾のピッチ上昇)なら文末を「？」に直す。
