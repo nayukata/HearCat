@@ -7,9 +7,9 @@ Mac のマイク（自分）とシステム音声（通話相手など）を、m
 構成は2つ:
 
 - **HearCat.app**: 常駐エンジン。音声キャプチャ・文字起こし・録音・履歴の閲覧/再生/削除・オンデバイス LLM による要約
-- **hearcat CLI**: アプリへ命令を送る窓口。AI（agent skill）はこれを使う
+- **hearcat CLI**: アプリへの命令送信と、記録ファイルの読み書きを担う窓口。AI（agent skill）はこれ経由でセッションを触る
 
-ランディングページは `docs/index.html`（GitHub Pages でそのまま公開できる）
+ランディングページは `web/` に Astro で置いてある（`pnpm build` で `web/dist/` に静的サイトが出て、Cloudflare Workers Static Assets で配信する）
 
 ## 必要環境
 
@@ -41,7 +41,7 @@ make dist    # .build/HearCat.dmg ができる
    xcrun notarytool submit .build/HearCat.dmg --keychain-profile <プロファイル名> --wait
    xcrun stapler staple .build/HearCat.dmg
    ```
-3. dmg を `docs/index.html` のダウンロードボタンのリンク先（GitHub Releases など）へ置く
+3. dmg を GitHub Releases などに置き、LP のダウンロードボタンからそこへリンクを貼る（現状の LP はソースからのビルド前提なので dmg 配布動線は未実装）
 
 ## 使い方
 
@@ -54,6 +54,9 @@ hearcat set transcribe off      # 文字起こしだけ止める
 hearcat status                  # 状態確認
 hearcat latest                  # 最新の文字起こしファイルのパス
 hearcat stop                    # 停止して保存
+hearcat sessions                # セッション一覧 (id / 日時 / 名前 / フォルダ の TSV)
+hearcat read [<session>]        # 原文を stdout に出す(--summary / --cleaned / --tail N)
+hearcat write-cleaned [<session>]  # 標準入力の清書を cleaned.md に書く(原文には触れない)
 ```
 
 - セッションごとに `~/Library/Application Support/HearCat/sessions/<日時 [名前]>/` へ `<同名>.md`（文字起こし）・`<同名>.m4a`（モノラル: 自分と相手を自然にミックス）・`summary.md`（要約）がまとまる。フォルダに入れているセッションは `.../sessions/<フォルダ名>/<日時 [名前]>/` になる。
@@ -63,14 +66,15 @@ hearcat stop                    # 停止して保存
 - カレンダーに登録した予定があれば、セッション名はその予定名で自動命名される。設定でオフにでき、macOS のカレンダーに追加した Google アカウントの予定も対象。
 - 履歴サイドバーの検索欄で、セッション名・文字起こし・要約の本文を横断検索できる。
 - 文字起こしに残った時刻をクリックすると、その位置から音声が再生される。
-- セッションはドラッグ &amp; ドロップでフォルダに整理できる。右クリックから名前変更・フォルダ移動・削除・要約生成もできる。
+- セッションはドラッグ &amp; ドロップでフォルダに整理できる。右クリックから名前変更・フォルダ移動・削除ができる。Cmd/Shift+クリックで複数選択し、Delete キー か右クリックの「N 件を削除」でまとめて削除できる。
+- 要約生成は、対象セッションの詳細ペインの「要約を生成」ボタンから行う（Apple Intelligence が有効な Apple Silicon 機のみ）。
 
 ### 設定（パネル → 設定）
 
 - **ホットキー**: セッション開始/停止・録音・文字起こし・履歴ウィンドウ・設定を、他のアプリを使っている時でもキー1発で操作できる。録音/文字起こしのキーはセッション外で押すとその機能だけオンでセッションを開始する（デッドゾーンなし）
 - **録音の音量**: 自分（マイク）と相手（システム音声）のミックスバランス。セッション中の変更もすぐ反映される
 - **セッション名**: カレンダーの予定名を自動でセッション名にするかを切り替える。オンだと初回にカレンダーへのアクセス許可を求める
-- **agent skill**: ワンクリックで SKILL.md と CLI を導入する（下記）
+- **AI エージェント連携**: ワンクリックで 2 種類の skill（基本操作の `hearcat` と清書の `hearcat-clean`）と CLI を導入する（下記）
 
 初回起動時:
 
@@ -79,9 +83,12 @@ hearcat stop                    # 停止して保存
 
 ## AI で質疑応答する
 
-設定画面の「agent skill」→「導入する」で、SKILL.md が共通の置き場（`~/.agents/skills/`）と使用中の各エージェント（`~/.claude` や `~/.codex` など）の skills フォルダへ、CLI が `~/.local/bin/hearcat` へ配置される。Claude Code / Codex / Copilot / Gemini など agent skill 対応の AI アシスタントが、`hearcat` CLI でセッションを制御し、`hearcat latest` で得た transcript を読んで質疑応答できるようになる。
+設定画面の「AI エージェント連携」→「導入する」で、2 種類の skill の実体が共通の置き場（`~/.agents/skills/hearcat/` と `~/.agents/skills/hearcat-clean/`）に置かれ、使用中の各エージェント（`~/.claude` や `~/.codex` など）の skills フォルダには実体へのシンボリックリンクが張られる。CLI は `~/.local/bin/hearcat` へ配置される。Claude Code / Codex / Copilot / Gemini / Cursor など agent skill 対応の AI アシスタントが、`hearcat` CLI でセッションを制御し、`hearcat read` で得た文字起こしを読んで質疑応答できるようになる。
 
-skill なしでも、`hearcat latest` のパスを AI に読ませれば同じことができる。
+- **hearcat**: 録音の開始/停止、状態確認、文字起こしの読み出し、過去セッション参照など基本操作を担う。
+- **hearcat-clean**: 音声認識の誤変換を、agent 側の LLM が会話の文脈から直して `cleaned.md` に書き戻す。書き込みは `hearcat write-cleaned` 経由に限定され、原文 `<session-id>.md` には物理的に届かない。
+
+skill なしでも、`hearcat read` の内容を AI に渡せば同じことができる。
 
 ## 開発
 
