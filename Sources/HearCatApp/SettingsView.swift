@@ -21,32 +21,60 @@ struct SettingsView: View {
     @State private var inputDevices: [MicDeviceOption] = [MicDeviceOption(uid: nil, name: "システム標準")]
 
     var body: some View {
+        // 1本の長いスクロールだと下のセクションが見落とされるため、macOS の
+        // 設定アプリと同じタブで分ける。各タブが一画面に収まる高さにする。
+        TabView {
+            Tab("一般", systemImage: "gearshape") { generalTab }
+            Tab("音声", systemImage: "mic") { audioTab }
+            Tab("ホットキー", systemImage: "keyboard") { hotkeyTab }
+            Tab("清書", systemImage: "wand.and.stars") { cleaningTab }
+        }
+        .frame(width: 520, height: 480)
+        .onAppear { refreshInputDevices() }
+    }
+
+    private var generalTab: some View {
         Form {
             Section {
-                ForEach(HotkeyAction.allCases) { action in
-                    LabeledContent(action.label) {
-                        HotkeyRecorderField(action: action, settings: settings)
-                    }
-                }
+                Toggle("カレンダーの予定名を自動で付ける", isOn: $settings.calendarNaming)
             } header: {
-                Text("ホットキー")
+                Text("セッション名")
             } footer: {
-                Text("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。録音/文字起こしのキーは、セッション外で押すとその機能だけオンでセッションを開始します。")
+                Text("セッション開始時、今の時刻に重なる予定 (5分後までに始まる予定も含む) のタイトルをセッション名にします。macOS のカレンダーに追加したアカウント (Google など) の予定も対象です。初回はカレンダーへのアクセス許可を求めます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                gainSlider(label: "自分 (マイク)", value: $settings.micGain)
-                gainSlider(label: "相手 (システム音声)", value: $settings.systemGain)
+                LabeledContent("skill (使い方の説明書)") {
+                    statusLabel(installed: skillInstalled)
+                }
+                LabeledContent("CLI (操作コマンド hearcat)") {
+                    statusLabel(installed: cliInstalled)
+                }
+                if !(skillInstalled && cliInstalled) {
+                    Button("導入する") {
+                        installSkill()
+                    }
+                }
+                if let skillMessage {
+                    Text(skillMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } header: {
-                Text("録音の音量")
+                Text("AI エージェント連携")
             } footer: {
-                Text("録音ファイルに書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
+                Text("導入すると、AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。エージェントは skill で使い方を知り、CLI でこのアプリを動かします。skill の実体は ~/.agents/skills/ に置き、使用中の各エージェントへはリンクを張ります。CLI は ~/.local/bin へ置きます。導入後はアプリを起動するたびに自動で最新の内容へ更新されます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+    }
 
+    private var audioTab: some View {
+        Form {
             Section {
                 Picker("入力デバイス", selection: $settings.micDeviceUID) {
                     ForEach(inputDevices) { option in
@@ -79,56 +107,54 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("カレンダーの予定名を自動で付ける", isOn: $settings.calendarNaming)
+                gainSlider(label: "自分 (マイク)", value: $settings.micGain)
+                gainSlider(label: "相手 (システム音声)", value: $settings.systemGain)
             } header: {
-                Text("セッション名")
+                Text("録音の音量")
             } footer: {
-                Text("セッション開始時、今の時刻に重なる予定 (5分後までに始まる予定も含む) のタイトルをセッション名にします。macOS のカレンダーに追加したアカウント (Google など) の予定も対象です。初回はカレンダーへのアクセス許可を求めます。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                TextEditor(text: $settings.glossary)
-                    .font(.body)
-                    .frame(height: 88)
-                    .scrollContentBackground(.hidden)
-            } header: {
-                Text("清書の用語集")
-            } footer: {
-                Text("人名・製品名・専門用語など、あなたの会話によく出る語を1行に1つ書きます。履歴画面の「清書」の際、音声認識が似た音に間違えた箇所をこの表記へ直す手がかりになります。その会話だけの話題は、履歴画面の「清書のヒント」欄へ。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                LabeledContent("skill (使い方の説明書)") {
-                    statusLabel(installed: skillInstalled)
-                }
-                LabeledContent("CLI (操作コマンド hearcat)") {
-                    statusLabel(installed: cliInstalled)
-                }
-                if !(skillInstalled && cliInstalled) {
-                    Button("導入する") {
-                        installSkill()
-                    }
-                }
-                if let skillMessage {
-                    Text(skillMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("AI エージェント連携")
-            } footer: {
-                Text("導入すると、AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。エージェントは skill で使い方を知り、CLI でこのアプリを動かします。skill の実体は ~/.agents/skills/ に置き、使用中の各エージェントへはリンクを張ります。CLI は ~/.local/bin へ置きます。導入後はアプリを起動するたびに自動で最新の内容へ更新されます。")
+                Text("録音ファイルに書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 680)
-        .onAppear { refreshInputDevices() }
+    }
+
+    private var hotkeyTab: some View {
+        Form {
+            Section {
+                ForEach(HotkeyAction.allCases) { action in
+                    LabeledContent(action.label) {
+                        HotkeyRecorderField(action: action, settings: settings)
+                    }
+                }
+            } header: {
+                Text("ホットキー")
+            } footer: {
+                Text("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。録音/文字起こしのキーは、セッション外で押すとその機能だけオンでセッションを開始します。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var cleaningTab: some View {
+        Form {
+            Section {
+                TextEditor(text: $settings.glossary)
+                    .font(.body)
+                    .frame(height: 120)
+                    .scrollContentBackground(.hidden)
+            } header: {
+                Text("清書の用語集")
+            } footer: {
+                Text("人名・製品名・専門用語など、あなたの会話によく出る語を「語: 説明」の形で1行に1つ書きます(例「ネトフリ: Netflix の略称。動画配信サービス」)。履歴画面の「清書」の際、音声認識が似た音に間違えた箇所をこの語へ直す手がかりになります。その会話だけの指示は、清書ボタンを押すと書けます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 
     /// 入力デバイスの一覧を取得し直す。動的な抜き差し監視はスコープ外なので、
