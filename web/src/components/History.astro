@@ -1,29 +1,38 @@
 ---
 import Card from "./Card.astro";
 ---
-<section id="history" class="py-24 bg-bg-soft border-t border-line">
+<section
+  id="history"
+  class="py-24 text-white"
+  style="background: linear-gradient(175deg, var(--color-navy), var(--color-navy-2));"
+>
   <div class="wrap">
     <div class="reveal">
-      <p class="kicker">整理と検索</p>
+      <p class="kicker" style="color:#8FB4FF;">整理と検索</p>
       <h2 class="sec-h2">会議のあとで、あの一言に、すぐ戻れる。</h2>
-      <p class="sec-lead">セッションはひとつのフォルダにまとまります。名前で見つける、本文で探す、時刻から聴き直す — すべてこの Mac の中で完結します。</p>
+      <p class="sec-lead" style="color: rgba(255,255,255,.62);">セッションはひとつのフォルダにまとまります。名前で見つける、本文で探す、時刻から聴き直す — すべてこの Mac の中で完結します。</p>
     </div>
     <div class="mt-12 grid gap-[18px]" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
-      <Card title="カレンダーの予定で自動命名">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <Card title="カレンダーの予定で自動命名" variant="dark">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8FB4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         セッションを開始した時刻に入っている予定名が、そのままセッションの名前になります。macOS のカレンダーに追加した Google アカウントの予定もそのまま対象です。
       </Card>
-      <Card title="フォルダで整理">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <Card title="フォルダで整理" variant="dark">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8FB4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         セッションを自分の分け方でフォルダにまとめられます。ドラッグ & ドロップでの移動、右クリックからの名前変更や別フォルダへの移動にも対応します。
       </Card>
-      <Card title="名前と本文で横断検索">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <Card title="名前と本文で横断検索" variant="dark">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8FB4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         サイドバーの検索欄にキーワードを入れると、セッション名だけでなく文字起こしと要約の本文も対象に、フォルダをまたいで一致するセッションを絞り込みます。
       </Card>
-      <Card title="時刻をクリックして再生">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="#3D7BFF" stroke="none"/></svg>
-        文字起こしに残った時刻をクリックすると、その位置から録音を再生します。読みながら、聞きたい箇所だけをすぐ聴き直せます。
+      <Card title="時間をクリックして再生" variant="dark">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8FB4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="#8FB4FF" stroke="none"/></svg>
+        文字起こしの各行には、録音のどの位置かがひと目でわかる経過時間が付きます。クリックするとその位置から再生。読みながら、聞きたい箇所だけをすぐ聴き直せます。
+      </Card>
+      <Card title="誤変換は AI が清書" variant="dark">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8FB4FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        音声認識の言い間違いのような誤変換を、会話の文脈からオンデバイス AI が直した「清書」をボタンひとつで作れます。原文とはいつでも切り替えられ、清書側でも時間クリックの再生がそのまま使えます。
+        <small class="block text-[12px] mt-[6px]" style="color: rgba(255,255,255,.5);">清書は Apple Intelligence が有効な Apple Silicon 機のみ。</small>
       </Card>
     </div>
   </div>
