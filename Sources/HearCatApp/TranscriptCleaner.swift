@@ -44,12 +44,24 @@ enum TranscriptCleaner {
 
     @Generable
     fileprivate struct Fix {
-        @Guide(description: "誤変換された表記。会話の本文に書かれている通りに")
+        @Guide(description: "誤変換された表記。本文に書かれている通り、変わる言葉だけを短く")
         var wrong: String
 
         @Guide(description: "直した表記")
         var right: String
     }
+
+    /// 誤変換ペアの wrong の長さ上限。長いフレーズのペアを許すと、行の大部分を
+    /// 巻き込んだ書き換え(言い換えの混入)ができてしまい、読みの比較も薄まる。
+    private static let fixMaxLength = 12
+    /// 同じチャンクを観点を変えて複数回見せ、見つけたペアの和集合を取る(同じ wrong は
+    /// 先勝ち)。同じプロンプトの繰り返しはほぼ同じ答えしか返さないため、回数でなく
+    /// 観点で散らす。temperature は 0.6 に下げてブレを抑える(0.8 は junk が増えた)。
+    private static let passFocuses = [
+        "",
+        "特に、漢字の同音異義語への誤変換(講座↔口座、保証↔保障、機械↔機会 のような変換ミス)を疑って探してください。\n\n",
+        "特に、カタカナ語・固有名詞・専門用語の誤変換を疑って探してください。\n\n",
+    ]
 
     /// 用語集・ヒントを指示文に入れる際の上限。オンデバイスモデルのコンテキストが
     /// 小さいため、長すぎる分は頭から切る(チャンク本文の入る余地を必ず残す)。
@@ -58,10 +70,11 @@ enum TranscriptCleaner {
     private static let instructions = """
         あなたは会話の文字起こしの校正係です。音声認識が誤変換した表記を見つけ、
         「誤変換された表記(wrong)」と「本来の表記(right)」の組で報告します。
-        会話の話題や用語集が与えられた場合、それに音が似た言葉は誤変換の可能性が高いので、
-        その語への修正を報告します(例: 話題が格闘ゲームなら「残ギ」→「ザンギ」)。
-        文脈から確信できる誤変換だけを報告し、言い換え・要約・敬語化はしません。
-        誤変換は「同じ音への別の当て字」なので、wrong と right は読みの音が似ている組だけにします。
+        音声認識は音を正しく拾えても、同じ音の別の言葉に変換してしまいがちです。
+        各行を読み、文脈に合わない言葉があれば、同じ音で文脈に合う言葉への修正を報告します。
+        例: 銀行の話で「講座を開設」→「口座を開設」、話題が格闘ゲームなら「残ギ」→「ザンギ」。
+        会話の話題や用語集が与えられた場合、それに音が似た言葉もその語へ直します。
+        言い換え・要約・敬語化はしません。wrong と right は読みの音が似ている組だけにします。
         wrong は本文に書かれている通りの表記にします。誤変換が無ければ空のリストを返します。
         """
 
@@ -166,23 +179,28 @@ enum TranscriptCleaner {
             \(body)
             """
 
-        let options = GenerationOptions(maximumResponseTokens: maxResponseTokens)
-        // decodingFailure はサンプリングの非決定性に賭けて1回だけやり直す(要約側と同じ知見)。
-        for _ in 0..<2 {
+        let options = GenerationOptions(
+            temperature: 0.6, maximumResponseTokens: maxResponseTokens)
+        var collected: [Fix] = []
+        var seenWrongs = Set<String>()
+        var succeededPasses = 0
+        for focus in passFocuses {
             let session = LanguageModelSession(instructions: instructions)
             do {
                 let response = try await session.respond(
-                    to: prompt, generating: Corrections.self, options: options)
-                return apply(fixes: response.content.fixes, to: lines, range: range)
-            } catch let error as LanguageModelSession.GenerationError {
-                if case .decodingFailure = error { continue }
-                // guardrail・コンテキスト超過などはこのチャンクを原文のまま残す。
-                return nil
+                    to: focus + prompt, generating: Corrections.self, options: options)
+                succeededPasses += 1
+                for fix in response.content.fixes where seenWrongs.insert(fix.wrong).inserted {
+                    collected.append(fix)
+                }
             } catch {
-                return nil
+                // decodingFailure・guardrail などはこのパスを捨てて次へ
+                // (サンプリングの非決定性に賭ける。要約側と同じ知見)。
+                continue
             }
         }
-        return nil
+        guard succeededPasses > 0 else { return nil }
+        return apply(fixes: collected, to: lines, range: range)
     }
 
     /// 誤変換ペアをチャンク内の行に適用する。1文字だけの wrong は誤爆しやすいので
@@ -190,7 +208,8 @@ enum TranscriptCleaner {
     /// 短い方が先に潰さないように)。変わった行だけを行単位の検査(sane)に通す。
     private static func apply(fixes: [Fix], to lines: [String], range: [Int]) -> [(Int, String)] {
         let valid = fixes.filter { fix in
-            fix.wrong.count >= 2 && !fix.right.isEmpty && fix.right != fix.wrong
+            fix.wrong.count >= 2 && fix.wrong.count <= fixMaxLength
+                && !fix.right.isEmpty && fix.right != fix.wrong
                 && fix.right.count <= fix.wrong.count * 3 + 2
                 // 語の後半をただ削っただけの組は修正ではない。
                 && !fix.wrong.hasPrefix(fix.right)
@@ -236,39 +255,74 @@ enum TranscriptCleaner {
 
     /// 誤変換は「同じ音への別の当て字」なので、wrong と right の読みは必ず近い。
     /// 読みが遠い組は言い換え(モデルの創作)とみなして捨てる。実測した創作の例:
-    /// 「タメ波動→テクニック波動」「うんまあ→普通」。
-    /// 比較は変わった部分だけで行う。「いや、いらない→いや、必要ない」のように
-    /// 前後に同じ文字が付くと、全体の読みは似てしまい言い換えを見逃すため。
+    /// 「タメ波動→テクニック波動」「信託→保険」「去年→昨年」。
     private static func soundsAlike(_ a: String, _ b: String) -> Bool {
-        let (diffA, diffB) = strippedDifference(a, b)
-        if diffA.isEmpty || diffB.isEmpty {
-            // 純粋な挿入/削除(ザンギ→ザンギエフ 等)は差分の読みを比べられないので
-            // 全体の読みで判定する。
-            return similarity(reading(a), reading(b)) >= 0.5
+        let aChars = Array(a), bChars = Array(b)
+        var prefix = 0
+        while prefix < min(aChars.count, bChars.count), aChars[prefix] == bChars[prefix] {
+            prefix += 1
         }
-        return similarity(reading(diffA), reading(diffB)) >= 0.5
+        var suffix = 0
+        while suffix < min(aChars.count, bChars.count) - prefix,
+            aChars[aChars.count - 1 - suffix] == bChars[bChars.count - 1 - suffix]
+        {
+            suffix += 1
+        }
+        let diffA = aChars[prefix..<(aChars.count - suffix)]
+        let diffB = bChars[prefix..<(bChars.count - suffix)]
+        let punctuation = Set("。、．，？！?!., 　")
+        if diffB.isEmpty {
+            // 純粋な削除(してきたよ→したよ)は発言の省略なので、句読点を消す
+            // だけの場合(上が。って→上がって)しか認めない。
+            return diffA.allSatisfy { punctuation.contains($0) }
+        }
+        if diffA.isEmpty {
+            // 純粋な挿入は発言に無い言葉の付け足し。句読点の補いか、読みが
+            // ほぼ変わらない小さな補正(クバネテス→クバネティス)だけ認める。
+            return diffB.allSatisfy { punctuation.contains($0) }
+                || similarity(reading(a), reading(b)) >= 0.85
+        }
+        // 置き換えは読みで比べる。漢字1文字の読みは隣の文字で決まるため
+        // (進められた/勧められた は「進め/勧め」まで見て初めて同音と分かる)、
+        // 差分の前後に1文字ずつ文脈を足してから読みを取る。ペア全体で比べないのは、
+        // 「丁度いい期会→丁度いい集会」のように前後の同じ文字が読みの違いを薄めるため。
+        let contextA = String(
+            aChars[max(0, prefix - 1)..<min(aChars.count, aChars.count - suffix + 1)])
+        let contextB = String(
+            bChars[max(0, prefix - 1)..<min(bChars.count, bChars.count - suffix + 1)])
+        return similarity(reading(contextA), reading(contextB)) >= 0.7
     }
 
-    /// 先頭と末尾の共通部分を取り除き、双方の「変わった部分」だけを返す。
-    private static func strippedDifference(_ a: String, _ b: String) -> (String, String) {
-        var a = Array(a), b = Array(b)
-        while let first = a.first, first == b.first {
-            a.removeFirst()
-            b.removeFirst()
-        }
-        while let last = a.last, last == b.last {
-            a.removeLast()
-            b.removeLast()
-        }
-        return (String(a), String(b))
-    }
-
-    /// 漢字かな交じりをローマ字読みへ潰す(macOS の transliteration が漢字も読む)。
+    /// 漢字かな交じりを日本語のローマ字読みへ潰す(振り仮名を振る macOS の API)。
+    /// kCFStringTransformToLatin は漢字を中国語のピンインで読んでしまい
+    /// (信託→xintuo、保険→baoxian が似た読み扱いになる)、同音異義の判定に
+    /// 使えないことを実測済み。濁点・半濁点は聞き間違えやすいので清音へ寄せる
+    /// (ゴンボ/コンボ を同音扱いにする)。
     private static func reading(_ text: String) -> String {
-        let mutable = NSMutableString(string: text)
-        CFStringTransform(mutable, nil, kCFStringTransformToLatin, false)
-        CFStringTransform(mutable, nil, kCFStringTransformStripCombiningMarks, false)
-        return (mutable as String).lowercased().replacingOccurrences(of: " ", with: "")
+        let cf = text as CFString
+        var romaji = ""
+        if let tokenizer = CFStringTokenizerCreate(
+            kCFAllocatorDefault, cf, CFRangeMake(0, CFStringGetLength(cf)),
+            kCFStringTokenizerUnitWordBoundary, Locale(identifier: "ja") as CFLocale)
+        {
+            while !CFStringTokenizerAdvanceToNextToken(tokenizer).isEmpty {
+                if let latin = CFStringTokenizerCopyCurrentTokenAttribute(
+                    tokenizer, kCFStringTokenizerAttributeLatinTranscription) as? String
+                {
+                    romaji += latin
+                } else {
+                    let range = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+                    romaji += (CFStringCreateWithSubstring(nil, cf, range) as String?) ?? ""
+                }
+            }
+        }
+        if romaji.isEmpty { romaji = text }
+        romaji = romaji.applyingTransform(.stripDiacritics, reverse: false) ?? romaji
+        romaji = romaji.lowercased().replacingOccurrences(of: " ", with: "")
+        let voicingFold: [Character: Character] = [
+            "g": "k", "z": "s", "d": "t", "b": "h", "p": "h", "j": "s", "f": "h",
+        ]
+        return String(romaji.map { voicingFold[$0] ?? $0 })
     }
 
     /// 文字の重なり具合(0〜1)。同じ文字(重複込み)が双方に何割あるか。
