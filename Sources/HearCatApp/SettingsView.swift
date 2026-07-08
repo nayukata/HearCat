@@ -27,7 +27,6 @@ struct SettingsView: View {
             Tab("一般", systemImage: "gearshape") { generalTab }
             Tab("音声", systemImage: "mic") { audioTab }
             Tab("ホットキー", systemImage: "keyboard") { hotkeyTab }
-            Tab("清書", systemImage: "wand.and.stars") { cleaningTab }
         }
         .frame(width: 520, height: 480)
         .onAppear { refreshInputDevices() }
@@ -132,40 +131,6 @@ struct SettingsView: View {
                 Text("ホットキー")
             } footer: {
                 Text("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。録音/文字起こしのキーは、セッション外で押すとその機能だけオンでセッションを開始します。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var cleaningTab: some View {
-        Form {
-            Section {
-                ForEach($settings.glossaryEntries) { $entry in
-                    HStack(spacing: 8) {
-                        TextField("語", text: $entry.term)
-                            .frame(width: 150)
-                        TextField("説明 (何の名前か、正しい読みなど)", text: $entry.meaning)
-                        Button {
-                            settings.glossaryEntries.removeAll { $0.id == entry.id }
-                        } label: {
-                            Image(systemName: "minus.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("この語を削除")
-                    }
-                }
-                Button {
-                    settings.glossaryEntries.append(GlossaryEntry())
-                } label: {
-                    Label("語を追加", systemImage: "plus")
-                }
-            } header: {
-                Text("清書の用語集")
-            } footer: {
-                Text("人名・製品名・専門用語など、あなたの会話によく出る語を登録します(例: 語「ネトフリ」説明「Netflix の略称。動画配信サービス」)。履歴画面の「清書」の際、音声認識が似た音に間違えた箇所をこの語へ直す手がかりになります。その会話だけの指示は、清書ボタンを押すと書けます。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

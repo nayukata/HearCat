@@ -23,11 +23,6 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     }
     /// 要約はアプリ内で表示する用途のため固定名。
     public var summaryURL: URL? { existing("summary.md") }
-    /// AI 清書(誤変換を文脈で直した版)。原文と同じ「[時刻] 話者: 本文」形式。
-    /// 原文(transcript)が話した内容の一次記録なのに対し、こちらは読みやすさ優先の派生物。
-    public var cleanedURL: URL? { existing("cleaned.md") }
-    /// 清書への指示(この会話の話題や直し方の希望)。ユーザーが清書ボタンの小窓で書く。
-    public var hintsURL: URL? { existing("hints.md") }
 
     private func existing(_ name: String) -> URL? {
         let url = directory.appendingPathComponent(name)

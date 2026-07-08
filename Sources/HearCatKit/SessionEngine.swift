@@ -274,7 +274,9 @@ public final class SessionEngine {
         let startedAt = Date()
         let sessionDir = try SessionStore.createSessionDirectory(startDate: startedAt, name: name)
         do {
-            try await startResources(sessionDir: sessionDir, startedAt: startedAt, record: record, transcribe: transcribe)
+            try await startResources(
+                sessionDir: sessionDir, startedAt: startedAt,
+                record: record, transcribe: transcribe)
         } catch {
             // 途中失敗(マイク初期化エラーなど)で取得済みリソースを残さない。
             // 中身は空の transcript なので、空セッションごと消す。

@@ -14,29 +14,15 @@ struct SessionDetailView: View {
     @State private var player: SessionPlayer?
     @State private var summaryError: String?
     @State private var confirmingDelete = false
-    /// AI 清書(cleaned.md)。原文と同じ形式なので行の表示・再生ジャンプを共用する。
-    @State private var cleaned: String?
-    @State private var cleanedLines: [TranscriptLine] = []
-    /// 文字起こし欄に清書を出すか。清書があるセッションでは既定でオン。
-    @State private var showCleaned = false
-    @State private var cleanError: String?
-    /// 清書への指示(この会話の話題や直し方の希望)。hints.md に保存する。
-    @State private var hints = ""
-    /// 清書ボタンのポップオーバー(指示の入力と実行)。
-    @State private var showCleanPopover = false
 
     /// 生成中の表示は AppModel の状態に従う(停止直後の自動生成でも進捗が見えるように)。
     private var isSummarizing: Bool {
         model.summarizingSessionID == session.id
     }
 
-    private var isCleaning: Bool {
-        model.cleaningSessionID == session.id
-    }
-
     /// オンデバイスモデル(Apple Intelligence)が使えない理由。使えるなら nil。
-    /// ここで一度だけ評価して要約・清書ボタンの disabled と tooltip に共用する。
-    /// システム設定で状態が変わっても、詳細画面を開き直せば再評価される。
+    /// 要約ボタンの disabled と tooltip に使う。システム設定で状態が変わっても、
+    /// 詳細画面を開き直せば再評価される。
     private var aiUnavailableReason: String? {
         OnDeviceModel.unavailableReason()
     }
@@ -84,30 +70,8 @@ struct SessionDetailView: View {
             }
             .help(aiUnavailableReason ?? "会話の要点をオンデバイス AI が箇条書きにまとめます")
             .disabled(
-                isSummarizing || isCleaning || (transcript?.isEmpty ?? true)
+                isSummarizing || (transcript?.isEmpty ?? true)
                     || aiUnavailableReason != nil)
-            Button {
-                showCleanPopover = true
-            } label: {
-                if isCleaning {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("\(Int(model.cleaningProgress * 100))%")
-                            .font(.caption.monospacedDigit())
-                    }
-                } else {
-                    Label(cleaned == nil ? "清書" : "清書し直す", systemImage: "wand.and.stars")
-                }
-            }
-            .help(
-                aiUnavailableReason ?? "音声認識の誤変換を、会話の文脈からオンデバイス AI が直します"
-            )
-            .disabled(
-                isSummarizing || isCleaning || (transcript?.isEmpty ?? true)
-                    || aiUnavailableReason != nil)
-            .popover(isPresented: $showCleanPopover, arrowEdge: .bottom) {
-                cleanPopover
-            }
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([session.directory])
             } label: {
@@ -140,10 +104,6 @@ struct SessionDetailView: View {
                     Label(summaryError, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
-                if let cleanError {
-                    Label(cleanError, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                }
                 if let summary {
                     GroupBox {
                         Text(summary)
@@ -165,7 +125,7 @@ struct SessionDetailView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
                             VStack(alignment: .leading, spacing: 3) {
-                                ForEach(showCleaned ? cleanedLines : transcriptLines) { line in
+                                ForEach(transcriptLines) { line in
                                     transcriptRow(line)
                                 }
                             }
@@ -174,20 +134,10 @@ struct SessionDetailView: View {
                     } label: {
                         HStack {
                             Text("文字起こし")
-                            if cleaned != nil {
-                                Picker("表示", selection: $showCleaned) {
-                                    Text("清書").tag(true)
-                                    Text("原文").tag(false)
-                                }
-                                .pickerStyle(.segmented)
-                                .labelsHidden()
-                                .fixedSize()
-                            }
                             Spacer()
                             if !transcript.isEmpty {
                                 CopyButton {
-                                    TranscriptParser.bodyText(
-                                        from: showCleaned ? (cleaned ?? transcript) : transcript)
+                                    TranscriptParser.bodyText(from: transcript)
                                 }
                             }
                         }
@@ -196,37 +146,6 @@ struct SessionDetailView: View {
             }
             .padding()
         }
-    }
-
-    /// 清書ボタンのポップオーバー。方向性の指示を書いて(空でもよい)実行する。
-    /// 指示はキー入力ごとに hints.md へ保存され、次回の清書し直しでも使われる。
-    private var cleanPopover: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("清書への指示 (任意)")
-                .font(.headline)
-            TextField(
-                "会話の話題や、直してほしい方向を自由に。例: ゲームの雑談。技名の誤変換が多い",
-                text: $hints, axis: .vertical
-            )
-            .textFieldStyle(.roundedBorder)
-            .lineLimit(3...6)
-            .frame(width: 320)
-            .onChange(of: hints) {
-                model.saveCleaningHints(hints, for: session)
-            }
-            Text("毎回の会話に出る人名・用語は、設定の「清書の用語集」へ。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button(cleaned == nil ? "清書する" : "清書し直す") {
-                    showCleanPopover = false
-                    Task { await cleanUp() }
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding()
     }
 
     /// 1行ぶんの文字起こし。録音内の経過時間(再生バーと同じ物差し)を出し、
@@ -265,29 +184,8 @@ struct SessionDetailView: View {
         transcriptLines = TranscriptParser.lines(
             from: transcript ?? "", sessionStart: session.startDate)
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
-        cleaned = session.cleanedURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
-        cleanedLines = TranscriptParser.lines(from: cleaned ?? "", sessionStart: session.startDate)
-        if forceNewPlayer {
-            // セッションを切り替えた時だけ既定表示を決め直す(再読込でトグルを勝手に戻さない)。
-            showCleaned = cleaned != nil
-            // ヒントも切り替え時のみ読む(再読込のたびに読むと、入力中の文字が巻き戻るため)。
-            hints = session.hintsURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
-        }
         if forceNewPlayer || player?.hasAudio != true {
             player = SessionPlayer(audioURL: session.audioURL)
-        }
-    }
-
-    private func cleanUp() async {
-        guard let transcript, !transcript.isEmpty else { return }
-        cleanError = nil
-        do {
-            cleaned = try await model.generateCleanTranscript(for: session, transcript: transcript)
-            cleanedLines = TranscriptParser.lines(
-                from: cleaned ?? "", sessionStart: session.startDate)
-            showCleaned = true
-        } catch {
-            cleanError = "清書に失敗しました: \(error.localizedDescription)"
         }
     }
 

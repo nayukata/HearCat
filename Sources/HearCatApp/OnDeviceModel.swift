@@ -1,7 +1,7 @@
 import FoundationModels
 
 /// オンデバイスモデル(Apple Intelligence / FoundationModels)の共通処理。
-/// 要約(TranscriptSummarizer)と清書(TranscriptCleaner)の両方から使う。
+/// 現状は要約(TranscriptSummarizer)から使う。
 enum OnDeviceModel {
     /// モデルが使えない場合に日本語の理由を返す。使えるなら nil。
     static func unavailableReason() -> String? {
