@@ -6,7 +6,8 @@ import SwiftUI
 /// セッションのドラッグ&ドロップ、右クリックでの名前変更・削除に対応する。
 struct MainWindow: View {
     let model: AppModel
-    @State private var selection: String?
+    /// 一覧の選択。単一選択と複数選択(Cmd/Shift+クリック)の両方を扱うため Set で持つ。
+    @State private var selection: Set<String> = []
     /// 折りたたんだフォルダ。既定は全部展開。
     @State private var collapsedFolders: Set<String> = []
     /// 全文検索。入力中はフォルダ構造の代わりに横断ヒットの一覧を出す。
@@ -23,6 +24,8 @@ struct MainWindow: View {
     @State private var folderRenameTarget: String?
     @State private var folderRenameText = ""
     @State private var folderDeleteTarget: String?
+    /// 一括削除の確認対象。空でない間だけ確認ダイアログが出る。
+    @State private var deletingSessions: [SessionInfo] = []
 
     /// ライブ行の選択タグ。AppModel からも選択リクエストの値として参照するため internal にする。
     static let liveID = "live"
@@ -31,14 +34,22 @@ struct MainWindow: View {
         NavigationSplitView {
             sidebar
         } detail: {
-            if selection == Self.liveID, model.status.active {
+            if selection.contains(Self.liveID), model.status.active {
                 LiveSessionView(model: model)
-            } else if let session = model.sessions.first(where: { $0.id == selection }) {
+            } else if selection.count == 1, let id = selection.first,
+                let session = model.sessions.first(where: { $0.id == id })
+            {
                 SessionDetailView(model: model, session: session) {
-                    selection = nil
+                    selection = []
                 }
                 // 選択が変わったらプレーヤー等の内部状態を作り直す。
                 .id(session.id)
+            } else if selection.count > 1 {
+                ContentUnavailableView(
+                    "\(selection.count) 件のセッションを選択中",
+                    systemImage: "text.bubble",
+                    description: Text(
+                        "右クリックまたは delete キーで、まとめて削除できます。"))
             } else {
                 ContentUnavailableView(
                     "セッションを選択",
@@ -51,25 +62,30 @@ struct MainWindow: View {
         })
         .onAppear {
             model.refreshSessions()
-            if selection == nil {
-                selection = model.status.active ? Self.liveID : model.sessions.first?.id
+            if selection.isEmpty {
+                let first = model.status.active ? Self.liveID : model.sessions.first?.id
+                if let first { selection = [first] }
             }
         }
         // AppModel からの明示的な選択リクエスト(例: セッション中に履歴を開いた時のライブ選択)。
         // 一方向のリクエストなので、受け取ったら消費して nil に戻す。
         .onChange(of: model.mainWindowSelectionRequest) {
             guard let request = model.mainWindowSelectionRequest else { return }
-            selection = request
+            selection = [request]
             model.mainWindowSelectionRequest = nil
         }
         // ライブ画面を見ている最中に停止すると status.active が false になり、
         // そのままだと selection がライブの ID を指し続けてプレースホルダに落ちる。
         // 今終わったセッションの詳細へ自然に遷移させる。
         .onChange(of: model.status.active) {
-            if !model.status.active, selection == Self.liveID {
-                selection = model.lastEndedSessionID
+            if !model.status.active, selection.contains(Self.liveID) {
+                selection = model.lastEndedSessionID.map { [$0] } ?? []
             }
         }
+        .onDeleteCommand(perform: requestDeletion)
+        .modifier(BulkDeleteConfirmation(
+            targets: $deletingSessions,
+            onConfirm: performDeletion))
         .alert(
             "セッション名を変更", isPresented: presented($renameTarget), presenting: renameTarget
         ) { session in
@@ -248,10 +264,17 @@ struct MainWindow: View {
             .tag(session.id)
             .draggable(session.id)
             .contextMenu {
+                // 複数選択中に選択内の行を右クリックした場合は、選択全体を対象にする。
+                // それ以外(未選択の行の右クリック)は、その行だけを対象にする。
+                let bulkTargets = selection.count > 1 && selection.contains(session.id)
+                    ? model.sessions.filter { selection.contains($0.id) }
+                    : nil
+
                 Button("名前を変更…") {
                     renameText = session.name
                     renameTarget = session
                 }
+                .disabled(bulkTargets != nil)
                 Menu("フォルダへ移動") {
                     ForEach(model.folders.filter { $0 != session.folder }, id: \.self) { folder in
                         Button(folder) {
@@ -267,6 +290,17 @@ struct MainWindow: View {
                     Button("新しいフォルダ…") {
                         newFolderText = ""
                         newFolderTarget = session
+                    }
+                }
+                .disabled(bulkTargets != nil)
+                Divider()
+                if let bulkTargets {
+                    Button("\(bulkTargets.count) 件を削除…", role: .destructive) {
+                        deletingSessions = bulkTargets
+                    }
+                } else {
+                    Button("削除…", role: .destructive) {
+                        deletingSessions = [session]
                     }
                 }
             }
@@ -292,16 +326,36 @@ struct MainWindow: View {
         return moved
     }
 
+    /// Delete キーが押された時と、行の右クリック「削除」から呼ぶ、削除確認の発火。
+    private func requestDeletion() {
+        let targets = model.sessions.filter { selection.contains($0.id) }
+        if !targets.isEmpty { deletingSessions = targets }
+    }
+
+    /// 確認ダイアログの「削除」ボタンから呼ぶ、実削除と選択の追従。
+    private func performDeletion() {
+        let ids = Set(deletingSessions.map(\.id))
+        for session in deletingSessions {
+            model.delete(session)
+        }
+        selection.subtract(ids)
+        deletingSessions = []
+    }
+
     /// リネーム/移動でセッション ID が変わるため、成功したら選択を追従させる。
+    /// 単一選択の枠(選択解除→対象を選び直す)は多選択時と混ざらないように独立で扱う。
     private func select(_ id: String?) {
-        if let id { selection = id }
+        if let id { selection = [id] }
     }
 
     /// フォルダ名の変更/削除では中のセッション全部の ID が変わるため、選択を追従させる。
     private func remapSelection(fromFolder old: String, to new: String?) {
-        guard let current = selection, current.hasPrefix("\(old)/") else { return }
-        let rest = String(current.dropFirst(old.count + 1))
-        selection = new.map { "\($0)/\(rest)" } ?? rest
+        let prefix = "\(old)/"
+        selection = Set(selection.map { current -> String in
+            guard current.hasPrefix(prefix) else { return current }
+            let rest = String(current.dropFirst(prefix.count))
+            return new.map { "\($0)/\(rest)" } ?? rest
+        })
     }
 
     private func expandedBinding(_ folder: String) -> Binding<Bool> {
@@ -321,6 +375,31 @@ struct MainWindow: View {
         Binding(
             get: { target.wrappedValue != nil },
             set: { if !$0 { target.wrappedValue = nil } })
+    }
+}
+
+/// 一括削除の確認ダイアログを提供する ViewModifier。MainWindow.body が
+/// 型推論のタイムアウトに達したため、修飾子を外へ切り出す。
+private struct BulkDeleteConfirmation: ViewModifier {
+    @Binding var targets: [SessionInfo]
+    let onConfirm: () -> Void
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            targets.count == 1
+                ? "このセッションを削除しますか？"
+                : "\(targets.count) 個のセッションを削除しますか？",
+            isPresented: Binding(
+                get: { !targets.isEmpty },
+                set: { if !$0 { targets = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button(
+                targets.count == 1 ? "文字起こしと録音を削除" : "\(targets.count) 件を削除",
+                role: .destructive, action: onConfirm)
+        } message: {
+            Text("元に戻せません。文字起こしと録音も一緒に消えます。")
+        }
     }
 }
 
