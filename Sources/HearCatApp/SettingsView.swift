@@ -45,10 +45,10 @@ struct SettingsView: View {
             }
 
             Section {
-                LabeledContent("skill (使い方の説明書)") {
+                LabeledContent("skill") {
                     statusLabel(installed: skillInstalled)
                 }
-                LabeledContent("CLI (操作コマンド)") {
+                LabeledContent("CLI") {
                     statusLabel(installed: cliInstalled)
                 }
                 if !(skillInstalled && cliInstalled) {
