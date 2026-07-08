@@ -22,8 +22,11 @@ app: build
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp $(BUILD_DIR)/HearCatApp $(APP)/Contents/MacOS/HearCat
 	cp Sources/HearCatApp/Info.plist $(APP)/Contents/Info.plist
-	# 設定画面の「agent skill を導入」ボタンが、この2つを ~/.claude/skills/ と ~/.local/bin/ へ配置する。
-	cp distribution/hearcat/SKILL.md $(APP)/Contents/Resources/SKILL.md
+	# 設定画面の「agent skill を導入」ボタンが、これらを ~/.agents/skills/ と ~/.local/bin/ へ配置する。
+	# skill は複数あるので Resources 配下にディレクトリごと持つ(バンドルの階層を維持したまま複製する)。
+	mkdir -p $(APP)/Contents/Resources/skills
+	cp -R distribution/hearcat $(APP)/Contents/Resources/skills/hearcat
+	cp -R distribution/hearcat-clean $(APP)/Contents/Resources/skills/hearcat-clean
 	cp Sources/HearCatApp/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	cp $(BUILD_DIR)/hearcat $(APP)/Contents/MacOS/hearcat-cli
 	# 同梱する実行ファイルは、バンドル本体より先に個別署名しないと署名検証が壊れる。
