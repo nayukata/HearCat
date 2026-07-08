@@ -12,6 +12,7 @@ let usage = """
   hearcat latest                                 最新の文字起こしファイルのパスを表示する
   hearcat set record on|off                      録音だけを切り替える
   hearcat set transcribe on|off                  文字起こしだけを切り替える
+  hearcat write-cleaned [<session>]              標準入力の清書を cleaned.md に書く(原文には触れない)
 """
 
 func fail(_ message: String) -> Never {
@@ -141,6 +142,43 @@ case "set":
     let response = requireResponse(request)
     print("切り替えました")
     if let status = response.status { printStatus(status) }
+
+case "write-cleaned":
+    // 標準入力で受けた清書テキストを、指定 or 最新セッションの cleaned.md へ書く。
+    // 書き込み先はハードコードで、agent が指示を誤っても原文 <id>.md には届かない。
+    let query = arguments.first
+    let session: SessionInfo? = {
+        guard let query, !query.isEmpty else { return SessionStore.latest() }
+        return SessionStore.list().first {
+            $0.id == query
+                || $0.directory.lastPathComponent == query
+                || $0.directory.path == query
+        }
+    }()
+    guard let session else {
+        fail("セッションが見つかりません: \(query ?? "(最新)")")
+    }
+    // stdin を EOF まで読む(パイプでもリダイレクトでもここで完結する)。
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let text = String(data: data, encoding: .utf8),
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+        fail("標準入力が空です。清書テキストをパイプで渡してください。")
+    }
+    let out = session.directory.appendingPathComponent("cleaned.md")
+    // 万一 out が transcript や audio と同じパスに解決されたら止める(パス正規化の穴埋め)。
+    let forbidden = [session.transcriptURL, session.audioURL].compactMap {
+        $0?.standardizedFileURL.path
+    }
+    if forbidden.contains(out.standardizedFileURL.path) {
+        fail("書き込み先が原文と衝突するため中止しました: \(out.path)")
+    }
+    do {
+        try text.write(to: out, atomically: true, encoding: .utf8)
+    } catch {
+        fail("書き込みに失敗しました: \(error.localizedDescription)")
+    }
+    print(out.path)
 
 default:
     print(usage)
