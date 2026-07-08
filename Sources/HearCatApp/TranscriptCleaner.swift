@@ -53,7 +53,9 @@ enum TranscriptCleaner {
         あなたは会話の文字起こしの校正係です。音声認識の誤変換を、会話の文脈から本来の言葉に直します。
         発言は話し言葉のまま残し、要約・言い換え・敬語化はしません。
         確信できる誤変換だけを直し、不明瞭な部分はそのまま残します。
-        発言の意味・語尾・長さを大きく変えてはいけません。
+        発言の意味・語尾・長さを大きく変えてはいけません。発言の一部を省略してもいけません。
+        句読点は全角(。、)のまま保ち、半角の . や , に変えてはいけません。
+        直す必要がない行は、入力の本文をそのまま返します。
         出力の本文に行番号・時刻・話者名を含めてはいけません。
         """
 
@@ -147,7 +149,8 @@ enum TranscriptCleaner {
                 var results: [(Int, String)] = []
                 for line in response.content.lines {
                     guard let lineIndex = numbered[line.number] else { continue }
-                    let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let text = normalizePunctuation(
+                        line.text.trimmingCharacters(in: .whitespacesAndNewlines))
                     guard !text.isEmpty, sane(text, original: lines[lineIndex]) else { continue }
                     results.append((lineIndex, text))
                 }
@@ -163,12 +166,69 @@ enum TranscriptCleaner {
         return nil
     }
 
-    /// モデルの暴走(要約・膨張・話者名の混入)を弾く。清書は原文と同程度の長さのはず。
+    /// モデルの暴走を弾く。清書は「同じ発言の表記直し」なので、原文と長さも文字も
+    /// 大きくは変わらないはず。実際に観測した暴走は3種:
+    /// 後半の切り落とし・隣の行の内容の混入(番号ズレ)・隣の行を吸収した膨張。
     private static func sane(_ text: String, original: String) -> Bool {
         guard let (_, _, body) = splitLine(original) else { return false }
-        if text.count > body.count * 2 + 10 { return false }
-        if text.count < body.count / 3 { return false }
+        if text.count * 3 > body.count * 4 + 30 { return false }
+        if text.count * 3 < body.count * 2 { return false }
+        if similarity(text, body) < 0.5 { return false }
+        // 原文の先頭部分と完全一致(=末尾を削っただけ)は誤変換の修正ではありえない。
+        if text.count < body.count, body.hasPrefix(text) { return false }
+        // 逆に末尾へ足しただけの場合、句読点の補いだけは許す(それ以外は続きの捏造)。
+        if text.count > body.count, text.hasPrefix(body),
+            text.dropFirst(body.count).contains(where: { !"。、？！?!.,".contains($0) })
+        {
+            return false
+        }
         return true
+    }
+
+    /// 文字の重なり具合(0〜1)。同じ文字(重複込み)が双方に何割あるか。
+    /// 誤変換の修正は行の一部しか変えないため高くなり、別の行の内容への
+    /// すり替わりはほぼ 0 になる。
+    private static func similarity(_ a: String, _ b: String) -> Double {
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        var counts: [Character: Int] = [:]
+        for ch in a { counts[ch, default: 0] += 1 }
+        var common = 0
+        for ch in b where counts[ch, default: 0] > 0 {
+            counts[ch, default: 0] -= 1
+            common += 1
+        }
+        return Double(common) / Double(max(a.count, b.count))
+    }
+
+    /// モデルが日本語の文中に混ぜてくる半角句読点を全角へ戻す。
+    /// 直前が日本語の文字の時だけ変換する(数字や英語の「18.5」「U.S.」は触らない)。
+    private static func normalizePunctuation(_ text: String) -> String {
+        var result = ""
+        var previous: Character?
+        for ch in text {
+            if let prev = previous, isJapanese(prev), ch == "." || ch == "," {
+                let replaced: Character = ch == "." ? "。" : "、"
+                result.append(replaced)
+                previous = replaced
+                continue
+            }
+            result.append(ch)
+            previous = ch
+        }
+        return result
+    }
+
+    private static func isJapanese(_ ch: Character) -> Bool {
+        guard let scalar = ch.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x3040...0x309F,  // ひらがな
+            0x30A0...0x30FF,  // カタカナ(ーを含む)
+            0x4E00...0x9FFF,  // 漢字
+            0x3005:  // 々
+            return true
+        default:
+            return false
+        }
     }
 
     /// 「[時刻] 話者: 本文」を分解する。形式外の行は nil。
