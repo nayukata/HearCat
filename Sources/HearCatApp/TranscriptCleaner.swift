@@ -49,7 +49,11 @@ enum TranscriptCleaner {
         var text: String
     }
 
-    private static let instructions = """
+    /// 用語集・ヒントを指示文に入れる際の上限。オンデバイスモデルのコンテキストが
+    /// 小さいため、長すぎる分は頭から切る(チャンク本文の入る余地を必ず残す)。
+    private static let maxHintChars = 400
+
+    private static let baseInstructions = """
         あなたは会話の文字起こしの校正係です。音声認識の誤変換を、会話の文脈から本来の言葉に直します。
         発言は話し言葉のまま残し、要約・言い換え・敬語化はしません。
         確信できる誤変換だけを直し、不明瞭な部分はそのまま残します。
@@ -59,10 +63,27 @@ enum TranscriptCleaner {
         出力の本文に行番号・時刻・話者名を含めてはいけません。
         """
 
+    /// 会話の背景(ヒント)と用語集を指示文へ差し込む。どちらも無ければ素の指示文。
+    private static func makeInstructions(glossary: String, hints: String) -> String {
+        var text = baseInstructions
+        let hints = String(hints.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxHintChars))
+        if !hints.isEmpty {
+            text += "\n\nこの会話の背景(誤変換を推測する手がかり):\n\(hints)"
+        }
+        let glossary = String(
+            glossary.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxHintChars))
+        if !glossary.isEmpty {
+            text += "\n\nこの会話に出やすい語(正しい表記。似た音を誤変換していたらこの表記に直す):\n\(glossary)"
+        }
+        return text
+    }
+
     /// transcript 全体を清書し、同じ「[時刻] 話者: 本文」形式で返す。
+    /// glossary は設定の用語集(全セッション共通)、hints はこのセッションの話題や固有名詞。
     /// progress には処理済みチャンクの割合(0〜1)を渡す。
     static func clean(
-        transcript: String, progress: (@MainActor (Double) -> Void)? = nil
+        transcript: String, glossary: String = "", hints: String = "",
+        progress: (@MainActor (Double) -> Void)? = nil
     ) async throws -> String {
         if let reason = OnDeviceModel.unavailableReason() {
             throw CleanerError.unavailable(reason)
@@ -75,10 +96,11 @@ enum TranscriptCleaner {
             throw CleanerError.failed("清書できる発言がありません")
         }
 
+        let instructions = makeInstructions(glossary: glossary, hints: hints)
         var cleaned = lines
         var succeededChunks = 0
         for (index, chunk) in chunks.enumerated() {
-            if let results = await cleanChunk(lines: lines, range: chunk) {
+            if let results = await cleanChunk(lines: lines, range: chunk, instructions: instructions) {
                 for (lineIndex, text) in results {
                     cleaned[lineIndex] = replaceBody(of: lines[lineIndex], with: text)
                 }
@@ -115,7 +137,9 @@ enum TranscriptCleaner {
     }
 
     /// 1チャンクを清書する。返り値は (行 index, 清書本文)。失敗したら nil(原文のまま残す)。
-    private static func cleanChunk(lines: [String], range: [Int]) async -> [(Int, String)]? {
+    private static func cleanChunk(
+        lines: [String], range: [Int], instructions: String
+    ) async -> [(Int, String)]? {
         // 番号はチャンク内で 1 から振り直す(小さい数字の方がモデルが取り違えない)。
         var numbered: [Int: Int] = [:]  // チャンク内番号 → 行 index
         var body = ""

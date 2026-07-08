@@ -89,6 +89,19 @@ struct SettingsView: View {
             }
 
             Section {
+                TextEditor(text: $settings.glossary)
+                    .font(.body)
+                    .frame(height: 88)
+                    .scrollContentBackground(.hidden)
+            } header: {
+                Text("清書の用語集")
+            } footer: {
+                Text("人名・製品名・専門用語など、あなたの会話によく出る語を1行に1つ書きます。履歴画面の「清書」の際、音声認識が似た音に間違えた箇所をこの表記へ直す手がかりになります。その会話だけの話題は、履歴画面の「清書のヒント」欄へ。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 LabeledContent("skill (使い方の説明書)") {
                     statusLabel(installed: skillInstalled)
                 }

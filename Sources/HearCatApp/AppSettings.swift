@@ -37,6 +37,12 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(calendarNaming, forKey: Self.calendarNamingKey) }
     }
 
+    /// 清書の用語集。人名・製品名など会話に出やすい語を1行1つで書き、
+    /// 音声認識が似た音に誤変換した箇所をこの表記へ直す手がかりにする。
+    var glossary: String {
+        didSet { UserDefaults.standard.set(glossary, forKey: Self.glossaryKey) }
+    }
+
     /// スピーカーから出た相手の声がマイクに回り込み、自分の発言として文字起こしされるのを防ぐか。
     var echoRemoval: Bool {
         didSet {
@@ -81,6 +87,7 @@ final class AppSettings {
     private static let systemGainKey = "systemGain"
     private static let hotkeysKey = "hotkeys"
     private static let calendarNamingKey = "calendarNaming"
+    private static let glossaryKey = "glossary"
     private static let echoRemovalKey = "echoRemoval"
     private static let micSensitivityAutoKey = "micSensitivityAuto"
     private static let micSensitivityKey = "micSensitivity"
@@ -91,6 +98,7 @@ final class AppSettings {
         micGain = defaults.object(forKey: Self.micGainKey) as? Double ?? 1.0
         systemGain = defaults.object(forKey: Self.systemGainKey) as? Double ?? 1.0
         calendarNaming = defaults.object(forKey: Self.calendarNamingKey) as? Bool ?? true
+        glossary = defaults.string(forKey: Self.glossaryKey) ?? ""
         echoRemoval = defaults.object(forKey: Self.echoRemovalKey) as? Bool ?? true
         micSensitivityAuto = defaults.object(forKey: Self.micSensitivityAutoKey) as? Bool ?? true
         micSensitivity = defaults.object(forKey: Self.micSensitivityKey) as? Double ?? 0.001

@@ -20,6 +20,8 @@ struct SessionDetailView: View {
     /// 文字起こし欄に清書を出すか。清書があるセッションでは既定でオン。
     @State private var showCleaned = false
     @State private var cleanError: String?
+    /// 清書のヒント(この会話の話題・固有名詞)。hints.md に保存する。
+    @State private var hints = ""
 
     /// 生成中の表示は AppModel の状態に従う(停止直後の自動生成でも進捗が見えるように)。
     private var isSummarizing: Bool {
@@ -136,6 +138,29 @@ struct SessionDetailView: View {
                         }
                     }
                 }
+                if let transcript, !transcript.isEmpty {
+                    GroupBox {
+                        TextField(
+                            "会話の話題・人名・固有名詞など(例: ハンターハンターの雑談。ゼノ、シルバ)",
+                            text: $hints, axis: .vertical
+                        )
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...3)
+                        // 保存はキー入力ごと(ファイルが小さいので出し惜しみしない)。
+                        // 清書実行時に読み直すため、実行前に書き終わっている必要がある。
+                        .onChange(of: hints) {
+                            model.saveCleaningHints(hints, for: session)
+                        }
+                    } label: {
+                        HStack {
+                            Text("清書のヒント")
+                            Spacer()
+                            Text("書いておくと誤変換の修正が当たりやすくなります。毎回出る用語は設定の用語集へ。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 if let transcript {
                     GroupBox {
                         if transcript.isEmpty {
@@ -218,6 +243,8 @@ struct SessionDetailView: View {
         if forceNewPlayer {
             // セッションを切り替えた時だけ既定表示を決め直す(再読込でトグルを勝手に戻さない)。
             showCleaned = cleaned != nil
+            // ヒントも切り替え時のみ読む(再読込のたびに読むと、入力中の文字が巻き戻るため)。
+            hints = session.hintsURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
         }
         if forceNewPlayer || player?.hasAudio != true {
             player = SessionPlayer(audioURL: session.audioURL)

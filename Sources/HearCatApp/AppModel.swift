@@ -249,17 +249,39 @@ final class AppModel {
     private(set) var cleaningProgress: Double = 0
 
     /// 清書を生成して cleaned.md に保存し、履歴を読み直す。
+    /// 設定の用語集と、セッションごとのヒント(hints.md)を手がかりとして渡す。
     func generateCleanTranscript(for session: SessionInfo, transcript: String) async throws -> String {
         cleaningSessionID = session.id
         cleaningProgress = 0
         defer { cleaningSessionID = nil }
-        let result = try await TranscriptCleaner.clean(transcript: transcript) { [weak self] value in
+        let hints = session.hintsURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+        let result = try await TranscriptCleaner.clean(
+            transcript: transcript, glossary: settings.glossary, hints: hints
+        ) { [weak self] value in
             self?.cleaningProgress = value
         }
         let url = session.directory.appendingPathComponent("cleaned.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
         refreshSessions()
         return result
+    }
+
+    /// 清書のヒントを hints.md に保存する(空にしたら消す)。1キーごとに呼ばれても
+    /// 困らない小ささなので、保存タイミングの管理は持たない。
+    func saveCleaningHints(_ hints: String, for session: SessionInfo) {
+        let url = session.directory.appendingPathComponent("hints.md")
+        let trimmed = hints.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if trimmed.isEmpty {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            } else {
+                try trimmed.write(to: url, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     /// 停止直後の自動要約。失敗しても何も出さない(履歴の手動ボタンで
