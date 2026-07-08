@@ -83,6 +83,14 @@ public actor ChannelTranscriber {
                     // 句読点や記号だけの結果は情報がないので捨てる
                     // (スピーカーからの回り込み音の断片で出やすい)。
                     guard raw.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
+                    // 無音ゲートのゼロ埋めを長時間聞いた認識器は「あ」などの短い語を
+                    // 捏造することがある(実測: 何も再生していない相手側で頻発)。
+                    // 確定だけでなく暫定でも同じ捏造が出るため、両方に同じ RMS フィルタを
+                    // かける。暫定を素通りさせるとライブの「認識中」表示に幻聴が残る。
+                    if self.isSilentHallucination(range: result.range) {
+                        debugLog("\(speaker) 無音区間の幻聴として破棄 final=\(result.isFinal) text='\(raw)'")
+                        continue
+                    }
                     // 確定の発話開始時刻は、正確な順に
                     //   1. 認識器が付けた最初の語の時刻(雑音が続く環境でも語の位置を指す)
                     //   2. 範囲内で音が立ち上がった位置(語の時刻が無い時の予備)
@@ -90,11 +98,12 @@ public actor ChannelTranscriber {
                     // で決める。暫定は速報性優先で 3 のまま。
                     let startedAt = self.speechStartWallTime(of: result) ?? Date()
                     if result.isFinal {
-                        // 無音ゲートのゼロ埋めを長時間聞いた認識器は「あ」などの短い語を
-                        // 捏造することがある(実測: 何も再生していない相手側で頻発)。
-                        // 該当範囲の音量がほぼゼロなら、実音声は無かったので捨てる。
-                        if self.isSilentHallucination(range: result.range) {
-                            debugLog("\(speaker) 無音区間の幻聴として破棄 text='\(raw)'")
+                        // 単独1文字＋句読点なし(「あ」「M」「ん」など)は、環境音や
+                        // 音楽から認識器が短い語を捏造する典型パターン。実発話で
+                        // 1文字だけの確定はまず来ない(「え？」は句読点で残る、
+                        // 「あー」は content 2 で残る)ため落とす。
+                        if Self.isBareSingleChar(raw) {
+                            debugLog("\(speaker) 単文字確定の破棄 text='\(raw)'")
                             continue
                         }
                         let text = self.finalizeText(raw, range: result.range)
@@ -169,6 +178,15 @@ public actor ChannelTranscriber {
         var sumSq: Float = 0
         for v in samples { sumSq += v * v }
         return (sumSq / Float(samples.count)).squareRoot()
+    }
+
+    /// 「あ」「M」のような句読点も無い単独1文字の確定を判定する。
+    /// 空白と句読点を除いた実質文字が1つ以下、かつ元の文字列に句読点が
+    /// 一切含まれないケースのみ真とする。
+    static func isBareSingleChar(_ raw: String) -> Bool {
+        let content = raw.filter { !$0.isWhitespace && !$0.isPunctuation }
+        guard content.count <= 1 else { return false }
+        return !raw.contains(where: { $0.isPunctuation })
     }
 
     /// 認識器は「〜なん ？」のように句読点の前へ半角スペースを入れることがある。

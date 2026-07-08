@@ -20,4 +20,19 @@ struct PunctuationTidyTests {
         #expect(QuestionDetector.markAsQuestion("使えるのかな。") == "使えるのかな？")
         #expect(QuestionDetector.markAsQuestion("もう入ってる？") == "もう入ってる？")
     }
+
+    @Test func 句読点無しの単独1文字は幻聴とみなす() {
+        #expect(ChannelTranscriber.isBareSingleChar("あ"))
+        #expect(ChannelTranscriber.isBareSingleChar("M"))
+        #expect(ChannelTranscriber.isBareSingleChar("ん"))
+        #expect(ChannelTranscriber.isBareSingleChar(" あ "))
+    }
+
+    @Test func 句読点付き1文字や2文字以上は残す() {
+        #expect(!ChannelTranscriber.isBareSingleChar("え？"))
+        #expect(!ChannelTranscriber.isBareSingleChar("あ。"))
+        #expect(!ChannelTranscriber.isBareSingleChar("あー"))
+        #expect(!ChannelTranscriber.isBareSingleChar("うん"))
+        #expect(!ChannelTranscriber.isBareSingleChar("俺?"))
+    }
 }
