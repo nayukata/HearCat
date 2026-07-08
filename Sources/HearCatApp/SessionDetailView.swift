@@ -20,8 +20,10 @@ struct SessionDetailView: View {
     /// 文字起こし欄に清書を出すか。清書があるセッションでは既定でオン。
     @State private var showCleaned = false
     @State private var cleanError: String?
-    /// 清書のヒント(この会話の話題・固有名詞)。hints.md に保存する。
+    /// 清書への指示(この会話の話題や直し方の希望)。hints.md に保存する。
     @State private var hints = ""
+    /// 清書ボタンのポップオーバー(指示の入力と実行)。
+    @State private var showCleanPopover = false
 
     /// 生成中の表示は AppModel の状態に従う(停止直後の自動生成でも進捗が見えるように)。
     private var isSummarizing: Bool {
@@ -75,7 +77,7 @@ struct SessionDetailView: View {
             }
             .disabled(isSummarizing || isCleaning || (transcript?.isEmpty ?? true))
             Button {
-                Task { await cleanUp() }
+                showCleanPopover = true
             } label: {
                 if isCleaning {
                     HStack(spacing: 6) {
@@ -89,6 +91,9 @@ struct SessionDetailView: View {
             }
             .help("音声認識の誤変換を、会話の文脈からオンデバイス AI が直します")
             .disabled(isSummarizing || isCleaning || (transcript?.isEmpty ?? true))
+            .popover(isPresented: $showCleanPopover, arrowEdge: .bottom) {
+                cleanPopover
+            }
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([session.directory])
             } label: {
@@ -138,29 +143,6 @@ struct SessionDetailView: View {
                         }
                     }
                 }
-                if let transcript, !transcript.isEmpty {
-                    GroupBox {
-                        TextField(
-                            "会話の話題・人名・固有名詞など(例: ハンターハンターの雑談。ゼノ、シルバ)",
-                            text: $hints, axis: .vertical
-                        )
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...3)
-                        // 保存はキー入力ごと(ファイルが小さいので出し惜しみしない)。
-                        // 清書実行時に読み直すため、実行前に書き終わっている必要がある。
-                        .onChange(of: hints) {
-                            model.saveCleaningHints(hints, for: session)
-                        }
-                    } label: {
-                        HStack {
-                            Text("清書のヒント")
-                            Spacer()
-                            Text("書いておくと誤変換の修正が当たりやすくなります。毎回出る用語は設定の用語集へ。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
                 if let transcript {
                     GroupBox {
                         if transcript.isEmpty {
@@ -200,6 +182,37 @@ struct SessionDetailView: View {
             }
             .padding()
         }
+    }
+
+    /// 清書ボタンのポップオーバー。方向性の指示を書いて(空でもよい)実行する。
+    /// 指示はキー入力ごとに hints.md へ保存され、次回の清書し直しでも使われる。
+    private var cleanPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("清書への指示 (任意)")
+                .font(.headline)
+            TextField(
+                "会話の話題や、直してほしい方向を自由に。例: ゲームの雑談。技名の誤変換が多い",
+                text: $hints, axis: .vertical
+            )
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(3...6)
+            .frame(width: 320)
+            .onChange(of: hints) {
+                model.saveCleaningHints(hints, for: session)
+            }
+            Text("毎回の会話に出る人名・用語は、設定の「清書の用語集」へ。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button(cleaned == nil ? "清書する" : "清書し直す") {
+                    showCleanPopover = false
+                    Task { await cleanUp() }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
     }
 
     /// 1行ぶんの文字起こし。録音内の経過時間(再生バーと同じ物差し)を出し、
