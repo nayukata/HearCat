@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0C1226"/>
+      <stop offset="100%" stop-color="#131B38"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.8" cy="0.1" r="0.7">
+      <stop offset="0%" stop-color="#3D7BFF" stop-opacity="0.22"/>
+      <stop offset="60%" stop-color="#3D7BFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.1" cy="0.95" r="0.55">
+      <stop offset="0%" stop-color="#3D7BFF" stop-opacity="0.14"/>
+      <stop offset="70%" stop-color="#3D7BFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <rect width="1200" height="630" fill="url(#glow2)"/>
+
+  <g transform="translate(80, 78)">
+    <g transform="translate(0, -6)">
+      <path d="M3 10 L6 3 L10 8 H16 L20 3 L23 10 V16 A10 7.5 0 0 1 3 16 Z"
+            fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round"
+            transform="scale(1.8)"/>
+      <circle cx="17.1" cy="25.2" r="2.88" fill="#FFFFFF"/>
+      <circle cx="29.7" cy="25.2" r="2.88" fill="#FFFFFF"/>
+    </g>
+    <text x="60" y="30" font-family="Hiragino Sans, Zen Kaku Gothic New, sans-serif"
+          font-size="30" font-weight="900" fill="#FFFFFF">HearCat</text>
+  </g>
+
+  <g transform="translate(940, 100)">
+    <circle cx="0" cy="0" r="60" fill="none" stroke="#8FB4FF" stroke-width="1.2" opacity="0.35"/>
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#8FB4FF" stroke-width="1.2" opacity="0.2"/>
+    <circle cx="0" cy="0" r="140" fill="none" stroke="#8FB4FF" stroke-width="1.2" opacity="0.1"/>
+    <circle cx="0" cy="0" r="26" fill="#3D7BFF" fill-opacity="0.18"/>
+    <g transform="translate(-20, -18) scale(1.6)">
+      <path d="M3 10 L6 3 L10 8 H16 L20 3 L23 10 V16 A10 7.5 0 0 1 3 16 Z"
+            fill="none" stroke="#8FB4FF" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="9.5" cy="14" r="1.6" fill="#8FB4FF"/>
+      <circle cx="16.5" cy="14" r="1.6" fill="#8FB4FF"/>
+    </g>
+  </g>
+
+  <g font-family="Hiragino Sans, Zen Kaku Gothic New, sans-serif" font-weight="900">
+    <text x="80" y="300" font-size="76" fill="#FFFFFF" letter-spacing="1">秘密は、外に出さない。</text>
+    <text x="80" y="400" font-size="76" fill="#FFFFFF" letter-spacing="1">
+      <tspan>必要なのは、</tspan><tspan fill="#8FB4FF">Mac だけ</tspan><tspan>。</tspan>
+    </text>
+  </g>
+
+  <text x="80" y="500" font-family="Hiragino Sans, sans-serif" font-size="26" font-weight="500"
+        fill="#FFFFFF" fill-opacity="0.62" letter-spacing="0.5">
+    Mac の中だけで動く、議事録 AI。
+  </text>
+
+  <g transform="translate(80, 540)" font-family="Hiragino Sans, sans-serif" font-size="20"
+     font-weight="500" fill="#8FB4FF" letter-spacing="0.5">
+    <text x="0" y="20">macOS 26 / Apple Silicon</text>
+    <line x1="350" y1="6" x2="350" y2="26" stroke="#8FB4FF" stroke-opacity="0.4" stroke-width="1"/>
+    <text x="370" y="20" fill-opacity="0.75">録音・文字起こし・要約 すべて端末内</text>
+  </g>
+</svg>
