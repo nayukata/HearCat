@@ -291,6 +291,7 @@ final class AppModel {
             // 最後の発話の確定は、停止よりファイル書き込みがわずかに遅れることがある。
             try? await Task.sleep(for: .seconds(2))
             guard summarizingSessionID == nil,
+                OnDeviceModel.unavailableReason() == nil,
                 let session = SessionStore.list().first(where: { $0.id == sessionID }),
                 session.summaryURL == nil,
                 let url = session.transcriptURL,

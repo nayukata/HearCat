@@ -34,6 +34,13 @@ struct SessionDetailView: View {
         model.cleaningSessionID == session.id
     }
 
+    /// オンデバイスモデル(Apple Intelligence)が使えない理由。使えるなら nil。
+    /// ここで一度だけ評価して要約・清書ボタンの disabled と tooltip に共用する。
+    /// システム設定で状態が変わっても、詳細画面を開き直せば再評価される。
+    private var aiUnavailableReason: String? {
+        OnDeviceModel.unavailableReason()
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -75,7 +82,10 @@ struct SessionDetailView: View {
                     Label(summary == nil ? "要約を生成" : "要約を再生成", systemImage: "list.bullet.rectangle")
                 }
             }
-            .disabled(isSummarizing || isCleaning || (transcript?.isEmpty ?? true))
+            .help(aiUnavailableReason ?? "会話の要点をオンデバイス AI が箇条書きにまとめます")
+            .disabled(
+                isSummarizing || isCleaning || (transcript?.isEmpty ?? true)
+                    || aiUnavailableReason != nil)
             Button {
                 showCleanPopover = true
             } label: {
@@ -89,8 +99,12 @@ struct SessionDetailView: View {
                     Label(cleaned == nil ? "清書" : "清書し直す", systemImage: "wand.and.stars")
                 }
             }
-            .help("音声認識の誤変換を、会話の文脈からオンデバイス AI が直します")
-            .disabled(isSummarizing || isCleaning || (transcript?.isEmpty ?? true))
+            .help(
+                aiUnavailableReason ?? "音声認識の誤変換を、会話の文脈からオンデバイス AI が直します"
+            )
+            .disabled(
+                isSummarizing || isCleaning || (transcript?.isEmpty ?? true)
+                    || aiUnavailableReason != nil)
             .popover(isPresented: $showCleanPopover, arrowEdge: .bottom) {
                 cleanPopover
             }
