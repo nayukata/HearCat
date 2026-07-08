@@ -256,7 +256,7 @@ final class AppModel {
         defer { cleaningSessionID = nil }
         let hints = session.hintsURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
         let result = try await TranscriptCleaner.clean(
-            transcript: transcript, glossary: settings.glossary, hints: hints
+            transcript: transcript, glossary: settings.glossaryText, hints: hints
         ) { [weak self] value in
             self?.cleaningProgress = value
         }
