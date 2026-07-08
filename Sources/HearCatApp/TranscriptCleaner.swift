@@ -9,9 +9,11 @@ import HearCatKit
 /// 結果は別ファイル(cleaned.md)に同じ形式で書く前提。形式を保つことで、
 /// 時刻クリックの再生ジャンプが清書側でもそのまま機能する。
 ///
-/// チャンクごとに @Generable の構造化生成で「行番号 + 清書本文」を受け取り、
-/// 番号で原文の行と突き合わせる。失敗したチャンクは原文のまま残す
-/// (清書は読みやすさ優先の派生物なので、欠けるより直らない方がまし)。
+/// モデルには行を書き直させず、チャンクごとに「誤変換の表記 → 正しい表記」の
+/// ペアだけを報告させ、置換はコード側で行う。行まるごとの書き直しは、行の
+/// 切り落とし・隣の行とのすり替わり・修正の当たり外れが大きいことを実測済み。
+/// 失敗したチャンクは原文のまま残す(清書は読みやすさ優先の派生物なので、
+/// 欠けるより直らない方がまし)。
 enum TranscriptCleaner {
     enum CleanerError: LocalizedError {
         case unavailable(String)
@@ -26,60 +28,63 @@ enum TranscriptCleaner {
     }
 
     /// 1チャンクに入れる行数と文字数の上限。オンデバイスモデルは入出力合計の
-    /// コンテキストが小さく、清書は入力とほぼ同じ長さの出力を要するため、
-    /// 要約(1500字)より控えめに取る。
+    /// コンテキストが小さいため、要約(1500字)より控えめに取る。
     private static let chunkMaxLines = 15
     private static let chunkMaxChars = 900
-    private static let maxResponseTokens = 1200
+    /// 出力は誤変換ペアのリストだけなので、行の書き直し(1200)より小さくてよい。
+    private static let maxResponseTokens = 500
     /// 直前のチャンクから文脈として見せる行数(直させはしない)。
     private static let contextLineCount = 3
 
     @Generable
-    fileprivate struct CleanedLines {
-        @Guide(description: "清書した行。入力と同じ行番号で、全行ぶん返す", .maximumCount(15))
-        var lines: [CleanedLine]
+    fileprivate struct Corrections {
+        @Guide(description: "見つけた誤変換。無ければ空のリスト", .maximumCount(10))
+        var fixes: [Fix]
     }
 
     @Generable
-    fileprivate struct CleanedLine {
-        @Guide(description: "入力の行番号")
-        var number: Int
+    fileprivate struct Fix {
+        @Guide(description: "誤変換された表記。会話の本文に書かれている通りに")
+        var wrong: String
 
-        @Guide(description: "清書後の発言本文。行番号・時刻・話者名は含めない")
-        var text: String
+        @Guide(description: "直した表記")
+        var right: String
     }
 
     /// 用語集・ヒントを指示文に入れる際の上限。オンデバイスモデルのコンテキストが
     /// 小さいため、長すぎる分は頭から切る(チャンク本文の入る余地を必ず残す)。
     private static let maxHintChars = 400
 
-    private static let baseInstructions = """
-        あなたは会話の文字起こしの校正係です。音声認識の誤変換を、会話の文脈から本来の言葉に直します。
-        発言は話し言葉のまま残し、要約・言い換え・敬語化はしません。
-        確信できる誤変換だけを直し、不明瞭な部分はそのまま残します。
-        発言の意味・語尾・長さを大きく変えてはいけません。発言の一部を省略してもいけません。
-        句読点は全角(。、)のまま保ち、半角の . や , に変えてはいけません。
-        直す必要がない行は、入力の本文をそのまま返します。
-        出力の本文に行番号・時刻・話者名を含めてはいけません。
+    private static let instructions = """
+        あなたは会話の文字起こしの校正係です。音声認識が誤変換した表記を見つけ、
+        「誤変換された表記(wrong)」と「本来の表記(right)」の組で報告します。
+        会話の話題や用語集が与えられた場合、それに音が似た言葉は誤変換の可能性が高いので、
+        その語への修正を報告します(例: 話題が格闘ゲームなら「残ギ」→「ザンギ」)。
+        文脈から確信できる誤変換だけを報告し、言い換え・要約・敬語化はしません。
+        誤変換は「同じ音への別の当て字」なので、wrong と right は読みの音が似ている組だけにします。
+        wrong は本文に書かれている通りの表記にします。誤変換が無ければ空のリストを返します。
         """
 
-    /// 会話の背景(ヒント)と用語集を指示文へ差し込む。どちらも無ければ素の指示文。
-    private static func makeInstructions(glossary: String, hints: String) -> String {
-        var text = baseInstructions
+    /// ユーザーの指示(ヒント)と用語集を、各チャンクのプロンプト先頭に置くブロックにする。
+    /// 指示文(instructions)側に入れると小さいモデルはほぼ無視することを実測済みのため、
+    /// 直す本文と同じプロンプトに置いて注意を向けさせる。
+    private static func hintBlock(glossary: String, hints: String) -> String {
+        var block = ""
         let hints = String(hints.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxHintChars))
         if !hints.isEmpty {
-            text += "\n\nこの会話の背景(誤変換を推測する手がかり):\n\(hints)"
+            block += "会話の話題(この文脈で誤変換を直す):\n\(hints)\n\n"
         }
         let glossary = String(
             glossary.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxHintChars))
         if !glossary.isEmpty {
-            text += "\n\nこの会話に出やすい語(正しい表記。似た音を誤変換していたらこの表記に直す):\n\(glossary)"
+            block += "用語集(音が似た言葉はこの語の誤変換なので直す):\n\(glossary)\n\n"
         }
-        return text
+        return block
     }
 
     /// transcript 全体を清書し、同じ「[時刻] 話者: 本文」形式で返す。
-    /// glossary は設定の用語集(全セッション共通)、hints はこのセッションの話題や固有名詞。
+    /// glossary は設定の用語集(全セッション共通、「語: 説明」形式)、
+    /// hints はこのセッションの清書への指示(話題や直し方の希望)。
     /// progress には処理済みチャンクの割合(0〜1)を渡す。
     static func clean(
         transcript: String, glossary: String = "", hints: String = "",
@@ -96,11 +101,11 @@ enum TranscriptCleaner {
             throw CleanerError.failed("清書できる発言がありません")
         }
 
-        let instructions = makeInstructions(glossary: glossary, hints: hints)
+        let hintBlock = hintBlock(glossary: glossary, hints: hints)
         var cleaned = lines
         var succeededChunks = 0
         for (index, chunk) in chunks.enumerated() {
-            if let results = await cleanChunk(lines: lines, range: chunk, instructions: instructions) {
+            if let results = await cleanChunk(lines: lines, range: chunk, hintBlock: hintBlock) {
                 for (lineIndex, text) in results {
                     cleaned[lineIndex] = replaceBody(of: lines[lineIndex], with: text)
                 }
@@ -136,17 +141,15 @@ enum TranscriptCleaner {
         return chunks
     }
 
-    /// 1チャンクを清書する。返り値は (行 index, 清書本文)。失敗したら nil(原文のまま残す)。
+    /// 1チャンクの誤変換ペアをモデルから集め、範囲内の行へ適用する。
+    /// 返り値は (行 index, 置換後の本文)。生成に失敗したら nil(原文のまま残す)。
     private static func cleanChunk(
-        lines: [String], range: [Int], instructions: String
+        lines: [String], range: [Int], hintBlock: String
     ) async -> [(Int, String)]? {
-        // 番号はチャンク内で 1 から振り直す(小さい数字の方がモデルが取り違えない)。
-        var numbered: [Int: Int] = [:]  // チャンク内番号 → 行 index
         var body = ""
-        for (offset, lineIndex) in range.enumerated() {
+        for lineIndex in range {
             guard let (_, speaker, text) = splitLine(lines[lineIndex]) else { continue }
-            numbered[offset + 1] = lineIndex
-            body += "\(offset + 1) (\(speaker)): \(text)\n"
+            body += "(\(speaker)): \(text)\n"
         }
 
         var context = ""
@@ -154,12 +157,12 @@ enum TranscriptCleaner {
             let head = lines[..<first].suffix(contextLineCount)
                 .compactMap { splitLine($0).map { "\($0.speaker): \($0.text)" } }
             if !head.isEmpty {
-                context = "直前の会話(文脈として読むだけで、直さない):\n" + head.joined(separator: "\n") + "\n\n"
+                context = "直前の会話(文脈として読むだけで、探す対象ではない):\n" + head.joined(separator: "\n") + "\n\n"
             }
         }
 
         let prompt = """
-            \(context)清書する発言(番号 (話者): 本文):
+            \(hintBlock)\(context)誤変換を探す会話((話者): 本文):
             \(body)
             """
 
@@ -169,16 +172,8 @@ enum TranscriptCleaner {
             let session = LanguageModelSession(instructions: instructions)
             do {
                 let response = try await session.respond(
-                    to: prompt, generating: CleanedLines.self, options: options)
-                var results: [(Int, String)] = []
-                for line in response.content.lines {
-                    guard let lineIndex = numbered[line.number] else { continue }
-                    let text = normalizePunctuation(
-                        line.text.trimmingCharacters(in: .whitespacesAndNewlines))
-                    guard !text.isEmpty, sane(text, original: lines[lineIndex]) else { continue }
-                    results.append((lineIndex, text))
-                }
-                return results
+                    to: prompt, generating: Corrections.self, options: options)
+                return apply(fixes: response.content.fixes, to: lines, range: range)
             } catch let error as LanguageModelSession.GenerationError {
                 if case .decodingFailure = error { continue }
                 // guardrail・コンテキスト超過などはこのチャンクを原文のまま残す。
@@ -188,6 +183,36 @@ enum TranscriptCleaner {
             }
         }
         return nil
+    }
+
+    /// 誤変換ペアをチャンク内の行に適用する。1文字だけの wrong は誤爆しやすいので
+    /// 捨て、長い wrong から先に置換する(「残ギ使い」と「残ギ」が両方報告された時に
+    /// 短い方が先に潰さないように)。変わった行だけを行単位の検査(sane)に通す。
+    private static func apply(fixes: [Fix], to lines: [String], range: [Int]) -> [(Int, String)] {
+        let valid = fixes.filter { fix in
+            fix.wrong.count >= 2 && !fix.right.isEmpty && fix.right != fix.wrong
+                && fix.right.count <= fix.wrong.count * 3 + 2
+                // 語の後半をただ削っただけの組は修正ではない。
+                && !fix.wrong.hasPrefix(fix.right)
+                && soundsAlike(fix.wrong, fix.right)
+        }
+        .sorted { $0.wrong.count > $1.wrong.count }
+        guard !valid.isEmpty else { return [] }
+
+        var results: [(Int, String)] = []
+        for lineIndex in range {
+            guard let (_, _, original) = splitLine(lines[lineIndex]) else { continue }
+            var text = original
+            for fix in valid {
+                text = text.replacingOccurrences(of: fix.wrong, with: fix.right)
+            }
+            text = normalizePunctuation(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard text != original, !text.isEmpty, sane(text, original: lines[lineIndex]) else {
+                continue
+            }
+            results.append((lineIndex, text))
+        }
+        return results
     }
 
     /// モデルの暴走を弾く。清書は「同じ発言の表記直し」なので、原文と長さも文字も
@@ -207,6 +232,43 @@ enum TranscriptCleaner {
             return false
         }
         return true
+    }
+
+    /// 誤変換は「同じ音への別の当て字」なので、wrong と right の読みは必ず近い。
+    /// 読みが遠い組は言い換え(モデルの創作)とみなして捨てる。実測した創作の例:
+    /// 「タメ波動→テクニック波動」「うんまあ→普通」。
+    /// 比較は変わった部分だけで行う。「いや、いらない→いや、必要ない」のように
+    /// 前後に同じ文字が付くと、全体の読みは似てしまい言い換えを見逃すため。
+    private static func soundsAlike(_ a: String, _ b: String) -> Bool {
+        let (diffA, diffB) = strippedDifference(a, b)
+        if diffA.isEmpty || diffB.isEmpty {
+            // 純粋な挿入/削除(ザンギ→ザンギエフ 等)は差分の読みを比べられないので
+            // 全体の読みで判定する。
+            return similarity(reading(a), reading(b)) >= 0.5
+        }
+        return similarity(reading(diffA), reading(diffB)) >= 0.5
+    }
+
+    /// 先頭と末尾の共通部分を取り除き、双方の「変わった部分」だけを返す。
+    private static func strippedDifference(_ a: String, _ b: String) -> (String, String) {
+        var a = Array(a), b = Array(b)
+        while let first = a.first, first == b.first {
+            a.removeFirst()
+            b.removeFirst()
+        }
+        while let last = a.last, last == b.last {
+            a.removeLast()
+            b.removeLast()
+        }
+        return (String(a), String(b))
+    }
+
+    /// 漢字かな交じりをローマ字読みへ潰す(macOS の transliteration が漢字も読む)。
+    private static func reading(_ text: String) -> String {
+        let mutable = NSMutableString(string: text)
+        CFStringTransform(mutable, nil, kCFStringTransformToLatin, false)
+        CFStringTransform(mutable, nil, kCFStringTransformStripCombiningMarks, false)
+        return (mutable as String).lowercased().replacingOccurrences(of: " ", with: "")
     }
 
     /// 文字の重なり具合(0〜1)。同じ文字(重複込み)が双方に何割あるか。
