@@ -12,6 +12,9 @@ let usage = """
   hearcat latest                                 最新の文字起こしファイルのパスを表示する
   hearcat set record on|off                      録音だけを切り替える
   hearcat set transcribe on|off                  文字起こしだけを切り替える
+  hearcat sessions [--folder <name>]             セッション一覧を TSV で出す
+  hearcat read [<session>] [--summary|--cleaned] [--tail <N>]
+                                                 原文/要約/清書を stdout に出す
   hearcat write-cleaned [<session>]              標準入力の清書を cleaned.md に書く(原文には触れない)
 """
 
@@ -85,6 +88,32 @@ func requireResponse(_ request: IPCRequest) -> IPCResponse {
     return response
 }
 
+/// セッション指定を SessionInfo に解決する。ID / ディレクトリ名 / フルパスの
+/// いずれでも受ける。空 or nil なら最新セッションを返す。write-cleaned と
+/// read で共用する。
+func resolveSession(_ query: String?) -> SessionInfo? {
+    guard let query, !query.isEmpty else { return SessionStore.latest() }
+    return SessionStore.list().first {
+        $0.id == query
+            || $0.directory.lastPathComponent == query
+            || $0.directory.path == query
+    }
+}
+
+/// 引数から --tail <N> を取り出して残りを返す。値が数値でなければエラーで終了。
+func extractTail(_ args: [String]) -> (tail: Int?, rest: [String]) {
+    var rest = args
+    var tail: Int?
+    if let index = rest.firstIndex(of: "--tail") {
+        guard index + 1 < rest.count, let n = Int(rest[index + 1]), n > 0 else {
+            fail("--tail には 1 以上の整数を指定してください。")
+        }
+        tail = n
+        rest.removeSubrange(index...(index + 1))
+    }
+    return (tail, rest)
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
     print(usage)
@@ -143,19 +172,75 @@ case "set":
     print("切り替えました")
     if let status = response.status { printStatus(status) }
 
+case "sessions":
+    // セッション一覧。TSV(id\t開始日時 ISO8601\tセッション名\tフォルダ) で出す。
+    // agent がパースしやすい列区切り + ヘッダ無し。フォルダで絞れる。
+    var folder: String?
+    if let index = arguments.firstIndex(of: "--folder") {
+        guard index + 1 < arguments.count else {
+            fail("--folder にフォルダ名を指定してください。")
+        }
+        folder = arguments[index + 1]
+    }
+    let formatter = ISO8601DateFormatter()
+    for session in SessionStore.list() {
+        if let folder, session.folder != folder { continue }
+        let cols = [
+            session.id, formatter.string(from: session.startDate),
+            session.name, session.folder ?? "",
+        ]
+        print(cols.joined(separator: "\t"))
+    }
+
+case "read":
+    // 原文/要約/清書のいずれかを stdout に出す。ファイルアクセスは CLI に集約し、
+    // skill 側は built-in Read を使わない前提。
+    var (tail, rest) = extractTail(arguments)
+    var kind = "transcript"
+    if let index = rest.firstIndex(of: "--summary") {
+        kind = "summary"
+        rest.remove(at: index)
+    }
+    if let index = rest.firstIndex(of: "--cleaned") {
+        if kind != "transcript" {
+            fail("--summary と --cleaned は同時に指定できません。")
+        }
+        kind = "cleaned"
+        rest.remove(at: index)
+    }
+    let query = rest.first
+    guard let session = resolveSession(query) else {
+        fail("セッションが見つかりません: \(query ?? "(最新)")")
+    }
+    let url: URL? = {
+        switch kind {
+        case "summary": return session.summaryURL
+        case "cleaned": return session.directory.appendingPathComponent("cleaned.md")
+        default: return session.transcriptURL
+        }
+    }()
+    guard let url, FileManager.default.fileExists(atPath: url.path) else {
+        fail("\(kind) が存在しません: セッション \(session.id)")
+    }
+    let text: String
+    do {
+        text = try String(contentsOf: url, encoding: .utf8)
+    } catch {
+        fail("読み込みに失敗しました: \(error.localizedDescription)")
+    }
+    if let tail {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let sliced = lines.suffix(tail).joined(separator: "\n")
+        print(sliced)
+    } else {
+        print(text, terminator: text.hasSuffix("\n") ? "" : "\n")
+    }
+
 case "write-cleaned":
     // 標準入力で受けた清書テキストを、指定 or 最新セッションの cleaned.md へ書く。
     // 書き込み先はハードコードで、agent が指示を誤っても原文 <id>.md には届かない。
     let query = arguments.first
-    let session: SessionInfo? = {
-        guard let query, !query.isEmpty else { return SessionStore.latest() }
-        return SessionStore.list().first {
-            $0.id == query
-                || $0.directory.lastPathComponent == query
-                || $0.directory.path == query
-        }
-    }()
-    guard let session else {
+    guard let session = resolveSession(query) else {
         fail("セッションが見つかりません: \(query ?? "(最新)")")
     }
     // stdin を EOF まで読む(パイプでもリダイレクトでもここで完結する)。
