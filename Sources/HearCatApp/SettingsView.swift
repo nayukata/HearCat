@@ -48,7 +48,7 @@ struct SettingsView: View {
                 LabeledContent("skill (使い方の説明書)") {
                     statusLabel(installed: skillInstalled)
                 }
-                LabeledContent("CLI (操作コマンド hearcat)") {
+                LabeledContent("CLI (操作コマンド)") {
                     statusLabel(installed: cliInstalled)
                 }
                 if !(skillInstalled && cliInstalled) {
