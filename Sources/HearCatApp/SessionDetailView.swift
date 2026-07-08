@@ -82,7 +82,7 @@ struct SessionDetailView: View {
                             .font(.caption.monospacedDigit())
                     }
                 } else {
-                    Label(cleaned == nil ? "AI 清書" : "清書し直す", systemImage: "wand.and.stars")
+                    Label(cleaned == nil ? "清書" : "清書し直す", systemImage: "wand.and.stars")
                 }
             }
             .help("音声認識の誤変換を、会話の文脈からオンデバイス AI が直します")
