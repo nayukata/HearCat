@@ -45,12 +45,12 @@ struct SettingsView: View {
             }
 
             Section {
-                LabeledContent("skill") {
-                    statusLabel(installed: skillInstalled)
-                }
-                LabeledContent("CLI") {
-                    statusLabel(installed: cliInstalled)
-                }
+                installEntry(
+                    title: "Skill", path: "~/.agents/skills/",
+                    installed: skillInstalled)
+                installEntry(
+                    title: "CLI", path: "~/.local/bin/hearcat",
+                    installed: cliInstalled)
                 if !(skillInstalled && cliInstalled) {
                     Button("導入する") {
                         installSkill()
@@ -62,9 +62,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("AI エージェント連携")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("AI エージェント連携")
+                    Text("AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textCase(nil)
+                }
             } footer: {
-                Text("導入すると、AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。エージェントは skill で使い方を知り、CLI でこのアプリを動かします。skill の実体は ~/.agents/skills/ に置き、使用中の各エージェントへはリンクを張ります。CLI は ~/.local/bin へ置きます。導入後はアプリを起動するたびに自動で最新の内容へ更新されます。")
+                Text("各エージェント配下 (~/.claude/skills/ など) には実体へのリンクを張ります。アプリを起動するたびに自動で最新に更新します。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -232,6 +238,23 @@ struct SettingsView: View {
             systemImage: installed ? "checkmark.circle.fill" : "circle.dashed"
         )
         .foregroundStyle(installed ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+    }
+
+    /// 導入項目の1行。ラベル+設置先パスと導入状態を横一列に並べる。
+    /// タイトル列の幅を固定して、行を跨いでパスの左端が揃うようにする。
+    private func installEntry(title: String, path: String, installed: Bool) -> some View {
+        LabeledContent {
+            statusLabel(installed: installed)
+        } label: {
+            HStack(spacing: 10) {
+                Text(title)
+                    .frame(width: 44, alignment: .leading)
+                Text(path)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
     }
 
     private func installSkill() {
