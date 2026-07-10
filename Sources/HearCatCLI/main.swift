@@ -12,6 +12,7 @@ let usage = """
   hearcat latest                                 最新の文字起こしファイルのパスを表示する
   hearcat set record on|off                      録音だけを切り替える
   hearcat set transcribe on|off                  文字起こしだけを切り替える
+  hearcat set autostart on|off                   ログイン時の自動起動を切り替える
   hearcat sessions [--folder <name>]             セッション一覧を TSV で出す
   hearcat read [<session>] [--summary|--cleaned] [--tail <N>]
                                                  原文/要約/清書を stdout に出す
@@ -162,12 +163,21 @@ case "latest":
 
 case "set":
     guard arguments.count == 2, let on = ["on": true, "off": false][arguments[1]],
-          ["record", "transcribe"].contains(arguments[0]) else {
+          ["record", "transcribe", "autostart"].contains(arguments[0]) else {
         fail(usage)
     }
-    let request = arguments[0] == "record"
-        ? IPCRequest(command: .set, record: on)
-        : IPCRequest(command: .set, transcribe: on)
+    // autostart の登録はアプリ内でしか行えないため、未起動なら起動して届ける。
+    // record/transcribe はセッション中の操作なので、未起動ならそのままエラーでよい。
+    if arguments[0] == "autostart", send(IPCRequest(command: .status)) == nil {
+        guard launchAppAndWait() else {
+            fail("HearCat.app を起動できません。install.sh で導入されているか確認してください。")
+        }
+    }
+    let request = switch arguments[0] {
+    case "record": IPCRequest(command: .set, record: on)
+    case "transcribe": IPCRequest(command: .set, transcribe: on)
+    default: IPCRequest(command: .set, autostart: on)
+    }
     let response = requireResponse(request)
     print("切り替えました")
     if let status = response.status { printStatus(status) }

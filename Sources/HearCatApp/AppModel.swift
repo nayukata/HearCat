@@ -519,6 +519,7 @@ final class AppModel {
                     try engine.setTranscribing(transcribe)
                     if !transcribe { liveTimeline.clearVolatiles() }
                 }
+                if let autostart = request.autostart { try LoginItem.setEnabled(autostart) }
                 return IPCResponse(ok: true, status: status)
             } catch {
                 return IPCResponse(ok: false, error: error.localizedDescription)

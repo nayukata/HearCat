@@ -16,11 +16,17 @@ public struct IPCRequest: Codable, Sendable {
     public var record: Bool?
     /// start: 文字起こしの初期状態(省略時 true)。set: 文字起こしの切り替え先。
     public var transcribe: Bool?
+    /// set: ログイン時の自動起動(ログイン項目)の切り替え先。
+    public var autostart: Bool?
 
-    public init(command: IPCCommand, record: Bool? = nil, transcribe: Bool? = nil) {
+    public init(
+        command: IPCCommand, record: Bool? = nil, transcribe: Bool? = nil,
+        autostart: Bool? = nil
+    ) {
         self.command = command
         self.record = record
         self.transcribe = transcribe
+        self.autostart = autostart
     }
 }
 

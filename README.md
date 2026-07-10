@@ -59,6 +59,7 @@ make dist    # .build/HearCat.dmg ができる
 hearcat start                   # セッション開始(録音+文字起こし。アプリ未起動なら起動する)
 hearcat set record off          # 録音だけ止める(文字起こしは続く)
 hearcat set transcribe off      # 文字起こしだけ止める
+hearcat set autostart on        # ログイン時の自動起動を有効にする(設定画面からも可)
 hearcat status                  # 状態確認
 hearcat latest                  # 最新の文字起こしファイルのパス
 hearcat stop                    # 停止して保存

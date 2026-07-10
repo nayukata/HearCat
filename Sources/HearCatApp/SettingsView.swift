@@ -19,6 +19,8 @@ struct SettingsView: View {
     @State private var cliInstalled = SkillInstaller.cliInstalled
     @State private var skillMessage: String?
     @State private var inputDevices: [MicDeviceOption] = [MicDeviceOption(uid: nil, name: "システム標準")]
+    @State private var launchAtLogin = LoginItem.isEnabled
+    @State private var launchAtLoginMessage: String?
 
     var body: some View {
         // 1本の長いスクロールだと下のセクションが見落とされるため、macOS の
@@ -29,11 +31,41 @@ struct SettingsView: View {
             Tab("ホットキー", systemImage: "keyboard") { hotkeyTab }
         }
         .frame(width: 520, height: 480)
-        .onAppear { refreshInputDevices() }
+        .onAppear {
+            refreshInputDevices()
+            // システム設定や CLI 側で変えられていても、開いた時点の実状態に合わせる。
+            launchAtLogin = LoginItem.isEnabled
+        }
     }
 
     private var generalTab: some View {
         Form {
+            Section {
+                Toggle("ログイン時に HearCat を起動", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, newValue in
+                        do {
+                            try LoginItem.setEnabled(newValue)
+                            launchAtLoginMessage = nil
+                        } catch {
+                            // 失敗したら実状態へ戻す(戻す代入で onChange が再発火しても
+                            // setEnabled は現状一致なら何もしない)。
+                            launchAtLogin = LoginItem.isEnabled
+                            launchAtLoginMessage = error.localizedDescription
+                        }
+                    }
+                if let launchAtLoginMessage {
+                    Text(launchAtLoginMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("起動")
+            } footer: {
+                Text("Mac にログインしたとき、メニューバーに自動で常駐します。システム設定 > 一般 > ログイン項目からも変更できます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Toggle("カレンダーの予定名を自動で付ける", isOn: $settings.calendarNaming)
             } header: {
