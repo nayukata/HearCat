@@ -9,6 +9,23 @@ BIN_DIR="${HEARCAT_BIN:-$HOME/.local/bin}"
 APP_DIR="${HEARCAT_APP:-$HOME/Applications}"
 mkdir -p "$BIN_DIR" "$APP_DIR"
 
+# Xcode 開発者ツール(CLT) が未導入だと swift 自体が動かないため、先に確保する。
+# `xcode-select --install` は GUI ダイアログを開いて即戻るので、完了はポーリングで待つ。
+if ! xcode-select -p >/dev/null 2>&1; then
+  echo "==> Xcode 開発者ツールが未導入です。表示されたダイアログから「インストール」を押してください。"
+  xcode-select --install >/dev/null 2>&1 || true
+  until xcode-select -p >/dev/null 2>&1; do
+    sleep 5
+  done
+  echo "==> Xcode 開発者ツールの導入を確認しました"
+fi
+
+# Swift 6 は Xcode 26 に含まれる。CLT だけでは足りない環境がある。
+if ! command -v swift >/dev/null 2>&1; then
+  echo "エラー: swift コマンドが見つかりません。App Store から Xcode 26 を導入してください。" >&2
+  exit 1
+fi
+
 echo "==> release ビルドと .app の組み立て(署名込み)"
 make -C "$DIR" app CONFIG=release
 
