@@ -19,13 +19,21 @@ Mac のマイク（自分）とシステム音声（通話相手など）を、m
 
 ## 導入
 
+### コマンド 1 行で入れる（git 不要）
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nayukata/HearCat/main/bootstrap.sh | bash
+```
+
+ソース一式を一時ディレクトリに取得して `install.sh` を実行する。
+
 ### ソースからビルドする
 
 ```sh
 ./install.sh
 ```
 
-`~/Applications/HearCat.app` と `~/.local/bin/hearcat` が入る。システム音声のキャプチャに安定した署名が必須のため、各マシンで利用者自身の Apple Development 証明書によりビルド＆署名する。
+どちらの方法でも `~/Applications/HearCat.app` と `~/.local/bin/hearcat` が入る。システム音声のキャプチャに安定した署名が必須のため、各マシンで利用者自身の Apple Development 証明書によりビルド＆署名する。
 
 ### 配布用 dmg を作る
 
