@@ -1,6 +1,5 @@
 ---
 const BOOTSTRAP_CMD = "curl -fsSL https://raw.githubusercontent.com/nayukata/HearCat/main/bootstrap.sh | bash";
-const BREW_CMD = "brew install --HEAD nayukata/tap/hearcat";
 ---
 <section id="get" class="py-24">
   <div class="wrap">
@@ -8,10 +7,11 @@ const BREW_CMD = "brew install --HEAD nayukata/tap/hearcat";
       <div class="reveal">
         <p class="kicker">インストール</p>
         <h2 class="sec-h2">1 行貼るだけ。あとは Mac が頑張ります。</h2>
+        <p class="sec-lead">システム音声のキャプチャに安定した署名が要るため、各自の Mac で自分の証明書を使ってビルド＆署名します。所要時間は数分です。</p>
         <ol class="steps list-none mt-9" style="counter-reset: g;">
           <li class="relative pl-[52px] pb-[30px] text-ink-dim text-[14px]">
             <b class="block text-ink text-[15.5px] font-head mb-1">ターミナルを開いて、下のコマンドを貼り付け</b>
-            Mac 標準のターミナルアプリで大丈夫です。
+            Mac 標準のターミナルアプリで大丈夫です。ソースの取得からビルド、<code style="font-family: var(--font-mono);">~/Applications</code> へのアプリ配置、CLI の <code style="font-family: var(--font-mono);">~/.local/bin/hearcat</code> への配置までまとめて行います。Xcode 開発者ツールが未導入なら、途中でダイアログが出るので「インストール」を押します。
             <div
               class="code-inline mt-3 rounded-[10px] py-[14px] px-4 relative overflow-x-auto"
               style="background: #0F1523; color: #E4E7EE; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7;"
@@ -25,12 +25,8 @@ const BREW_CMD = "brew install --HEAD nayukata/tap/hearcat";
             </div>
           </li>
           <li class="relative pl-[52px] pb-[30px] text-ink-dim text-[14px]">
-            <b class="block text-ink text-[15.5px] font-head mb-1">Xcode 開発者ツールの導入を許可</b>
-            初回だけ、macOS が「開発者ツールをインストールしますか？」と聞いてきます。「インストール」を押せば、そこから先はスクリプトが引き受けます。
-          </li>
-          <li class="relative pl-[52px] pb-[30px] text-ink-dim text-[14px]">
             <b class="block text-ink text-[15.5px] font-head mb-1">メニューバーから「セッションを開始」</b>
-            マイクなどの許可を与えたら、あとは HearCat が聞き取ります。日本語の認識モデルは自動で取得されます。
+            マイクや音声認識、システム音声の許可を与えたら、あとは HearCat が聞き取ります。日本語の認識モデルは自動で取得されます。
           </li>
         </ol>
       </div>
@@ -41,16 +37,9 @@ const BREW_CMD = "brew install --HEAD nayukata/tap/hearcat";
         </h3>
         <p class="text-[13.5px] text-ink-dim mt-3"><b class="text-ink">macOS 26 以降</b> — 文字起こしには macOS 26 の音声認識機能を使用します。</p>
         <p class="text-[13.5px] text-ink-dim mt-3"><b class="text-ink">Apple Silicon 搭載 Mac</b> — 要約機能は、Apple Intelligence が有効な環境で利用できます。</p>
-        <p class="text-[13.5px] text-ink-dim mt-3"><b class="text-ink">Xcode Command Line Tools</b> — 未導入なら初回に macOS が導入ダイアログを出します。</p>
+        <p class="text-[13.5px] text-ink-dim mt-3"><b class="text-ink">Xcode 26</b> — ビルドに必要です。App Store から入れておいてください。</p>
+        <p class="text-[13.5px] text-ink-dim mt-3"><b class="text-ink">Apple Development 証明書</b> — Xcode の「Settings → Accounts」から Apple ID を追加すると自動で作成されます。システム音声の取得にはこの署名が必要です。</p>
       </div>
-    </div>
-    <div class="brew-alt reveal mt-11 pt-7 border-t border-line flex items-center gap-3 flex-wrap text-[13.5px] text-ink-dim">
-      <span class="font-head font-medium text-ink">Homebrew を使っているなら、こちらでも:</span>
-      <code class="text-[13px] text-ink bg-bg-soft py-2 px-[14px] rounded-[8px] border border-line" style="font-family: var(--font-mono);">{BREW_CMD}</code>
-      <button
-        class="text-[12px] text-ink-dim bg-transparent border border-line py-[6px] px-3 rounded-[6px] cursor-pointer hover:text-ink hover:border-[#C9CFDA] transition-colors"
-        data-cmd={BREW_CMD}
-      >コピー</button>
     </div>
   </div>
 </section>
