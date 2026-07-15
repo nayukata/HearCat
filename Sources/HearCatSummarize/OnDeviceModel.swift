@@ -2,9 +2,9 @@ import FoundationModels
 
 /// オンデバイスモデル(Apple Intelligence / FoundationModels)の共通処理。
 /// 現状は要約(TranscriptSummarizer)から使う。
-enum OnDeviceModel {
+public enum OnDeviceModel {
     /// モデルが使えない場合に日本語の理由を返す。使えるなら nil。
-    static func unavailableReason() -> String? {
+    public static func unavailableReason() -> String? {
         switch SystemLanguageModel.default.availability {
         case .available:
             return nil

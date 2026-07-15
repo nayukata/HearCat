@@ -23,13 +23,32 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // オンデバイス要約 (FoundationModels) の共通部品。
+        // アプリと検証用 CLI (summarize-lab) の両方から使う。
+        .target(
+            name: "HearCatSummarize",
+            path: "Sources/HearCatSummarize",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         // メニューバー常駐のエンジン本体。録音/文字起こし/履歴/再生/要約の UI を持つ。
         // .app バンドルの組み立てと署名は Makefile の app ターゲットが行う。
         .executableTarget(
             name: "HearCatApp",
-            dependencies: ["HearCatKit"],
+            dependencies: ["HearCatKit", "HearCatSummarize"],
             path: "Sources/HearCatApp",
             exclude: ["Info.plist", "AppIcon.icns"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        // オンデバイス要約の品質検証用 CLI。アプリを起動せず繰り返し実行できるようにする。
+        // 開発検証専用で .app には同梱しない。
+        .executableTarget(
+            name: "summarize-lab",
+            dependencies: ["HearCatSummarize"],
+            path: "Sources/SummarizeLab",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

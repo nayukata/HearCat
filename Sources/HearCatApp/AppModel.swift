@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import HearCatKit
+import HearCatSummarize
 
 /// アプリ全体の状態。エンジンと IPC サーバーを1個ずつ持つ。
 /// CLI(agent skill)からの命令も、メニューバーからの操作も、必ずここを経由する
