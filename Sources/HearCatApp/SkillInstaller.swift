@@ -87,14 +87,34 @@ enum SkillInstaller {
         }
 
         // 各エージェントの skills 配下に、実体ディレクトリへのリンクを張る。
+        // 実測の事故: ユーザーが `~/.claude/skills` 自体を `~/.agents/skills` への
+        // 丸ごとシンボリックリンクにしていた環境で、この判定なしに下のループへ入ると
+        // link が親リンク経由で実体を指し、removeItem が実体を消し、その後
+        // 自己参照リンク(実体 → 実体自身)が作られてスキルが消滅した。
+        // resolvingSymlinksInPath は対象が存在しない場合パスをそのまま返すため、
+        // 「そのエージェントの skills ディレクトリがまだ無い」通常時は誤判定しない。
+        // 比較は URL の == ではなく path 文字列で行う。resolvingSymlinksInPath は
+        // ディレクトリに末尾スラッシュを付けることがあり、URL 同士の == だと
+        // 実際には同一パスでも一致しないことがある(実測)。
+        let resolvedUniversalRootPath = universalSkillRoot.resolvingSymlinksInPath().path
         for agentSkills in agentSkillsDirectories() {
+            if agentSkills.resolvingSymlinksInPath().path == resolvedUniversalRootPath {
+                // 親ディレクトリ自体が実体への丸ごとリンクで、すでに実体を直接見えている。
+                // per-skill のリンクは不要どころか有害(実体を消しかねない)なのでスキップする。
+                continue
+            }
             try fm.createDirectory(at: agentSkills, withIntermediateDirectories: true)
             for name in skillNames {
                 let link = agentSkills.appendingPathComponent(name)
+                let destination = universalSkillRoot.appendingPathComponent(name)
+                // 念のための二段目の防御。上の親ディレクトリ判定をすり抜けても、
+                // per-skill 単位で link が実体と同一に解決されるなら実体を消さずスキップする。
+                if link.resolvingSymlinksInPath().path == destination.resolvingSymlinksInPath().path {
+                    continue
+                }
                 // 旧バージョンが実体のコピーを置いていた場合も、リンクに置き換える。
                 try? fm.removeItem(at: link)
-                try fm.createSymbolicLink(
-                    at: link, withDestinationURL: universalSkillRoot.appendingPathComponent(name))
+                try fm.createSymbolicLink(at: link, withDestinationURL: destination)
             }
         }
 
