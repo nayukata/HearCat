@@ -77,6 +77,16 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("無音が5分続いたら自動で終了", isOn: $settings.autoStopOnSilence)
+            } header: {
+                Text("自動停止")
+            } footer: {
+                Text("マイクとシステム音声の両方が5分間無音のとき、セッションを自動で終了します。会議のあとに停止し忘れても、録音と文字起こしが伸び続けません。")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 installEntry(
                     title: "Skill", path: "~/.agents/skills/",
                     installed: skillInstalled)

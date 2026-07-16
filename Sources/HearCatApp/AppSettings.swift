@@ -103,10 +103,19 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(hotkeyGroupPicker, forKey: Self.hotkeyGroupPickerKey) }
     }
 
+    /// 無音(マイクとシステム音声の両方)が5分続いたらセッションを自動で終了するか。
+    var autoStopOnSilence: Bool {
+        didSet {
+            UserDefaults.standard.set(autoStopOnSilence, forKey: Self.autoStopOnSilenceKey)
+            autoStopChanged?()
+        }
+    }
+
     @ObservationIgnored var gainsChanged: (() -> Void)?
     @ObservationIgnored var hotkeysChanged: (() -> Void)?
     @ObservationIgnored var micGateChanged: (() -> Void)?
     @ObservationIgnored var micDeviceChanged: (() -> Void)?
+    @ObservationIgnored var autoStopChanged: (() -> Void)?
 
     private static let micGainKey = "micGain"
     private static let systemGainKey = "systemGain"
@@ -120,6 +129,7 @@ final class AppSettings {
     private static let agentSummaryConsentedKey = "agentSummaryConsented"
     private static let defaultSessionGroupKey = "defaultSessionGroup"
     private static let hotkeyGroupPickerKey = "hotkeyGroupPicker"
+    private static let autoStopOnSilenceKey = "autoStopOnSilence"
 
     private init() {
         let defaults = UserDefaults.standard
@@ -136,6 +146,7 @@ final class AppSettings {
         agentSummaryConsented = defaults.object(forKey: Self.agentSummaryConsentedKey) as? Bool ?? false
         defaultSessionGroup = defaults.string(forKey: Self.defaultSessionGroupKey)
         hotkeyGroupPicker = defaults.object(forKey: Self.hotkeyGroupPickerKey) as? Bool ?? true
+        autoStopOnSilence = defaults.object(forKey: Self.autoStopOnSilenceKey) as? Bool ?? true
         if let data = defaults.data(forKey: Self.referenceFoldersKey),
             let decoded = try? JSONDecoder().decode([String: String].self, from: data)
         {

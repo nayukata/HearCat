@@ -218,6 +218,10 @@ public final class SessionEngine {
     /// 確定/暫定の文字起こしイベント。UI のライブ表示用。MainActor 上で呼ばれる。
     public var onEvent: ((TranscriberEvent) -> Void)?
     public var onStatusChange: ((Status) -> Void)?
+    /// 全チャンネル(マイクとシステム音声)の無音が autoStopSilence 続いた時の通知。
+    /// MainActor 上で呼ばれる。エンジンが自分で stop() を呼ばないのは、停止後の
+    /// 後処理(自動要約・履歴更新など)がアプリ側の停止経路に乗っているため。
+    public var onAutoStop: (() -> Void)?
     /// 入力レベル(RMS)の通知。UI のメーター表示用。
     /// pump(音声転送タスク)から MainActor の外で呼ばれるため Sendable であること。
     public var onLevel: (@Sendable (_ speaker: String, _ level: Float) -> Void)?
@@ -246,6 +250,14 @@ public final class SessionEngine {
     /// 使う入力デバイスの UID(nil はシステム標準)。セッション中の切り替えはスコープ外で、
     /// 次にセッションを開始した時に反映される。
     private var micDeviceUID: String?
+    /// 無音自動停止のオン/オフ。セッション外からも変更でき、セッション中も即座に効く
+    /// (watchdog が毎回読むため)。watchdog は MainActor 上で回るのでロック不要。
+    private var autoStopEnabled = true
+    /// 無音がこの秒数続いたらセッションを自動停止する。SilenceGate.hangover(発話の
+    /// 区切り検出)とは目的が別で、こちらは「もう誰も話していない=セッション終了」の判定。
+    private static let autoStopSilence: TimeInterval = 5 * 60
+    /// 無音の監視タスク。teardown で必ず止める。
+    private var autoStopTask: Task<Void, Never>?
 
     public init(locale: Locale = Locale(identifier: "ja-JP")) {
         self.locale = locale
@@ -377,6 +389,10 @@ public final class SessionEngine {
         self.recorder = recorder
 
         // --- pump: 音源 → 文字起こし/録音への分岐 ---
+        // 無音自動停止の判定材料。どちらかのチャンネルで音が鳴るたびに pump が更新し、
+        // watchdog(MainActor)が読む。録音/文字起こしのトグルとは独立に更新する
+        // (録音だけのセッションでも自動停止は効かせたいため)。
+        let lastVoiceAt = OSAllocatedUnfairLock(initialState: Date())
         let onLevel = self.onLevel
         let micBuffers = mic.buffers
         let micGateSettings = self.micGateSettings
@@ -389,6 +405,7 @@ public final class SessionEngine {
                 // エコー除去のためにここでしきい値を動かすことはしない
                 // (理由は EchoTextFilter のコメントを参照)。
                 let threshold = micGateSettings.snapshot().micThreshold ?? SilenceGate.defaultThreshold
+                if level >= threshold { lastVoiceAt.withLock { $0 = Date() } }
                 // ゲートは文字起こしにだけ効かせる。録音は無音も含めて忠実に残す。
                 if toggles.transcribing.withLock({ $0 }) {
                     switch gate.action(for: item.buffer, level: level, threshold: threshold) {
@@ -415,6 +432,7 @@ public final class SessionEngine {
                 for await item in systemBuffers {
                     let level = rmsLevel(item.buffer)
                     onLevel?("相手", level)
+                    if level >= SilenceGate.defaultThreshold { lastVoiceAt.withLock { $0 = Date() } }
                     if toggles.transcribing.withLock({ $0 }) {
                         switch gate.action(for: item.buffer, level: level) {
                         case .open:
@@ -430,6 +448,23 @@ public final class SessionEngine {
                     if toggles.recording.withLock({ $0 }) { await recorder.appendSystem(item.buffer) }
                 }
             })
+        }
+
+        // --- 無音自動停止の watchdog ---
+        // MainActor のタスクとして回す(sleep 中はスレッドを塞がない)。判定の粒度は
+        // 15秒(最悪 5分15秒で停止)で十分なので、バッファごとの判定はしない。
+        autoStopTask = Task { [weak self] in
+            while true {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled, let self else { return }
+                guard self.autoStopEnabled else { continue }
+                let silentFor = Date().timeIntervalSince(lastVoiceAt.withLock { $0 })
+                if silentFor >= Self.autoStopSilence {
+                    debugLog("autoStop: 無音が \(Int(silentFor)) 秒続いたためセッションを自動停止")
+                    self.onAutoStop?()
+                    return
+                }
+            }
         }
 
         var status = Status()
@@ -465,6 +500,10 @@ public final class SessionEngine {
     }
 
     private func teardown() async {
+        // 0. 無音監視を止める(自動停止起点の teardown 中に再発火させない)。
+        autoStopTask?.cancel()
+        autoStopTask = nil
+
         // 1. 音源を止めてバッファストリームを finish させ、pump が末尾まで流し切るのを待つ。
         mic?.stop()
         system?.stop()
@@ -529,6 +568,12 @@ public final class SessionEngine {
     /// 次にセッションを開始した時(スコープ外: セッション中のライブ切り替えは非対応)。
     public func setMicDevice(uid: String?) {
         micDeviceUID = uid
+    }
+
+    /// 無音自動停止のオン/オフを変える。セッション中でも即座に効く
+    /// (次のセッションにも引き継がれる。setGains と同じ方針)。
+    public func setAutoStop(enabled: Bool) {
+        autoStopEnabled = enabled
     }
 
     // SFSpeechRecognizer.requestAuthorization の完了ハンドラは TCC が背景スレッドで呼ぶ。

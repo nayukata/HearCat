@@ -109,6 +109,16 @@ final class AppModel {
         settings.micDeviceChanged = { [weak self] in
             self?.applyMicDevice()
         }
+        engine.setAutoStop(enabled: settings.autoStopOnSilence)
+        settings.autoStopChanged = { [weak self] in
+            guard let self else { return }
+            engine.setAutoStop(enabled: settings.autoStopOnSilence)
+        }
+        // 無音自動停止も手動停止と同じ経路(stopSession)を通し、自動要約などの
+        // 後処理を素通りさせない。
+        engine.onAutoStop = { [weak self] in
+            Task { await self?.stopSession() }
+        }
         settings.hotkeysChanged = { [weak self] in
             guard let self else { return }
             HotkeyCenter.shared.apply(settings.hotkeys)
