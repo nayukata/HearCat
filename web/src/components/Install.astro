@@ -41,6 +41,22 @@ const BOOTSTRAP_CMD = "curl -fsSL https://raw.githubusercontent.com/nayukata/Hea
         <p class="text-[13.5px] text-ink-dim mt-3"><b class="text-ink">Apple Development 証明書</b> — Xcode の「Settings → Accounts」から Apple ID を追加すると自動で作成されます。システム音声の取得にはこの署名が必要です。</p>
       </div>
     </div>
+    <div class="reveal mt-14 bg-bg-soft border border-line rounded-[18px] px-[30px] py-7">
+      <h3 class="font-head font-bold text-[16.5px]">更新するには</h3>
+      <p class="text-[13.5px] text-ink-dim mt-3">導入と同じコマンドをもう一度実行すると、最新版に入れ替わります。</p>
+      <div
+        class="code-inline mt-3 rounded-[10px] py-[14px] px-4 relative overflow-x-auto"
+        style="background: #0F1523; color: #E4E7EE; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7;"
+      >
+        <button
+          class="cp absolute top-2 right-2 text-[11px] border-0 text-white py-1 px-[10px] rounded-[5px] cursor-pointer font-sans font-medium"
+          style="background: rgba(255,255,255,.1);"
+          data-cmd={BOOTSTRAP_CMD}
+        >コピー</button>
+        <span class="text-blue-soft select-none">$ </span>{BOOTSTRAP_CMD}
+      </div>
+      <p class="text-[13.5px] text-ink-dim mt-3">AI エージェント連携がうまく動かない、macOS のアップデートで挙動が変わった、など何かおかしいと感じた時も、まずこのコマンドの再実行をお試しください。</p>
+    </div>
   </div>
 </section>
 
