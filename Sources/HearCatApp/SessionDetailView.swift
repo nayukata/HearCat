@@ -67,10 +67,10 @@ struct SessionDetailView: View {
                     session.name.isEmpty
                         ? session.startDate.formatted(date: .complete, time: .shortened)
                         : session.name)
-                    .font(.headline)
+                    .font(HCFont.headline)
                 if !session.name.isEmpty {
                     Text(session.startDate.formatted(date: .complete, time: .shortened))
-                        .font(.caption)
+                        .font(HCFont.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -116,9 +116,7 @@ struct SessionDetailView: View {
                 }
                 if let summary {
                     GroupBox {
-                        Text(summary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        SummaryView(markdown: summary)
                     } label: {
                         HStack {
                             Text("要約")
@@ -129,18 +127,22 @@ struct SessionDetailView: View {
                 }
                 if let transcript {
                     GroupBox {
-                        if transcript.isEmpty {
-                            Text("(文字起こしなし)")
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            VStack(alignment: .leading, spacing: 3) {
-                                ForEach(transcriptLines) { line in
-                                    transcriptRow(line)
+                        Group {
+                            if transcript.isEmpty {
+                                Text("(文字起こしなし)")
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    ForEach(transcriptLines) { line in
+                                        transcriptRow(line)
+                                    }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        // GroupBox 既定の内側余白は薄い。要約(SummaryView)と同じ余白にする。
+                        .padding(8)
                     } label: {
                         HStack {
                             Text("文字起こし")
@@ -170,12 +172,12 @@ struct SessionDetailView: View {
                         player.playFrom(offset)
                     }
                     .buttonStyle(.plain)
-                    .font(.caption.monospacedDigit())
+                    .font(HCFont.monospacedDigit(.caption1))
                     .foregroundStyle(.tint)
                     .help("この位置から再生")
                 } else {
                     Text(formatPlaybackTime(offset))
-                        .font(.caption.monospacedDigit())
+                        .font(HCFont.monospacedDigit(.caption1))
                         .foregroundStyle(.secondary)
                 }
                 Text(line.body)
@@ -346,12 +348,12 @@ struct PlayerView: View {
                 player.togglePlayback()
             } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title3)
+                    .font(HCFont.title3)
             }
             .buttonStyle(.plain)
 
             Text(formatPlaybackTime(scrubTime ?? player.currentTime))
-                .font(.caption.monospacedDigit())
+                .font(HCFont.monospacedDigit(.caption1))
                 .foregroundStyle(.secondary)
 
             Slider(
@@ -367,7 +369,7 @@ struct PlayerView: View {
                 })
 
             Text(formatPlaybackTime(player.duration))
-                .font(.caption.monospacedDigit())
+                .font(HCFont.monospacedDigit(.caption1))
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal)
