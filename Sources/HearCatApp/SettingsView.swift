@@ -55,14 +55,14 @@ struct SettingsView: View {
                     }
                 if let launchAtLoginMessage {
                     Text(launchAtLoginMessage)
-                        .font(.caption)
+                        .font(HCFont.caption)
                         .foregroundStyle(.secondary)
                 }
             } header: {
                 Text("起動")
             } footer: {
                 Text("Mac にログインしたとき、メニューバーに自動で常駐します。システム設定 > 一般 > ログイン項目からも変更できます。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }
 
@@ -72,7 +72,7 @@ struct SettingsView: View {
                 Text("セッション名")
             } footer: {
                 Text("セッション開始時、今の時刻に重なる予定 (5分後までに始まる予定も含む) のタイトルをセッション名にします。macOS のカレンダーに追加したアカウント (Google など) の予定も対象です。初回はカレンダーへのアクセス許可を求めます。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }
 
@@ -90,20 +90,20 @@ struct SettingsView: View {
                 }
                 if let skillMessage {
                     Text(skillMessage)
-                        .font(.caption)
+                        .font(HCFont.caption)
                         .foregroundStyle(.secondary)
                 }
             } header: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("AI エージェント連携")
                     Text("AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。")
-                        .font(.footnote)
+                        .font(HCFont.footnote)
                         .foregroundStyle(.secondary)
                         .textCase(nil)
                 }
             } footer: {
                 Text("各エージェント配下 (~/.claude/skills/ など) には実体へのリンクを張ります。アプリを起動するたびに自動で最新に更新します。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -119,11 +119,11 @@ struct SettingsView: View {
                     }
                 }
                 Text("デバイスの変更は次のセッションから有効です。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
                 Toggle("エコー除去", isOn: $settings.echoRemoval)
                 Text("スピーカーから出た相手の声が、自分の発言として文字起こしされるのを防ぎます。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
                 Toggle("入力感度を自動調整", isOn: $settings.micSensitivityAuto)
                 if !settings.micSensitivityAuto {
@@ -139,7 +139,7 @@ struct SettingsView: View {
                 Text("マイク")
             } footer: {
                 Text("入力感度は、マイクの音量がこの値を下回る間は文字起こしに流しません。低すぎると回り込みを拾い、高すぎると小さな声を取りこぼします。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }
 
@@ -150,7 +150,7 @@ struct SettingsView: View {
                 Text("録音の音量")
             } footer: {
                 Text("録音ファイルに書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -169,7 +169,7 @@ struct SettingsView: View {
                 Text("ホットキー")
             } footer: {
                 Text("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。録音/文字起こしのキーは、セッション外で押すとその機能だけオンでセッションを開始します。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }
 
@@ -177,7 +177,7 @@ struct SettingsView: View {
                 Toggle("ホットキーで開始する前に保存先グループを確認", isOn: $settings.hotkeyGroupPicker)
             } footer: {
                 Text("オンのときは、ホットキーでセッションを始めるたびに、どのグループに入れるかを選ぶ画面を挟みます。オフのときは前回選んだグループでそのまま始まります。")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -203,7 +203,7 @@ struct SettingsView: View {
                 Slider(value: value, in: 0...2)
                     .frame(width: 180)
                 Text("\(Int(value.wrappedValue * 100))%")
-                    .font(.caption.monospacedDigit())
+                    .font(HCFont.monospacedDigit(.caption1))
                     .foregroundStyle(.secondary)
                     .frame(width: 40, alignment: .trailing)
                 Button("戻す") { value.wrappedValue = 1.0 }
@@ -242,7 +242,7 @@ struct SettingsView: View {
                 )
                 .frame(width: 180)
                 Text(String(format: "%.4f", settings.micSensitivity))
-                    .font(.caption.monospacedDigit())
+                    .font(HCFont.monospacedDigit(.caption1))
                     .foregroundStyle(.secondary)
                     .frame(width: 56, alignment: .trailing)
             }
@@ -290,7 +290,7 @@ struct SettingsView: View {
                 Text(title)
                     .frame(width: 44, alignment: .leading)
                 Text(path)
-                    .font(.callout)
+                    .font(HCFont.callout)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
@@ -323,7 +323,7 @@ struct HotkeyRecorderField: View {
                 recording ? endRecording() : beginRecording()
             } label: {
                 Text(buttonTitle)
-                    .font(.body.monospaced())
+                    .font(HCFont.monospaced(size: 13))
                     .frame(minWidth: 96)
             }
             // 割り当て済みのキーだけ消せるように、xmark は別ボタンで出す。

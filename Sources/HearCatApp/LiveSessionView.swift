@@ -24,7 +24,7 @@ struct LiveSessionView: View {
                 .overlay(CatHeadShape.Eyes().fill(.white.opacity(0.6)))
                 .frame(width: 15, height: 15)
             Text("HearCat — ライブ")
-                .font(.system(size: 12))
+                .font(HCFont.system(size: 12))
                 .foregroundStyle(HCColor.whiteDim)
             EQBars(active: model.status.transcribing)
             if model.status.recording {
@@ -81,18 +81,18 @@ struct LiveSessionView: View {
     private func segmentLine(time: Date?, speaker: String, text: String, volatile: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(time.map { "[" + $0.formatted(date: .omitted, time: .standard) + "]" } ?? "認識中")
-                .font(.system(size: 10.5, design: .monospaced))
+                .font(HCFont.monospaced(size: 10.5))
                 .foregroundStyle(.white.opacity(0.34))
                 .frame(width: 66, alignment: time == nil ? .center : .leading)
             SpeakerChip(speaker: speaker)
             if volatile {
                 StreamingText(target: text)
                     .foregroundStyle(.white.opacity(0.5))
-                    .font(.system(size: 13.5))
+                    .font(HCFont.system(size: 13.5))
             } else {
                 Text(text)
                     .foregroundStyle(.white.opacity(0.88))
-                    .font(.system(size: 13.5))
+                    .font(HCFont.system(size: 13.5))
                     .textSelection(.enabled)
             }
         }

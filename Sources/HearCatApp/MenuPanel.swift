@@ -24,7 +24,7 @@ struct MenuPanel: View {
             if let error = model.lastError {
                 divider
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
@@ -66,17 +66,17 @@ struct MenuPanel: View {
             }
             .frame(width: 17, height: 17)
             Text("HearCat")
-                .font(.system(size: 14, weight: .black))
+                .font(HCFont.system(size: 14, weight: .black))
                 .foregroundStyle(.white)
             Spacer()
             if model.status.active, let startedAt = model.status.startedAt {
                 // 経過時間。Text(_:style: .timer) が毎秒勝手に進んでくれる。
                 Text(startedAt, style: .timer)
-                    .font(.subheadline.monospacedDigit())
+                    .font(HCFont.monospacedDigit(.subheadline))
                     .foregroundStyle(HCColor.whiteDim)
             } else {
                 Text("待機中")
-                    .font(.subheadline)
+                    .font(HCFont.subheadline)
                     .foregroundStyle(HCColor.whiteDim)
             }
         }
@@ -144,7 +144,7 @@ struct MenuPanel: View {
 
             if model.status.systemAudioError != nil {
                 Label("相手の音声: 取得できていません", systemImage: "speaker.slash")
-                    .font(.caption)
+                    .font(HCFont.caption)
                     .foregroundStyle(.orange)
                     .help(model.status.systemAudioError ?? "")
             }
@@ -175,7 +175,7 @@ struct MenuPanel: View {
     private func meterRow(label: String, level: Float) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.caption)
+                .font(HCFont.caption)
                 .foregroundStyle(HCColor.whiteDim)
                 .frame(width: 28, alignment: .leading)
             LevelMeter(level: level)
@@ -228,7 +228,7 @@ struct PanelButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium))
+            .font(HCFont.system(size: 12, weight: .medium))
             .padding(.vertical, 7)
             .padding(.horizontal, 10)
             .background(

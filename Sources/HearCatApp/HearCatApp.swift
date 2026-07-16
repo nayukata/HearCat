@@ -6,9 +6,14 @@ struct HearCatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     private let model = AppModel.shared
 
+    init() {
+        HCFont.registerBundledFonts()
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuPanel(model: model)
+                .environment(\.font, HCFont.body)
         } label: {
             MenuBarLabel(model: model)
         }
@@ -17,12 +22,14 @@ struct HearCatApp: App {
         Window("HearCat", id: "main") {
             MainWindow(model: model)
                 .tint(HCColor.blue)
+                .environment(\.font, HCFont.body)
         }
         .defaultSize(width: 960, height: 640)
 
         Window("HearCat の設定", id: "settings") {
             SettingsView(model: model, settings: AppSettings.shared)
                 .tint(HCColor.blue)
+                .environment(\.font, HCFont.body)
                 .background(WindowAccessor { window in
                     model.settingsWindow = window
                 })

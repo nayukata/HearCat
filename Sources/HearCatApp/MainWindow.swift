@@ -224,7 +224,7 @@ struct MainWindow: View {
                 creatingFolder = true
             } label: {
                 Label("新しいグループ", systemImage: "folder.badge.plus")
-                    .font(.callout)
+                    .font(HCFont.callout)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -295,7 +295,7 @@ struct MainWindow: View {
             Image(systemName: "link")
             Text(URL(fileURLWithPath: path).lastPathComponent)
         }
-        .font(.caption2)
+        .font(HCFont.caption2)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(Capsule().fill(.quaternary))
@@ -484,7 +484,7 @@ struct SessionRow: View {
                     Image(systemName: "list.bullet.rectangle")
                 }
             }
-            .font(.caption)
+            .font(HCFont.caption)
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)

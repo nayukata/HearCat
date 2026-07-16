@@ -1,5 +1,72 @@
 import AppKit
+import CoreText
 import SwiftUI
+
+/// アプリ全体のフォント。欧文・数字はシステム(SF Pro)のまま、日本語グリフだけ
+/// 同梱の Noto Sans JP に落とすカスケード指定を作る。フォントをここ以外で直接
+/// 指定しない(SwiftUI 標準の .font(.caption) 等はシステムのフォールバック=
+/// ヒラギノで描画されてしまうため)。
+enum HCFont {
+    /// 同梱フォントの登録。起動時に一度だけ呼ぶ。プロセススコープなのでシステムは汚さない。
+    /// 開発ビルドをバンドル外から直接実行した場合など、リソースが見つからなければ
+    /// 何もしない(カスケード先が未登録の場合、システムが従来どおりヒラギノに落とす)。
+    static func registerBundledFonts() {
+        guard
+            let urls = Bundle.module.urls(
+                forResourcesWithExtension: "ttf", subdirectory: "Fonts")
+        else { return }
+        for url in urls {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+    }
+
+    /// 可変フォントの名前付きインスタンス。ウェイトごとに日本語側も太さを揃える。
+    private static func notoName(for weight: NSFont.Weight) -> String {
+        switch weight {
+        case .medium: "NotoSansJP-Medium"
+        case .semibold: "NotoSansJP-SemiBold"
+        case .bold, .heavy: "NotoSansJP-Bold"
+        case .black: "NotoSansJP-Black"
+        default: "NotoSansJP-Regular"
+        }
+    }
+
+    private static func cascaded(_ base: NSFont, weight: NSFont.Weight) -> Font {
+        let descriptor = base.fontDescriptor.addingAttributes([
+            .cascadeList: [NSFontDescriptor(fontAttributes: [.name: notoName(for: weight)])]
+        ])
+        return Font(NSFont(descriptor: descriptor, size: base.pointSize) ?? base)
+    }
+
+    static func system(size: CGFloat, weight: NSFont.Weight = .regular) -> Font {
+        cascaded(.systemFont(ofSize: size, weight: weight), weight: weight)
+    }
+
+    /// SwiftUI の .caption 等と同じ大きさを保ったままカスケードを効かせる。
+    static func style(_ textStyle: NSFont.TextStyle, weight: NSFont.Weight = .regular) -> Font {
+        system(size: NSFont.preferredFont(forTextStyle: textStyle).pointSize, weight: weight)
+    }
+
+    /// 数字だけ等幅(タイムスタンプ用)。日本語はカスケードで Noto に落ちる。
+    static func monospacedDigit(_ textStyle: NSFont.TextStyle) -> Font {
+        let size = NSFont.preferredFont(forTextStyle: textStyle).pointSize
+        return cascaded(.monospacedDigitSystemFont(ofSize: size, weight: .regular), weight: .regular)
+    }
+
+    /// 全体等幅(コマンド表記用)。
+    static func monospaced(size: CGFloat) -> Font {
+        cascaded(.monospacedSystemFont(ofSize: size, weight: .regular), weight: .regular)
+    }
+
+    static var body: Font { style(.body) }
+    static var callout: Font { style(.callout) }
+    static var subheadline: Font { style(.subheadline) }
+    static var footnote: Font { style(.footnote) }
+    static var caption: Font { style(.caption1) }
+    static var caption2: Font { style(.caption2) }
+    static var headline: Font { style(.headline, weight: .semibold) }
+    static var title3: Font { style(.title3) }
+}
 
 /// ランディングページ (docs/index.html) と揃えたデザイントークン。
 /// 色をここ以外に直書きしない(LP とアプリの見た目を一緒に保つため)。
@@ -258,7 +325,7 @@ struct SpeakerChip: View {
 
     var body: some View {
         Text(speaker)
-            .font(.system(size: 11, weight: .bold))
+            .font(HCFont.system(size: 11, weight: .bold))
             .padding(.horizontal, 9)
             .padding(.vertical, 1)
             .foregroundStyle(speaker == "自分" ? HCColor.meText : HCColor.youText)
@@ -307,7 +374,7 @@ struct RecBadge: View {
                 .opacity(dimmed ? 0.15 : 1)
                 .animation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true), value: dimmed)
             Text("REC")
-                .font(.system(size: 10, weight: .bold))
+                .font(HCFont.system(size: 10, weight: .bold))
                 .kerning(1)
                 .foregroundStyle(Color(red: 1, green: 122 / 255, blue: 122 / 255))
         }

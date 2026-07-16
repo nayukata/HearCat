@@ -39,6 +39,8 @@ let package = Package(
             dependencies: ["HearCatKit", "HearCatSummarize"],
             path: "Sources/HearCatApp",
             exclude: ["Info.plist", "AppIcon.icns"],
+            // 同梱フォント(Noto Sans JP)。起動時に HCFont.registerBundledFonts() が登録する。
+            resources: [.copy("Resources/Fonts")],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
