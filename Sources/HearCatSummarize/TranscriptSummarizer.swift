@@ -125,6 +125,11 @@ public enum TranscriptSummarizer {
     /// v11 時点の実測確認済みの文言に byte 単位で戻し、既知の良い出力を再現させている。
     /// 【重要】この2フィールドの description と依頼文は、実測で確認済みの文言から絶対に変更しない
     /// こと。ガイド文言のごく微小な差でも greedy の固定出力全体が引き直される。
+    /// v15実測: body のガイドに「受け身の文末(〜されました)を繰り返さず、自然な日本語で書く」を
+    /// 足して Atnd 7/6 で検証したが、受け身連発の段落は1字も変わらず(greedy がその継続を強く
+    /// 好み、文体指示に反応しない)、一方で決定事項の入れ替わり・TODO の 7件→3件の痩せ・
+    /// 「〜する可能性」の曖昧化が出たため戻した。本文の文体はガイドでは動かせない。
+    /// 見出しの出来事語尾はコード側の stripEventSuffixFromTitle で対処している。
     @Generable
     fileprivate struct TopicBody {
         @Guide(description: "この話題の見出し。要点の内容から付ける短い名詞句。「〜について議論されました」のような文にせず、名詞句で書く")
@@ -459,8 +464,8 @@ public enum TranscriptSummarizer {
             do {
                 let topicBody = try await respondTopicBody(points: points, log: log)
                 // title は概要組み立て([C])と選別([E1][E2])の話題タグにもそのまま使われるため、
-                // body と同じくサニタイズする。
-                let title = sanitizeTrailingArtifacts(topicBody.title)
+                // body と同じくサニタイズする。文の見出しは出来事語尾を剥がして名詞句に戻す。
+                let title = stripEventSuffixFromTitle(sanitizeTrailingArtifacts(topicBody.title))
                 let section = TopicSection(title: title, body: sanitizeTrailingArtifacts(topicBody.body))
                 todoCandidates += topicBody.todos.map { ActionCandidate(topic: title, text: $0) }
                 if topicBody.isChitchat {
@@ -664,6 +669,29 @@ public enum TranscriptSummarizer {
         let bulletPrefixes = ["- ", "・", "* ", "• "]
         guard let prefix = bulletPrefixes.first(where: text.hasPrefix) else { return text }
         return String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// 実測(Atnd 7/6 の再生成): 「名詞句で書く」のガイドに反して「アプリの改善について
+    /// 議論されました」のような文の見出しが出た。見出しは概要(buildOverview)にもそのまま
+    /// 並ぶため、文のままだと「〜されました、〜されました」と同じ語尾の繰り返しが目立つ。
+    /// ガイド文言・依頼文は変更禁止(TopicBody の【重要】コメント参照)のため、コード側で
+    /// 出来事語尾だけを剥がして名詞句に戻す。剥がした結果が空になる場合は元の見出しを使う。
+    private static func stripEventSuffixFromTitle(_ title: String) -> String {
+        let suffixPatterns = [
+            "(について|を|が)?(議論|検討|話し合わ|共有|説明|報告)(され|し)(ました|た)。?$",
+            "について。?$",
+        ]
+        var result = title
+        for pattern in suffixPatterns {
+            if let range = result.range(of: pattern, options: .regularExpression) {
+                result.removeSubrange(range)
+                break
+            }
+        }
+        // 文の見出しに付く末尾の句点も剥がす(概要で「〜します。など4件」と繋がる実測があった)。
+        while result.hasSuffix("。") { result.removeLast() }
+        let trimmed = result.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? title : trimmed
     }
 
     /// 構造化生成の末尾崩れ(実測: `〜できます。」],` のような混入や、v14.1実測の
