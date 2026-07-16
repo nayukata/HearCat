@@ -23,6 +23,8 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     }
     /// 要約はアプリ内で表示する用途のため固定名。
     public var summaryURL: URL? { existing("summary.md") }
+    /// エージェント CLI で清書した文字起こし(hearcat-clean スキル由来)。無ければ nil。
+    public var cleanedURL: URL? { existing("cleaned.md") }
 
     private func existing(_ name: String) -> URL? {
         let url = directory.appendingPathComponent(name)
@@ -88,11 +90,17 @@ public enum SessionStore {
     /// 新しいセッションディレクトリを作って返す。
     /// name(カレンダーの予定名など)があれば「日時 名前」の形で最初から名前付きにする。
     /// 開始後のリネームは書き込み中のパスとずれるため、名前は作成時に決める。
-    public static func createSessionDirectory(startDate: Date, name: String = "") throws -> URL {
+    /// folder を指定すると、そのプロジェクトフォルダ(グループ)の配下に作る
+    /// (中間ディレクトリの作成は createDirectory の withIntermediateDirectories で足りる)。
+    public static func createSessionDirectory(
+        startDate: Date, name: String = "", folder: String? = nil
+    ) throws -> URL {
         let cleaned = sanitize(name)
         let datePart = makeFormatter().string(from: startDate)
-        let dir = sessionsDirectory.appendingPathComponent(
-            cleaned.isEmpty ? datePart : "\(datePart) \(cleaned)", isDirectory: true)
+        let dirName = cleaned.isEmpty ? datePart : "\(datePart) \(cleaned)"
+        let parent = folder.map { sessionsDirectory.appendingPathComponent(sanitize($0), isDirectory: true) }
+            ?? sessionsDirectory
+        let dir = parent.appendingPathComponent(dirName, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

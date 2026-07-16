@@ -1,3 +1,4 @@
+import AppKit
 import HearCatKit
 import SwiftUI
 
@@ -99,10 +100,10 @@ struct MainWindow: View {
             Text("開始日時 (\(session.startDate.formatted(date: .abbreviated, time: .shortened))) はそのまま、フォルダとファイルの名前に反映されます。空にすると名前を外します。")
         }
         .alert(
-            "新しいフォルダへ移動", isPresented: presented($newFolderTarget),
+            "新しいグループへ移動", isPresented: presented($newFolderTarget),
             presenting: newFolderTarget
         ) { session in
-            TextField("フォルダ名 (例: プロジェクトA)", text: $newFolderText)
+            TextField("グループ名 (例: プロジェクトA)", text: $newFolderText)
             Button("移動") {
                 select(model.move(session, toFolder: newFolderText))
             }
@@ -110,20 +111,20 @@ struct MainWindow: View {
         } message: { _ in
             Text("プロジェクトごとにセッションをまとめられます。")
         }
-        .alert("新しいフォルダ", isPresented: $creatingFolder) {
-            TextField("フォルダ名 (例: プロジェクトA)", text: $createFolderText)
+        .alert("新しいグループ", isPresented: $creatingFolder) {
+            TextField("グループ名 (例: プロジェクトA)", text: $createFolderText)
             Button("作成") {
                 model.createFolder(createFolderText)
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("セッションはドラッグ&ドロップか右クリックでフォルダへ移せます。")
+            Text("セッションはドラッグ&ドロップか右クリックでグループへ移せます。")
         }
         .alert(
-            "フォルダ名を変更", isPresented: presented($folderRenameTarget),
+            "グループ名を変更", isPresented: presented($folderRenameTarget),
             presenting: folderRenameTarget
         ) { folder in
-            TextField("フォルダ名", text: $folderRenameText)
+            TextField("グループ名", text: $folderRenameText)
             Button("変更") {
                 if let newName = model.renameFolder(folder, to: folderRenameText) {
                     remapSelection(fromFolder: folder, to: newName)
@@ -135,11 +136,11 @@ struct MainWindow: View {
             Button("キャンセル", role: .cancel) {}
         }
         .confirmationDialog(
-            "フォルダ「\(folderDeleteTarget ?? "")」を削除しますか？",
+            "グループ「\(folderDeleteTarget ?? "")」を削除しますか？",
             isPresented: presented($folderDeleteTarget), titleVisibility: .visible,
             presenting: folderDeleteTarget
         ) { folder in
-            Button("フォルダを削除", role: .destructive) {
+            Button("グループを削除", role: .destructive) {
                 if model.deleteFolder(folder) {
                     remapSelection(fromFolder: folder, to: nil)
                     collapsedFolders.remove(folder)
@@ -164,7 +165,7 @@ struct MainWindow: View {
                     }
                 }
                 if !model.folders.isEmpty {
-                    Section("フォルダ") {
+                    Section("グループ") {
                         ForEach(model.folders, id: \.self) { folder in
                             folderGroup(folder)
                         }
@@ -215,14 +216,14 @@ struct MainWindow: View {
         }
     }
 
-    /// サイドバー下部の常設ボタン。フォルダ分けできることを見えるようにする。
+    /// サイドバー下部の常設ボタン。グループ分けできることを見えるようにする。
     private var newFolderBar: some View {
         HStack {
             Button {
                 createFolderText = ""
                 creatingFolder = true
             } label: {
-                Label("新しいフォルダ", systemImage: "folder.badge.plus")
+                Label("新しいグループ", systemImage: "folder.badge.plus")
                     .font(.callout)
             }
             .buttonStyle(.plain)
@@ -234,7 +235,7 @@ struct MainWindow: View {
         .overlay(alignment: .top) { Divider() }
     }
 
-    /// 折りたたみ式のフォルダ行。中にそのフォルダのセッションが入る。
+    /// 折りたたみ式のグループ行。中にそのグループのセッションが入る。
     private func folderGroup(_ folder: String) -> some View {
         let sessions = pastSessions.filter { $0.folder == folder }
         return DisclosureGroup(isExpanded: expandedBinding(folder)) {
@@ -242,14 +243,42 @@ struct MainWindow: View {
                 sessionRow(session)
             }
         } label: {
-            Label(folder, systemImage: "folder")
+            Label {
+                HStack(spacing: 6) {
+                    Text(folder)
+                    // どのグループに関連フォルダが設定済みかをサイドバーで一目で
+                    // 分かるようにする。badge(セッション数)と喧嘩しないよう、
+                    // タイトル側の HStack に収めて右端は badge に譲る。
+                    if let path = model.settings.referenceFolders[folder] {
+                        referenceFolderChip(path: path)
+                    }
+                }
+            } icon: {
+                Image(systemName: "folder")
+            }
                 .badge(sessions.count)
                 .contextMenu {
-                    Button("フォルダ名を変更…") {
+                    Button("グループ名を変更…") {
                         folderRenameText = folder
                         folderRenameTarget = folder
                     }
-                    Button("フォルダを削除…", role: .destructive) {
+                    // 関連フォルダの設定はエージェント要約(claude/codex)が使うためのもの。
+                    // どちらも検出されていなければ意味のない項目になるため出さない。
+                    if !AgentCLIDetector.shared.availableCLIs.isEmpty {
+                        if model.settings.referenceFolders[folder] != nil {
+                            Button("関連フォルダを変更…") {
+                                ReferenceFolderPicker.pick(forGroup: folder)
+                            }
+                            Button("関連フォルダを解除") {
+                                model.settings.referenceFolders.removeValue(forKey: folder)
+                            }
+                        } else {
+                            Button("関連フォルダを設定…") {
+                                ReferenceFolderPicker.pick(forGroup: folder)
+                            }
+                        }
+                    }
+                    Button("グループを削除…", role: .destructive) {
                         folderDeleteTarget = folder
                     }
                 }
@@ -257,6 +286,20 @@ struct MainWindow: View {
                     _ = moveSessions(ids, toFolder: folder)
                 }
         }
+    }
+
+    /// 関連フォルダが設定済みのグループに添える控えめな chip。中身は関連フォルダの
+    /// 末尾のパス要素(例: 「atnd」)で、フルパスは .help(ツールチップ)で見せる。
+    private func referenceFolderChip(path: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "link")
+            Text(URL(fileURLWithPath: path).lastPathComponent)
+        }
+        .font(.caption2)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(.quaternary))
+        .help(path)
     }
 
     private func sessionRow(_ session: SessionInfo) -> some View {
@@ -275,7 +318,7 @@ struct MainWindow: View {
                     renameTarget = session
                 }
                 .disabled(bulkTargets != nil)
-                Menu("フォルダへ移動") {
+                Menu("グループへ移動") {
                     ForEach(model.folders.filter { $0 != session.folder }, id: \.self) { folder in
                         Button(folder) {
                             select(model.move(session, toFolder: folder))
@@ -287,7 +330,7 @@ struct MainWindow: View {
                         }
                     }
                     Divider()
-                    Button("新しいフォルダ…") {
+                    Button("新しいグループ…") {
                         newFolderText = ""
                         newFolderTarget = session
                     }

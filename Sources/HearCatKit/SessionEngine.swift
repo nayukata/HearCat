@@ -251,7 +251,7 @@ public final class SessionEngine {
         self.locale = locale
     }
 
-    public func start(record: Bool, transcribe: Bool, name: String = "") async throws {
+    public func start(record: Bool, transcribe: Bool, name: String = "", folder: String? = nil) async throws {
         // 直前の stop() の teardown がまだ進行中なら完了を待つ。待たずに進むと、
         // teardown が片付けている最中の mic/system/recorder を新しいセッションが
         // 同時に初期化してしまい、状態が壊れる。
@@ -272,7 +272,7 @@ public final class SessionEngine {
         }
 
         let startedAt = Date()
-        let sessionDir = try SessionStore.createSessionDirectory(startDate: startedAt, name: name)
+        let sessionDir = try SessionStore.createSessionDirectory(startDate: startedAt, name: name, folder: folder)
         do {
             try await startResources(
                 sessionDir: sessionDir, startedAt: startedAt,

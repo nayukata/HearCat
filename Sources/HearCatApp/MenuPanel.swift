@@ -85,7 +85,9 @@ struct MenuPanel: View {
     // MARK: - 待機中
 
     private var idleSection: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
+            groupPicker
+
             Button {
                 Task { await model.startSession(record: true, transcribe: true) }
             } label: {
@@ -104,6 +106,25 @@ struct MenuPanel: View {
             .buttonStyle(PanelButtonStyle())
         }
         .disabled(model.busy)
+    }
+
+    /// 開始するセッションを入れるグループの選択。選択は即座に defaultSessionGroup へ
+    /// 保存し、次回の既定にする(ここで選んだ内容が、次にホットキーで開始する時の
+    /// 既定グループにもなる)。
+    private var groupPicker: some View {
+        Picker("グループ", selection: groupBinding) {
+            Text("未分類").tag(String?.none)
+            ForEach(model.folders, id: \.self) { folder in
+                Text(folder).tag(String?.some(folder))
+            }
+        }
+        .pickerStyle(.menu)
+    }
+
+    private var groupBinding: Binding<String?> {
+        Binding(
+            get: { model.settings.defaultSessionGroup },
+            set: { model.settings.defaultSessionGroup = $0 })
     }
 
     // MARK: - セッション中

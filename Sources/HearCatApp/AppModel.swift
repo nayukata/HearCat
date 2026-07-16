@@ -121,6 +121,9 @@ final class AppModel {
         startIPCServer()
         // アプリ更新で新しくなった SKILL.md / CLI を、導入済みなら起動時に反映する。
         SkillInstaller.refreshIfInstalled()
+        // claude/codex の検出は zsh -lc 経由で数百 ms かかり得るため、起動をブロックしない
+        // バックグラウンド検出に回す(結果はキャッシュされ、以後は即座に読める)。
+        AgentCLIDetector.shared.detectIfNeeded()
     }
 
     /// エコー除去/入力感度の設定をエンジンへ反映する。自動時は threshold を nil にして
@@ -188,7 +191,13 @@ final class AppModel {
 
     // MARK: - セッション操作
 
-    func startSession(record: Bool = true, transcribe: Bool = true) async {
+    /// folder 省略時は AppSettings.shared.defaultSessionGroup を既定にする。
+    /// IPC(hearcat start)経由・ホットキー経由も folder を渡さずに呼ぶことで、
+    /// 同じ既定(直近選んだグループ)を通る。
+    func startSession(
+        record: Bool = true, transcribe: Bool = true,
+        folder: String? = AppSettings.shared.defaultSessionGroup
+    ) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
@@ -202,7 +211,7 @@ final class AppModel {
             liveTimeline.removeAll()
             // カレンダーの今の予定名をセッション名にする(設定でオフにできる)。
             let name = settings.calendarNaming ? await CalendarNamer.currentEventTitle() ?? "" : ""
-            try await engine.start(record: record, transcribe: transcribe, name: name)
+            try await engine.start(record: record, transcribe: transcribe, name: name, folder: folder)
             refreshSessions()
         } catch {
             lastError = error.localizedDescription
@@ -237,6 +246,27 @@ final class AppModel {
         summarizingSessionID = session.id
         defer { summarizingSessionID = nil }
         let result = try await TranscriptSummarizer.summarize(transcript: transcript)
+        let url = session.directory.appendingPathComponent("summary.md")
+        try result.write(to: url, atomically: true, encoding: .utf8)
+        refreshSessions()
+        return result
+    }
+
+    /// エージェント CLI(claude/codex)で高精度要約を生成し、summary.md に保存する。
+    /// 入力は cleaned.md(あれば)を優先し、無ければ生の文字起こしを使う
+    /// (清書済みのほうが音声認識の誤変換が少なく、要約の質が上がるため)。
+    func generateAgentSummary(for session: SessionInfo, using cli: AgentCLI) async throws -> String {
+        summarizingSessionID = session.id
+        defer { summarizingSessionID = nil }
+        guard let sourceURL = session.cleanedURL ?? session.transcriptURL,
+            let transcript = try? String(contentsOf: sourceURL, encoding: .utf8),
+            !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw AgentSummarizeError.noTranscript
+        }
+        let referenceFolder = session.folder.flatMap { settings.referenceFolders[$0] }
+        let result = try await AgentSummarizer.summarize(
+            using: cli, transcript: transcript, referenceFolder: referenceFolder)
         let url = session.directory.appendingPathComponent("summary.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
         refreshSessions()
@@ -321,7 +351,7 @@ final class AppModel {
                 if status.active {
                     await stopSession()
                 } else {
-                    await startSession()
+                    await startSessionViaHotkey(record: true, transcribe: true)
                 }
             }
         // 録音/文字起こしのキーはセッション外では「その機能だけオンで開始」。
@@ -330,19 +360,37 @@ final class AppModel {
             if status.active {
                 setRecording(!status.recording)
             } else {
-                Task { await startSession(record: true, transcribe: false) }
+                Task { await startSessionViaHotkey(record: true, transcribe: false) }
             }
         case .toggleTranscribing:
             if status.active {
                 setTranscribing(!status.transcribing)
             } else {
-                Task { await startSession(record: false, transcribe: true) }
+                Task { await startSessionViaHotkey(record: false, transcribe: true) }
             }
         case .openHistory:
             showHistory()
         case .openSettings:
             showSettings()
         }
+    }
+
+    /// ホットキーからのセッション開始。hotkeyGroupPicker が有効なら開始前に
+    /// グループ選択の小さい画面を出し、ESC・キャンセルなら開始自体を中止する。
+    /// 選択画面は NSAlert(モーダル)のため、この呼び出し自体は同期的にブロックする。
+    private func startSessionViaHotkey(record: Bool, transcribe: Bool) async {
+        guard settings.hotkeyGroupPicker else {
+            await startSession(record: record, transcribe: transcribe)
+            return
+        }
+        guard let result = HotkeyGroupPicker.choose(defaultGroup: settings.defaultSessionGroup) else {
+            return
+        }
+        if result.skipNextTime {
+            settings.hotkeyGroupPicker = false
+        }
+        settings.defaultSessionGroup = result.folder
+        await startSession(record: record, transcribe: transcribe, folder: result.folder)
     }
 
     // MARK: - ウィンドウ表示
@@ -427,10 +475,19 @@ final class AppModel {
     }
 
     /// フォルダ名を変更し、新しい名前を返す。失敗時は nil。
+    /// referenceFolders のキーと defaultSessionGroup も新しい名前へ追従させる
+    /// (古い名前のまま残ると、関連フォルダ設定や既定グループが宙に浮くため)。
     func renameFolder(_ folder: String, to newName: String) -> String? {
         defer { refreshSessions() }
         do {
-            return try SessionStore.renameFolder(folder, to: newName)
+            let renamed = try SessionStore.renameFolder(folder, to: newName)
+            if let path = settings.referenceFolders.removeValue(forKey: folder) {
+                settings.referenceFolders[renamed] = path
+            }
+            if settings.defaultSessionGroup == folder {
+                settings.defaultSessionGroup = renamed
+            }
+            return renamed
         } catch {
             lastError = error.localizedDescription
             return nil
@@ -438,11 +495,17 @@ final class AppModel {
     }
 
     /// フォルダを削除する(中のセッションは未分類へ戻る)。
+    /// referenceFolders のキーは削除し、defaultSessionGroup がそのフォルダを
+    /// 指していれば未分類(nil)へ戻す。
     @discardableResult
     func deleteFolder(_ folder: String) -> Bool {
         defer { refreshSessions() }
         do {
             try SessionStore.deleteFolder(folder)
+            settings.referenceFolders.removeValue(forKey: folder)
+            if settings.defaultSessionGroup == folder {
+                settings.defaultSessionGroup = nil
+            }
             return true
         } catch {
             lastError = error.localizedDescription

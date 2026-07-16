@@ -172,6 +172,14 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                Toggle("ホットキーで開始する前に保存先グループを確認", isOn: $settings.hotkeyGroupPicker)
+            } footer: {
+                Text("オンのときは、ホットキーでセッションを始めるたびに、どのグループに入れるかを選ぶ画面を挟みます。オフのときは前回選んだグループでそのまま始まります。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

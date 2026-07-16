@@ -72,6 +72,37 @@ final class AppSettings {
         }
     }
 
+    /// グループ(セッション整理のプロジェクトフォルダ)ごとの関連フォルダの絶対パス。
+    /// エージェント要約が用語・固有名詞の確認のために参照する。
+    var referenceFolders: [String: String] {
+        didSet {
+            if let data = try? JSONEncoder().encode(referenceFolders) {
+                UserDefaults.standard.set(data, forKey: Self.referenceFoldersKey)
+            }
+        }
+    }
+
+    /// エージェント CLI(外部 AI サービス)へ文字起こしを送信することへの初回同意。
+    var agentSummaryConsented: Bool {
+        didSet { UserDefaults.standard.set(agentSummaryConsented, forKey: Self.agentSummaryConsentedKey) }
+    }
+
+    /// 新規セッションを入れるグループ。nil は未分類。
+    var defaultSessionGroup: String? {
+        didSet {
+            if let defaultSessionGroup {
+                UserDefaults.standard.set(defaultSessionGroup, forKey: Self.defaultSessionGroupKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.defaultSessionGroupKey)
+            }
+        }
+    }
+
+    /// ホットキーでセッションを開始する際、グループ選択画面を挟むか。
+    var hotkeyGroupPicker: Bool {
+        didSet { UserDefaults.standard.set(hotkeyGroupPicker, forKey: Self.hotkeyGroupPickerKey) }
+    }
+
     @ObservationIgnored var gainsChanged: (() -> Void)?
     @ObservationIgnored var hotkeysChanged: (() -> Void)?
     @ObservationIgnored var micGateChanged: (() -> Void)?
@@ -85,6 +116,10 @@ final class AppSettings {
     private static let micSensitivityAutoKey = "micSensitivityAuto"
     private static let micSensitivityKey = "micSensitivity"
     private static let micDeviceUIDKey = "micDeviceUID"
+    private static let referenceFoldersKey = "referenceFolders"
+    private static let agentSummaryConsentedKey = "agentSummaryConsented"
+    private static let defaultSessionGroupKey = "defaultSessionGroup"
+    private static let hotkeyGroupPickerKey = "hotkeyGroupPicker"
 
     private init() {
         let defaults = UserDefaults.standard
@@ -98,6 +133,16 @@ final class AppSettings {
         micSensitivityAuto = defaults.object(forKey: Self.micSensitivityAutoKey) as? Bool ?? true
         micSensitivity = defaults.object(forKey: Self.micSensitivityKey) as? Double ?? 0.001
         micDeviceUID = defaults.string(forKey: Self.micDeviceUIDKey)
+        agentSummaryConsented = defaults.object(forKey: Self.agentSummaryConsentedKey) as? Bool ?? false
+        defaultSessionGroup = defaults.string(forKey: Self.defaultSessionGroupKey)
+        hotkeyGroupPicker = defaults.object(forKey: Self.hotkeyGroupPickerKey) as? Bool ?? true
+        if let data = defaults.data(forKey: Self.referenceFoldersKey),
+            let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        {
+            referenceFolders = decoded
+        } else {
+            referenceFolders = [:]
+        }
         if let data = defaults.data(forKey: Self.hotkeysKey),
             let decoded = try? JSONDecoder().decode([HotkeyAction: Hotkey].self, from: data)
         {
