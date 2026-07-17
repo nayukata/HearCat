@@ -87,6 +87,9 @@ struct MenuPanel: View {
     private var idleSection: some View {
         VStack(spacing: 10) {
             groupPicker
+            if let folder = referenceFolderLinkTarget {
+                referenceFolderHint(folder: folder)
+            }
 
             Button {
                 Task { await model.startSession(record: true, transcribe: true) }
@@ -125,6 +128,34 @@ struct MenuPanel: View {
         Binding(
             get: { model.settings.defaultSessionGroup },
             set: { model.settings.defaultSessionGroup = $0 })
+    }
+
+    /// 今選んでいるグループに資料フォルダの紐付けを勧める余地があるか。
+    /// 「未分類」(グループなし)や、既に紐付け済みのグループでは出さない。
+    /// エージェント CLI(claude/codex)がどちらも未検出なら紐付けても実益が無いため、
+    /// 意味の無い項目を出さない(MainWindow.swift の同種の判定と同じ扱い)。
+    private var referenceFolderLinkTarget: String? {
+        guard !AgentCLIDetector.shared.availableCLIs.isEmpty,
+            let folder = model.settings.defaultSessionGroup,
+            model.settings.referenceFolders[folder] == nil
+        else { return nil }
+        return folder
+    }
+
+    /// 録音を始める前、グループ選択の直下に添える控えめな誘導。ラベルは機能名(関連フォルダ)
+    /// でなく効能(要約精度が上がる)で語る。押した先(ReferenceFolderPicker)の
+    /// NSOpenPanel.message で「紐付けるとどう良くなるか」を1〜2文説明する
+    /// (ここでは専用のチュートリアル画面は作らない)。
+    private func referenceFolderHint(folder: String) -> some View {
+        Button {
+            ReferenceFolderPicker.pick(forGroup: folder)
+        } label: {
+            Label("資料フォルダと紐付けて要約精度を上げる", systemImage: "link")
+                .font(HCFont.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(HCColor.whiteDim)
     }
 
     // MARK: - セッション中

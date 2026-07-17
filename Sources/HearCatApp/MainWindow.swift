@@ -273,7 +273,9 @@ struct MainWindow: View {
                                 model.settings.referenceFolders.removeValue(forKey: folder)
                             }
                         } else {
-                            Button("関連フォルダを設定…") {
+                            // ラベルは機能名(関連フォルダ)でなく効能(要約精度が上がる)で語る。
+                            // 「関連フォルダ」という名前だけでは初見で何が嬉しいか伝わらないため。
+                            Button("資料フォルダと紐付けて要約精度を上げる…") {
                                 ReferenceFolderPicker.pick(forGroup: folder)
                             }
                         }

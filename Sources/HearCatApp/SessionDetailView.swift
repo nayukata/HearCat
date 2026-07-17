@@ -304,10 +304,12 @@ struct SessionDetailView: View {
         // subtitle は macOS 14.4+ で利用可能(このプロジェクトのターゲットは macOS 26)。
         if let folder = session.folder, model.settings.referenceFolders[folder] == nil {
             menu.addItem(.separator())
-            let referenceFolderItem = summarizeMenuActionHandler.makeItem("関連フォルダを設定…") {
+            // ラベルは機能名(関連フォルダ)でなく効能(要約精度が上がる)で語る
+            // (詳細は MainWindow.swift の同種の項目のコメント参照)。
+            let referenceFolderItem = summarizeMenuActionHandler.makeItem("資料フォルダと紐付けて要約精度を上げる…") {
                 ReferenceFolderPicker.pick(forGroup: folder)
             }
-            referenceFolderItem.subtitle = "会議に関連する資料やコードの場所。Claude / Codex が誤変換の修正や内容の理解に使います"
+            referenceFolderItem.subtitle = "会議に関連する資料やコードを Claude / Codex が読み、誤変換の修正や参加者の前提を踏まえた要約になります"
             menu.addItem(referenceFolderItem)
         }
 
