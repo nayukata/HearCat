@@ -87,8 +87,8 @@ struct MenuPanel: View {
     private var idleSection: some View {
         VStack(spacing: 10) {
             groupPicker
-            if let folder = referenceFolderLinkTarget {
-                referenceFolderHint(folder: folder)
+            if let target = referenceFolderLinkTarget {
+                referenceFolderHint(target: target)
             }
 
             Button {
@@ -130,25 +130,41 @@ struct MenuPanel: View {
             set: { model.settings.defaultSessionGroup = $0 })
     }
 
-    /// 今選んでいるグループに資料フォルダの紐付けを勧める余地があるか。
-    /// 「未分類」(グループなし)や、既に紐付け済みのグループでは出さない。
+    /// 資料フォルダ紐付けの誘導を押した時の遷移先。既にグループを選んでいれば
+    /// そのグループへ紐付けるだけ、「未分類」ならフォルダ選択から新規グループを作る
+    /// (グループ機能を使っていないユーザーもこの導線に出会えるようにするため)。
+    private enum ReferenceFolderLinkTarget {
+        case existingGroup(String)
+        case newGroupFromUnclassified
+    }
+
+    /// 資料フォルダの紐付けを勧める余地があるか。既に紐付け済みのグループでは出さない。
     /// エージェント CLI(claude/codex)がどちらも未検出なら紐付けても実益が無いため、
     /// 意味の無い項目を出さない(MainWindow.swift の同種の判定と同じ扱い)。
-    private var referenceFolderLinkTarget: String? {
-        guard !AgentCLIDetector.shared.availableCLIs.isEmpty,
-            let folder = model.settings.defaultSessionGroup,
-            model.settings.referenceFolders[folder] == nil
-        else { return nil }
-        return folder
+    private var referenceFolderLinkTarget: ReferenceFolderLinkTarget? {
+        guard !AgentCLIDetector.shared.availableCLIs.isEmpty else { return nil }
+        guard let folder = model.settings.defaultSessionGroup else {
+            return .newGroupFromUnclassified
+        }
+        return model.settings.referenceFolders[folder] == nil ? .existingGroup(folder) : nil
     }
 
     /// 録音を始める前、グループ選択の直下に添える控えめな誘導。ラベルは機能名(関連フォルダ)
     /// でなく効能(要約精度が上がる)で語る。押した先(ReferenceFolderPicker)の
     /// NSOpenPanel.message で「紐付けるとどう良くなるか」を1〜2文説明する
     /// (ここでは専用のチュートリアル画面は作らない)。
-    private func referenceFolderHint(folder: String) -> some View {
+    private func referenceFolderHint(target: ReferenceFolderLinkTarget) -> some View {
         Button {
-            ReferenceFolderPicker.pick(forGroup: folder)
+            switch target {
+            case .existingGroup(let folder):
+                ReferenceFolderPicker.pick(forGroup: folder)
+            case .newGroupFromUnclassified:
+                // 選んだフォルダから新規グループを作り、次回からの既定グループにする。
+                ReferenceFolderPicker.pickForNewGroup { folder in
+                    model.settings.defaultSessionGroup = folder
+                    model.refreshSessions()
+                }
+            }
         } label: {
             Label("資料フォルダと紐付けて要約精度を上げる", systemImage: "link")
                 .font(HCFont.caption)

@@ -240,6 +240,30 @@ public enum SessionStore {
             directory: newDir, startDate: session.startDate, name: session.name, folder: folder)
     }
 
+    /// 資料フォルダから新規グループを作る際、グループ名(候補は選んだフォルダの
+    /// lastPathComponent)の衝突を避けた実際の名前を決める。
+    /// - 候補名が未使用なら候補名をそのまま返す(新規グループとして作る)。
+    /// - 候補名のグループは既にあるが関連フォルダが未設定なら、候補名をそのまま返す
+    ///   (新規に作らず、既存の未紐付けグループへ紐付けるだけにする)。
+    /// - 候補名のグループが既に選んだのと同じパスへ紐付け済みなら、候補名をそのまま返す
+    ///   (同じ操作のやり直しなので、グループを増やさない)。
+    /// - 候補名のグループが別パスへ紐付け済みなら、「候補名-2」のように空いている
+    ///   接尾辞付きの名前を返す(既存の紐付けを壊さず、別グループとして分ける)。
+    public static func resolveFolderName(
+        candidate: String, selectedPath: String,
+        existingFolders: [String], referenceFolders: [String: String]
+    ) -> String {
+        guard existingFolders.contains(candidate) else { return candidate }
+        if let linkedPath = referenceFolders[candidate], linkedPath != selectedPath {
+            var suffix = 2
+            while existingFolders.contains("\(candidate)-\(suffix)") {
+                suffix += 1
+            }
+            return "\(candidate)-\(suffix)"
+        }
+        return candidate
+    }
+
     /// 空のプロジェクトフォルダを作る。
     public static func createFolder(_ rawName: String) throws {
         let name = try validFolderName(rawName)

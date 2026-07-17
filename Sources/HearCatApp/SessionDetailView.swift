@@ -8,6 +8,11 @@ struct SessionDetailView: View {
     let model: AppModel
     let session: SessionInfo
     let onDelete: () -> Void
+    /// 資料フォルダ紐付けで未分類のセッションを新規グループへ移した後、移動後の ID を
+    /// 親(MainWindow)へ伝える。session は let で不変なため、このビュー自身は移動後の
+    /// パスへ追従できない。親が選択をこの ID へ張り替え、.id(session.id) で
+    /// ビューごと作り直すことで、以後の表示や要約生成が新しいパスを向くようにする。
+    let onMove: (String) -> Void
 
     @State private var transcript: String?
     @State private var transcriptLines: [TranscriptLine] = []
@@ -300,14 +305,20 @@ struct SessionDetailView: View {
         }
 
         // 関連フォルダの設定はサイドバーのグループ右クリックの中にもあり気づかれにくいため、
-        // まだ設定していないグループにはここからも設定できるようにする。
+        // まだ設定していないグループにはここからも設定できるようにする。未分類のセッションにも
+        // 同じ項目を出す(グループ機能を使っていないユーザーもこの導線に出会えるように)。
         // subtitle は macOS 14.4+ で利用可能(このプロジェクトのターゲットは macOS 26)。
-        if let folder = session.folder, model.settings.referenceFolders[folder] == nil {
+        if let target = referenceFolderMenuTarget {
             menu.addItem(.separator())
             // ラベルは機能名(関連フォルダ)でなく効能(要約精度が上がる)で語る
             // (詳細は MainWindow.swift の同種の項目のコメント参照)。
             let referenceFolderItem = summarizeMenuActionHandler.makeItem("資料フォルダと紐付けて要約精度を上げる…") {
-                ReferenceFolderPicker.pick(forGroup: folder)
+                switch target {
+                case .existingGroup(let folder):
+                    ReferenceFolderPicker.pick(forGroup: folder)
+                case .newGroupFromUnclassified:
+                    linkToNewGroup()
+                }
             }
             referenceFolderItem.subtitle = "会議に関連する資料やコードを Claude / Codex が読み、誤変換の修正や参加者の前提を踏まえた要約になります"
             menu.addItem(referenceFolderItem)
@@ -342,6 +353,29 @@ struct SessionDetailView: View {
                 summaryError = "要約に失敗しました: \(error.localizedDescription)"
             }
             agentSummarizeTask = nil
+        }
+    }
+
+    /// 資料フォルダ紐付けの誘導を押した時の遷移先。MenuPanel の同種の型と役割は同じだが、
+    /// こちらは「今見ているセッションが所属するグループ」を基準にする。
+    private enum ReferenceFolderMenuTarget {
+        case existingGroup(String)
+        case newGroupFromUnclassified
+    }
+
+    /// 資料フォルダの紐付けを勧める余地があるか。所属グループが無ければ新規グループ作成、
+    /// あれば既存グループへの紐付け(未紐付けの場合のみ)を案内する。
+    private var referenceFolderMenuTarget: ReferenceFolderMenuTarget? {
+        guard let folder = session.folder else { return .newGroupFromUnclassified }
+        return model.settings.referenceFolders[folder] == nil ? .existingGroup(folder) : nil
+    }
+
+    /// 未分類のセッションから資料フォルダを紐付ける。選んだフォルダの名前で新しいグループを
+    /// 作り(既存の未紐付けグループがあれば流用)、このセッション自体もそこへ移す。
+    private func linkToNewGroup() {
+        ReferenceFolderPicker.pickForNewGroup { folder in
+            guard let newID = model.move(session, toFolder: folder) else { return }
+            onMove(newID)
         }
     }
 }

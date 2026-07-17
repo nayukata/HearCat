@@ -40,9 +40,10 @@ struct MainWindow: View {
             } else if selection.count == 1, let id = selection.first,
                 let session = model.sessions.first(where: { $0.id == id })
             {
-                SessionDetailView(model: model, session: session) {
-                    selection = []
-                }
+                SessionDetailView(
+                    model: model, session: session,
+                    onDelete: { selection = [] },
+                    onMove: { select($0) })
                 // 選択が変わったらプレーヤー等の内部状態を作り直す。
                 .id(session.id)
             } else if selection.count > 1 {
