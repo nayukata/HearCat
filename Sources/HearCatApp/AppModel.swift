@@ -258,6 +258,9 @@ final class AppModel {
         let result = try await TranscriptSummarizer.summarize(transcript: transcript)
         let url = session.directory.appendingPathComponent("summary.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
+        // チップ表示用にエンジン種別を固定する。失敗しても要約自体は生成できているので
+        // 握りつぶす(チップが出ないだけで実害はない)。
+        try? SessionStore.writeSummaryEngine(.appleIntelligence, for: session)
         refreshSessions()
         return result
     }
@@ -279,6 +282,7 @@ final class AppModel {
             using: cli, transcript: transcript, referenceFolder: referenceFolder)
         let url = session.directory.appendingPathComponent("summary.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
+        try? SessionStore.writeSummaryEngine(cli.summaryEngine, for: session)
         refreshSessions()
         return result
     }

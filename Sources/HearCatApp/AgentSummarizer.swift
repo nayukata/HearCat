@@ -1,4 +1,5 @@
 import Foundation
+import HearCatKit
 import Observation
 import os
 
@@ -18,6 +19,15 @@ enum AgentCLI: String, CaseIterable, Sendable, Hashable {
 
     /// command -v で探すバイナリ名。
     fileprivate var binaryName: String { rawValue }
+
+    /// 要約データへ永続化する際の識別子。表示のたびに現在の設定から推測するのではなく、
+    /// 生成時点でこの値を summary.engine に固定する(SummaryEngine のコメント参照)。
+    var summaryEngine: SummaryEngine {
+        switch self {
+        case .claude: return .claude
+        case .codex: return .codex
+        }
+    }
 
     /// command -v が失敗した場合に見に行く定番のインストール先。
     /// GUI アプリはログインシェルの解決すら失敗することがあるため、最後の砦として持つ。

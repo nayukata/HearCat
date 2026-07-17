@@ -26,6 +26,17 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     /// エージェント CLI で清書した文字起こし(hearcat-clean スキル由来)。無ければ nil。
     public var cleanedURL: URL? { existing("cleaned.md") }
 
+    /// summary.md と対になる固定名。要約を生成したエンジンの記録(SessionStore.writeSummaryEngine 参照)。
+    fileprivate static let summaryEngineFileName = "summary.engine"
+
+    /// 要約を生成したエンジン。無ければ nil(この機能より前に生成された過去の要約、
+    /// または読み取り失敗)。現在の設定から推測せず、生成時点に書かれた記録だけを見る。
+    public var summaryEngine: SummaryEngine? {
+        guard let url = existing(Self.summaryEngineFileName) else { return nil }
+        guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return SummaryEngine(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     private func existing(_ name: String) -> URL? {
         let url = directory.appendingPathComponent(name)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
@@ -152,6 +163,17 @@ public enum SessionStore {
 
     public static func delete(_ session: SessionInfo) throws {
         try FileManager.default.removeItem(at: session.directory)
+    }
+
+    /// 要約を生成したエンジンを記録する。要約生成の直後、summary.md の保存とセットで呼ぶこと。
+    /// 表示のたびに「今の設定」から推測すると、設定を後から変えた時に過去の要約の表示が
+    /// 実態と食い違うため、生成時点の値をそのまま固定する(SummaryEngine 参照)。
+    /// 既存の要約保存形式(セッションディレクトリ内の1関心=1ファイル)に馴染ませ、
+    /// summary.md 自体のフォーマットは変えない(SummaryParser の後方互換を壊さないため)。
+    public static func writeSummaryEngine(_ engine: SummaryEngine, for session: SessionInfo) throws {
+        try engine.rawValue.write(
+            to: session.directory.appendingPathComponent(SessionInfo.summaryEngineFileName),
+            atomically: true, encoding: .utf8)
     }
 
     public enum StoreError: LocalizedError {

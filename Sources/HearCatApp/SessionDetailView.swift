@@ -12,6 +12,8 @@ struct SessionDetailView: View {
     @State private var transcript: String?
     @State private var transcriptLines: [TranscriptLine] = []
     @State private var summary: String?
+    /// 要約を生成したエンジン。エンジン情報の無い過去の要約(この機能より前に生成)は nil のまま。
+    @State private var summaryEngine: SummaryEngine?
     @State private var player: SessionPlayer?
     @State private var summaryError: String?
     @State private var confirmingDelete = false
@@ -120,6 +122,10 @@ struct SessionDetailView: View {
                     } label: {
                         HStack {
                             Text("要約")
+                            // エンジン情報の無い過去の要約には出さない(推測で埋めない)。
+                            if let summaryEngine {
+                                EngineChip(engine: summaryEngine)
+                            }
                             Spacer()
                             CopyButton { summary }
                         }
@@ -196,6 +202,7 @@ struct SessionDetailView: View {
         transcriptLines = TranscriptParser.lines(
             from: transcript ?? "", sessionStart: session.startDate)
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        summaryEngine = session.summaryEngine
         if forceNewPlayer || player?.hasAudio != true {
             player = SessionPlayer(audioURL: session.audioURL)
         }
@@ -334,6 +341,22 @@ struct SessionDetailView: View {
             }
             agentSummarizeTask = nil
         }
+    }
+}
+
+/// 要約を生成したエンジンのバッジ。「この要約はどのエンジンが作ったか」を後から見ても
+/// 分かるようにする(表示のたびに現在の設定から推測せず、生成時点に固定した値を出す。
+/// 詳細は SummaryEngine のコメント参照)。
+private struct EngineChip: View {
+    let engine: SummaryEngine
+
+    var body: some View {
+        Text(engine.displayName)
+            .font(HCFont.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(.quaternary))
     }
 }
 
