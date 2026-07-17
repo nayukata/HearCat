@@ -7,7 +7,7 @@ CONFIG ?= debug
 BUILD_DIR := .build/$(CONFIG)
 APP := $(BUILD_DIR)/HearCat.app
 
-.PHONY: build app run cli dist icon clean
+.PHONY: build app run cli dist check-dist-identity check-notary-profile icon clean
 
 build:
 ifeq ($(CONFIG),release)
@@ -45,26 +45,52 @@ run: app
 cli: build
 	@echo "CLI: $(BUILD_DIR)/hearcat"
 
-# 配布用 dmg を作る。Developer ID 証明書があればそれで署名し直す(公証は README 参照)。
-# 他の Mac でシステム音声キャプチャを動かすには Developer ID 署名 + 公証が実質必須。
+# 配布用 dmg を作る。Developer ID 署名 + Apple 公証(notarization)まで一気通貫で行う。
+# 他の Mac でシステム音声キャプチャを動かすには Developer ID 署名 + 公証が実質必須なため、
+# 証明書やプロファイルが無くてもフォールバックはせず、ここでエラーにして止める
+# (`make app` など開発用ビルドの挙動には影響しない)。
 DIST_IDENTITY := $(shell security find-identity -v -p codesigning | awk '/Developer ID Application/ {print $$2; exit}')
 DMG := .build/HearCat.dmg
 
-dist:
+# 公証で使うキーチェーンプロファイル名。`NOTARY_PROFILE=<名前> make dist` で上書きできる。
+# 事前に `xcrun notarytool store-credentials <名前>` で Apple ID / Team ID / App用パスワードを
+# キーチェーンへ登録しておく必要がある。
+NOTARY_PROFILE ?= HearCat
+
+dist: check-dist-identity check-notary-profile
 	$(MAKE) app CONFIG=release
-ifneq ($(DIST_IDENTITY),)
 	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app/Contents/MacOS/hearcat-cli
 	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app
-else
-	@echo "注意: Developer ID Application 証明書が見つからないため、開発用署名のままです。"
-	@echo "      この dmg は他の Mac ではシステム音声(相手)を取得できません。"
-endif
 	rm -rf .build/dmg-root $(DMG)
 	mkdir -p .build/dmg-root
 	cp -R .build/release/HearCat.app .build/dmg-root/
 	ln -s /Applications .build/dmg-root/Applications
 	hdiutil create -volname HearCat -srcfolder .build/dmg-root -ov -format UDZO $(DMG)
-	@echo "配布物: $(DMG)"
+	@echo "公証を申請中(数分かかる場合があります)..."
+	xcrun notarytool submit $(DMG) --keychain-profile $(NOTARY_PROFILE) --wait
+	xcrun stapler staple $(DMG)
+	xcrun stapler validate $(DMG)
+	spctl -a -vv -t open --context context:primary-signing-identifier $(DMG)
+	@echo "配布物: $(DMG)(Developer ID 署名 + 公証 + staple 済み)"
+
+# Developer ID Application 証明書が無ければフォールバックせずここで止める。
+check-dist-identity:
+	@if [ -z "$(DIST_IDENTITY)" ]; then \
+		echo "エラー: Developer ID Application 証明書が見つかりません。" >&2; \
+		echo "  Apple Developer Program で証明書を作成し、Keychain Access に登録してください。" >&2; \
+		echo "  確認: security find-identity -v -p codesigning" >&2; \
+		exit 1; \
+	fi
+
+# 公証用キーチェーンプロファイルが未登録なら止める。
+check-notary-profile:
+	@xcrun notarytool history --keychain-profile "$(NOTARY_PROFILE)" >/dev/null 2>&1 || { \
+		echo "エラー: 公証用キーチェーンプロファイル '$(NOTARY_PROFILE)' が未登録です。" >&2; \
+		echo "  次のコマンドで登録してから再実行してください:" >&2; \
+		echo "  xcrun notarytool store-credentials $(NOTARY_PROFILE) --apple-id <Apple ID> --team-id <Team ID> --password <App用パスワード>" >&2; \
+		echo "  (プロファイル名を変える場合は NOTARY_PROFILE=<名前> make dist)" >&2; \
+		exit 1; \
+	}
 
 # アプリアイコンを生成し直す(デザイン変更時のみ。生成物はリポジトリに入っている)。
 icon:

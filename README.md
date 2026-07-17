@@ -37,19 +37,24 @@ curl -fsSL https://raw.githubusercontent.com/nayukata/HearCat/main/bootstrap.sh 
 
 ### 配布用 dmg を作る
 
+他の Mac へ配布してシステム音声キャプチャまで動かすには、Developer ID Application 証明書での署名と Apple の公証（notarization）が実質必須。`make dist` が「ビルド → 署名 → dmg 作成 → 公証申請 → staple → 検証」まで一気通貫で行う。フォールバックはなく、証明書または公証用プロファイルが無い場合はエラーで止まる（開発用の `make app` には影響しない）。
+
+事前準備（初回のみ）:
+
+1. Apple Developer Program に加入し、Developer ID Application 証明書を作って Keychain Access に登録する（`make dist` が自動検出する）
+2. 公証用のキーチェーンプロファイルを作る:
+   ```sh
+   xcrun notarytool store-credentials HearCat --apple-id <Apple ID> --team-id <Team ID> --password <App用パスワード>
+   ```
+   プロファイル名を `HearCat` 以外にした場合は `make dist` 実行時に `NOTARY_PROFILE=<名前>` を指定する。
+
+実行:
+
 ```sh
-make dist    # .build/HearCat.dmg ができる
+make dist    # .build/HearCat.dmg ができる（署名 + 公証 + staple 済み）
 ```
 
-他の Mac へ配布してシステム音声キャプチャまで動かすには、Developer ID Application 証明書での署名と Apple の公証（notarization）が実質必須:
-
-1. Apple Developer Program に加入し、Developer ID Application 証明書を作る（`make dist` が自動検出して署名に使う）
-2. 公証を通す:
-   ```sh
-   xcrun notarytool submit .build/HearCat.dmg --keychain-profile <プロファイル名> --wait
-   xcrun stapler staple .build/HearCat.dmg
-   ```
-3. dmg を GitHub Releases などに置き、LP のダウンロードボタンからそこへリンクを貼る（現状の LP はソースからのビルド前提なので dmg 配布動線は未実装）
+dmg を GitHub Releases などに置き、LP のダウンロードボタンからそこへリンクを貼る（現状の LP はソースからのビルド前提なので dmg 配布動線は未実装）。
 
 ## 使い方
 
@@ -76,7 +81,7 @@ hearcat write-cleaned [<session>]  # 標準入力の清書を cleaned.md に書�
 - 履歴サイドバーの検索欄で、セッション名・文字起こし・要約の本文を横断検索できる。
 - 文字起こしに残った時刻をクリックすると、その位置から音声が再生される。
 - セッションはドラッグ &amp; ドロップでフォルダに整理できる。右クリックから名前変更・フォルダ移動・削除ができる。Cmd/Shift+クリックで複数選択し、Delete キー か右クリックの「N 件を削除」でまとめて削除できる。
-- 要約生成は、対象セッションの詳細ペインの「要約を生成」ボタンから行う（Apple Intelligence が有効な Apple Silicon 機のみ）。
+- 要約は既定でセッション停止時に自動生成される（Apple Intelligence が有効な Apple Silicon 機のみ。無効な環境や、すでに要約があるセッションでは何もしない）。自動/手動の切り替え設定はない。詳細ペインの「要約を生成／要約を再生成」ボタンは、自動生成に失敗した場合のリカバリや、内容を作り直したいときに使う。
 
 ### 設定（パネル → 設定）
 
