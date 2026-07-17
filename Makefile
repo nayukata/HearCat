@@ -28,7 +28,9 @@ app: build
 	cp -R distribution/hearcat $(APP)/Contents/Resources/skills/hearcat
 	cp -R distribution/hearcat-clean $(APP)/Contents/Resources/skills/hearcat-clean
 	cp Sources/HearCatApp/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
-	# SwiftPM のリソースバンドル(同梱フォント)。Bundle.module が Resources 配下から見つける。
+	# SwiftPM のリソースバンドル(同梱フォント)。HCFont.registerBundledFonts() が
+	# Bundle.main.resourceURL(= ここ)を自前で探して読む(Bundle.module は使わない。
+	# Bundle.module はビルド時の絶対パスに依存し配布後は必ず見つからず fatalError するため)。
 	cp -R $(BUILD_DIR)/hearcat_HearCatApp.bundle $(APP)/Contents/Resources/
 	cp $(BUILD_DIR)/hearcat $(APP)/Contents/MacOS/hearcat-cli
 	# 同梱する実行ファイルは、バンドル本体より先に個別署名しないと署名検証が壊れる。

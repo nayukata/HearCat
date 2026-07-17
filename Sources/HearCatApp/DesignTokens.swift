@@ -7,15 +7,44 @@ import SwiftUI
 /// 指定しない(SwiftUI 標準の .font(.caption) 等はシステムのフォールバック=
 /// ヒラギノで描画されてしまうため)。
 enum HCFont {
+    /// SwiftPM 自動生成の `Bundle.module` は、まず `Bundle.main.bundleURL` 直下を探し、
+    /// 無ければ実行ファイルに焼き込まれたビルド時の絶対パス
+    /// (`.build/.../hearcat_HearCatApp.bundle`) にフォールバックする実装になっている。
+    /// 前者は `Makefile` が `Contents/Resources/` に配置するため常に外れる。後者は
+    /// ビルドマシン固有の一時ディレクトリで、`bootstrap.sh` 経由のインストールでは
+    /// 削除済み。両方失敗すると `Bundle.module` は内部で `fatalError` してプロセスごと
+    /// 落ちる(実際に起動時クラッシュの原因になった)ため、ここでは `Bundle.module` を使わず
+    /// 実際の配置場所を自前で探す。
+    private static var bundledResourcesURL: URL? {
+        let bundleName = "hearcat_HearCatApp.bundle"
+        let candidates = [
+            // 配布・通常起動時: .app/Contents/Resources/hearcat_HearCatApp.bundle (Makefile が配置)
+            Bundle.main.resourceURL,
+            // 開発時: `swift build` 実行ファイルを .app 化せず直接叩いた場合、
+            // 実行ファイルと同じディレクトリに SwiftPM がバンドルを生成する。
+            Bundle.main.bundleURL,
+        ]
+        for base in candidates {
+            guard let base else { continue }
+            let url = base.appendingPathComponent(bundleName)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
+    }
+
     /// 同梱フォントの登録。起動時に一度だけ呼ぶ。プロセススコープなのでシステムは汚さない。
-    /// 開発ビルドをバンドル外から直接実行した場合など、リソースが見つからなければ
-    /// 何もしない(カスケード先が未登録の場合、システムが従来どおりヒラギノに落とす)。
+    /// リソースバンドルが見つからなければ何もしない(カスケード先が未登録の場合、
+    /// システムが従来どおりヒラギノに落とす。fatalError は絶対にしない)。
     static func registerBundledFonts() {
+        guard let resourcesURL = bundledResourcesURL else { return }
+        let fontsURL = resourcesURL.appendingPathComponent("Fonts")
         guard
-            let urls = Bundle.module.urls(
-                forResourcesWithExtension: "ttf", subdirectory: "Fonts")
+            let urls = try? FileManager.default.contentsOfDirectory(
+                at: fontsURL, includingPropertiesForKeys: nil)
         else { return }
-        for url in urls {
+        for url in urls where url.pathExtension.lowercased() == "ttf" {
             CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
     }
