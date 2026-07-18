@@ -4,6 +4,10 @@ import PackageDescription
 let package = Package(
     name: "hearcat",
     platforms: [.macOS("26.0")],
+    dependencies: [
+        // 自動更新(Sparkle 2)。初のサードパーティ依存。MIT ライセンスで商用可。
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.7.0")
+    ],
     targets: [
         // 音声キャプチャ・文字起こし・録音・セッション管理・IPC の共通部品。
         // アプリ(常駐エンジン)と CLI(操作窓口)の両方から使う。
@@ -36,7 +40,10 @@ let package = Package(
         // .app バンドルの組み立てと署名は Makefile の app ターゲットが行う。
         .executableTarget(
             name: "HearCatApp",
-            dependencies: ["HearCatKit", "HearCatSummarize"],
+            dependencies: [
+                "HearCatKit", "HearCatSummarize",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             path: "Sources/HearCatApp",
             exclude: ["Info.plist", "AppIcon.icns"],
             // 同梱フォント(Noto Sans JP)。起動時に HCFont.registerBundledFonts() が登録する。

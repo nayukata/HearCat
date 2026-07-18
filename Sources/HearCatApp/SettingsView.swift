@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var inputDevices: [MicDeviceOption] = [MicDeviceOption(uid: nil, name: "システム標準")]
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginMessage: String?
+    @State private var autoUpdateCheck = SparkleUpdater.shared.automaticallyChecksForUpdates
 
     var body: some View {
         // 1本の長いスクロールだと下のセクションが見落とされるため、macOS の
@@ -84,6 +85,31 @@ struct SettingsView: View {
                 Text("マイクとシステム音声の両方が5分間無音のとき、セッションを自動で終了します。会議のあとに停止し忘れても、録音と文字起こしが伸び続けません。")
                     .font(HCFont.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if SparkleUpdater.shared.isEnabled {
+                Section {
+                    Toggle("自動で更新を確認", isOn: $autoUpdateCheck)
+                        .onChange(of: autoUpdateCheck) { _, newValue in
+                            SparkleUpdater.shared.automaticallyChecksForUpdates = newValue
+                        }
+                    LabeledContent("バージョン") {
+                        HStack(spacing: 8) {
+                            Text(appVersion)
+                                .foregroundStyle(.secondary)
+                            Button("更新を確認") {
+                                SparkleUpdater.shared.checkForUpdates()
+                            }
+                            .disabled(!SparkleUpdater.shared.canCheckForUpdates)
+                        }
+                    }
+                } header: {
+                    Text("アップデート")
+                } footer: {
+                    Text("新しいバージョンが見つかると通知します。オフでも「更新を確認」からいつでも手動で確認できます。")
+                        .font(HCFont.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -305,6 +331,10 @@ struct SettingsView: View {
                     .textSelection(.enabled)
             }
         }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-"
     }
 
     private func installSkill() {

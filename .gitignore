@@ -2,6 +2,9 @@
 .swiftpm/
 Package.resolved
 
+# make appcast が蓄積する dmg 一式(署名済みバイナリなので git に入れない)。
+dist-archive/
+
 # 録音生成物。ユーザーの発話が入るためコミットしない。
 transcripts/
 
@@ -10,6 +13,9 @@ transcripts/
 # LP(web/) のビルド生成物と依存
 web/node_modules/
 web/dist/
+
+# make appcast が生成する Sparkle の appcast(リリースのたびに作り直す生成物)。
+web/public/appcast.xml
 
 # Firebase CLI のローカルログ
 firebase-debug.log
