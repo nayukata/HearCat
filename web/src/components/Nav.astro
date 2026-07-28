@@ -13,9 +13,70 @@ import Logo from "./Logo.astro";
       <li><a href="#ai" class="hover:text-ink transition-colors">AI と使う</a></li>
       <li><a href="#privacy" class="hover:text-ink transition-colors">プライバシー</a></li>
     </ul>
-    <a
-      href="#get"
-      class="text-[13px] font-bold text-white bg-ink px-[18px] py-[9px] rounded-full no-underline hover:bg-blue transition-colors"
-    >インストール</a>
+    <div class="flex items-center gap-[10px]">
+      <a
+        href="#get"
+        class="text-[13px] font-bold text-white bg-ink px-[18px] py-[9px] rounded-full no-underline hover:bg-blue transition-colors"
+      >インストール</a>
+      <button
+        id="nav-toggle"
+        type="button"
+        class="md:hidden inline-flex items-center justify-center w-9 h-9 -mr-1 text-ink"
+        aria-expanded="false"
+        aria-controls="nav-mobile-menu"
+        aria-label="メニューを開く"
+      >
+        <svg id="nav-toggle-icon-open" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 6H17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <path d="M3 10H17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <path d="M3 14H17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <svg id="nav-toggle-icon-close" class="hidden" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 4L16 16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <path d="M16 4L4 16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+      </button>
+    </div>
+  </div>
+  <div id="nav-mobile-menu" class="hidden md:hidden border-t border-line bg-white/95 backdrop-blur-md">
+    <ul class="wrap flex flex-col list-none text-[14px] text-ink-dim py-[6px]">
+      <li><a href="#features" class="block py-[12px] hover:text-ink transition-colors">できること</a></li>
+      <li><a href="#history" class="block py-[12px] hover:text-ink transition-colors">整理と検索</a></li>
+      <li><a href="#ai" class="block py-[12px] hover:text-ink transition-colors">AI と使う</a></li>
+      <li><a href="#privacy" class="block py-[12px] hover:text-ink transition-colors">プライバシー</a></li>
+    </ul>
   </div>
 </nav>
+
+<script>
+  const toggle = document.getElementById("nav-toggle");
+  const menu = document.getElementById("nav-mobile-menu");
+  const iconOpen = document.getElementById("nav-toggle-icon-open");
+  const iconClose = document.getElementById("nav-toggle-icon-close");
+
+  if (toggle && menu && iconOpen && iconClose) {
+    const closeMenu = () => {
+      menu.classList.add("hidden");
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-label", "メニューを開く");
+      iconOpen.classList.remove("hidden");
+      iconClose.classList.add("hidden");
+    };
+    const openMenu = () => {
+      menu.classList.remove("hidden");
+      toggle.setAttribute("aria-expanded", "true");
+      toggle.setAttribute("aria-label", "メニューを閉じる");
+      iconOpen.classList.add("hidden");
+      iconClose.classList.remove("hidden");
+    };
+
+    toggle.addEventListener("click", () => {
+      const isOpen = toggle.getAttribute("aria-expanded") === "true";
+      isOpen ? closeMenu() : openMenu();
+    });
+
+    menu.querySelectorAll("a").forEach((link) => {
+      link.addEventListener("click", closeMenu);
+    });
+  }
+</script>

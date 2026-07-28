@@ -12,7 +12,7 @@ struct LiveSessionView: View {
             Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
             transcriptList
         }
-        .background(HCColor.navyBackground)
+        .background(HCColor.mistDark)
         // ライブ画面はシステムの外観設定に関わらずネイビー基調(LP と同じ)。
         .environment(\.colorScheme, .dark)
     }
@@ -25,7 +25,7 @@ struct LiveSessionView: View {
                 .frame(width: 15, height: 15)
             Text("HearCat — ライブ")
                 .font(HCFont.system(size: 12))
-                .foregroundStyle(HCColor.whiteDim)
+                .foregroundStyle(HCColor.mistWhiteDim)
             EQBars(active: model.status.transcribing)
             if model.status.recording {
                 RecBadge()
@@ -48,7 +48,7 @@ struct LiveSessionView: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
-        .tint(HCColor.blue)
+        .tint(HCColor.cinnamon)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
@@ -115,7 +115,7 @@ private struct StreamingText: View {
     private static func makeCaret(visible: Bool) -> NSImage {
         NSImage(size: NSSize(width: 5, height: 14), flipped: false) { _ in
             if visible {
-                NSColor(HCColor.blueSoft).setFill()
+                NSColor(HCColor.cinnamon).setFill()
                 NSBezierPath(
                     roundedRect: NSRect(x: 3, y: 0, width: 2, height: 14), xRadius: 1, yRadius: 1
                 ).fill()

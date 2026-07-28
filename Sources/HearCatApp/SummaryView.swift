@@ -48,8 +48,16 @@ private struct StructuredSummaryView: View {
 
             // 決定事項と TODO は「無い」ことにも意味がある(決定の無い会議だったと
             // 分かる)ため、空でも見出しごと出して「なし」を明示する。
+            //
+            // 決定事項のチェックは「合意されたもの」を示すため、意味に沿って緑で塗る。
+            // アイコンサイズも本文と同じ callout まで上げて、リストの中で見つけやすく
+            // する(caption だと視線を誘導できないほど小さい)。
             section("決定事項") {
-                itemList(summary.decisions, icon: "checkmark.circle", iconStyle: .tint)
+                itemList(
+                    summary.decisions,
+                    icon: "checkmark.circle.fill",
+                    iconStyle: Color.green,
+                    iconFont: HCFont.callout)
             }
 
             section("TODO・宿題") {
@@ -90,7 +98,8 @@ private struct StructuredSummaryView: View {
 
     @ViewBuilder
     private func itemList(
-        _ items: [String], icon: String, iconStyle: some ShapeStyle
+        _ items: [String], icon: String, iconStyle: some ShapeStyle,
+        iconFont: Font = HCFont.caption
     ) -> some View {
         if items.isEmpty {
             emptyNote
@@ -99,7 +108,7 @@ private struct StructuredSummaryView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: icon)
-                            .font(HCFont.caption)
+                            .font(iconFont)
                             .foregroundStyle(iconStyle)
                         Text(inline(item))
                             .textSelection(.enabled)

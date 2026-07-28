@@ -21,14 +21,14 @@ struct HearCatApp: App {
 
         Window("HearCat", id: "main") {
             MainWindow(model: model)
-                .tint(HCColor.blue)
+                .tint(HCColor.cinnamon)
                 .environment(\.font, HCFont.body)
         }
         .defaultSize(width: 960, height: 640)
 
         Window("HearCat の設定", id: "settings") {
             SettingsView(model: model, settings: AppSettings.shared)
-                .tint(HCColor.blue)
+                .tint(HCColor.cinnamon)
                 .environment(\.font, HCFont.body)
                 .background(WindowAccessor { window in
                     model.settingsWindow = window

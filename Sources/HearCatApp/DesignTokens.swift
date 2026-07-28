@@ -107,24 +107,91 @@ enum HCColor {
     static let whiteDim = Color.white.opacity(0.62)
     static let rec = Color(red: 255 / 255, green: 92 / 255, blue: 92 / 255)  // #FF5C5C
 
+    // --- 霧の底 + シナモンの茶(新ブランド配色) ---
+    // ノルウェージャンフォレストキャットの「窓際に、静かに座る森の妖精」から引いた。
+    // 底は cool gray(霧の底)、アクセントは白茶バイカラーのシナモン茶。
+    // Phase A で CodeImpact overlay、Phase B 以降で他画面に横展開する共通トークン。
+
+    /// パネル本体の背景(霧の底)。
+    static let mistDark = Color(red: 0x1A / 255, green: 0x1D / 255, blue: 0x1F / 255)  // #1A1D1F
+    /// 入力欄・キーキャップ等、パネルより一段明るいサーフェス。
+    static let mistDarkSurface = Color(red: 0x26 / 255, green: 0x2A / 255, blue: 0x2D / 255)  // #262A2D
+    /// パネル外周の細い縁。
+    static let mistDarkStroke = Color(red: 0x33 / 255, green: 0x3A / 255, blue: 0x3D / 255)  // #333A3D
+    /// アクセント本体(白茶バイカラーのシナモン茶)。見出し・アイコン・タグ用。
+    static let cinnamon = Color(red: 0xC8 / 255, green: 0x90 / 255, blue: 0x60 / 255)  // #C89060
+    /// 入力欄フォーカス時のストローク色(cinnamon より少し暗く落ち着かせる)。
+    static let cinnamonStroke = Color(red: 0xB8 / 255, green: 0x84 / 255, blue: 0x5A / 255)  // #B8845A
+    /// アクセントを一段落ち着かせた変化色(hover / disabled の表現に)。
+    static let cinnamonDim = Color(red: 0x8F / 255, green: 0x61 / 255, blue: 0x3F / 255)  // #8F613F
+    /// 主要テキスト(cool white。「白い毛」の印象)。
+    static let mistWhite = Color(red: 0xE8 / 255, green: 0xEC / 255, blue: 0xEE / 255)  // #E8ECEE
+    /// 本文用テキスト(mistWhite より一段落ち着かせる)。
+    static let mistBody = Color(red: 0xD8 / 255, green: 0xDD / 255, blue: 0xE0 / 255)  // #D8DDE0
+    /// 補助テキスト(サブヘッダー、キャプション)。
+    static let mistWhiteDim = Color(red: 0x8B / 255, green: 0x94 / 255, blue: 0x97 / 255)  // #8B9497
+    /// さらに一段薄い補助テキスト(「情報は出しているが目立たせない」)。
+    static let mistWhiteDeeper = Color(red: 0x92 / 255, green: 0x98 / 255, blue: 0xA0 / 255)  // #9298A0
+    /// 入力欄プレースホルダー・disabled のテキスト。
+    static let mistPlaceholder = Color(red: 0x6C / 255, green: 0x73 / 255, blue: 0x77 / 255)  // #6C7377
+    /// キーキャップの背景(パネル面から気持ちだけ浮かせる)。
+    static let mistKeyCap = Color.white.opacity(0.05)
+    /// キーキャップ内のテキスト。
+    static let mistKeyText = Color(red: 0xB6 / 255, green: 0xBC / 255, blue: 0xC0 / 255)  // #B6BCC0
+    /// 細い区切り線。
+    static let mistDivider = Color.white.opacity(0.08)
+    /// 一段強い区切り線(footer 上部など、視線を止めたい所に)。
+    static let mistDividerStrong = Color.white.opacity(0.14)
+
     // 話者チップ(自分 = 青系 / 相手 = オレンジ系)
     static let meText = Color(red: 191 / 255, green: 214 / 255, blue: 255 / 255)  // #BFD6FF
     static let meBackground = blue.opacity(0.22)
     static let youText = Color(red: 255 / 255, green: 225 / 255, blue: 184 / 255)  // #FFE1B8
     static let youBackground = Color(red: 255 / 255, green: 176 / 255, blue: 74 / 255).opacity(0.16)
 
-    /// LP のライブカードの見た目(ネイビー地 + 上端に広がるヒーローの blue glow + ガラス面)を、
-    /// カードのスクリーンショット実測色 3 点の縦グラデーションとして焼き込んだ背景。
-    /// グラデーション + glow + 白膜を積む合成方式は、ウィンドウサイズや配置の違いで LP とずれるため採らない。
-    static var navyBackground: some View {
-        LinearGradient(
-            stops: [
-                .init(color: Color(red: 29 / 255, green: 42 / 255, blue: 75 / 255), location: 0),  // #1D2A4B
-                .init(color: Color(red: 26 / 255, green: 33 / 255, blue: 57 / 255), location: 0.55),  // #1A2139
-                .init(color: Color(red: 27 / 255, green: 35 / 255, blue: 60 / 255), location: 1),  // #1B233C
-            ],
-            startPoint: .top, endPoint: .bottom)
+}
+
+/// アプリ全体で使う落ち着いた secondary button のスタイル。
+/// ダーク UI で「主張しすぎず、しかし押せることが分かる」ことを両立する。
+/// - 通常: 一段明るいサーフェス塗り + 薄い縁 + 白系テキスト(mistDark 上でも読める)
+/// - pressed: 縁と背景が一段濃くなる
+/// - role: .destructive: 赤系の縁とテキストで、他ボタンと視覚的に差別化する
+/// - compact: pill の縦余白を控えめにする(Form の LabeledContent 内で高さを揃える用途)。
+struct HCSecondaryButtonStyle: ButtonStyle {
+    var compact: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isDestructive = configuration.role == .destructive
+        let bg = configuration.isPressed
+            ? HCColor.mistDarkStroke
+            : HCColor.mistDarkSurface
+        let border: Color = isDestructive
+            ? Color(red: 0.75, green: 0.36, blue: 0.36).opacity(0.55)
+            : HCColor.mistDarkStroke
+        let foreground: Color = isDestructive
+            ? Color(red: 0.94, green: 0.55, blue: 0.55)
+            : HCColor.mistWhite
+        return configuration.label
+            .font(HCFont.callout)
+            .foregroundStyle(foreground)
+            .padding(.horizontal, compact ? 10 : 12)
+            .padding(.vertical, compact ? 3 : 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(bg))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(border, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.9 : 1)
     }
+}
+
+extension ButtonStyle where Self == HCSecondaryButtonStyle {
+    /// 落ち着いた secondary スタイル。ヘッダー右端のアクションボタン等に使う。
+    static var hcSecondary: HCSecondaryButtonStyle { HCSecondaryButtonStyle() }
+    /// Form 内の LabeledContent(ラベル + 値の 1 行構造)に収めるコンパクト版。
+    /// pill 高さがラベルの高さに揃うので、行の中央整列が崩れない。
+    static var hcSecondaryCompact: HCSecondaryButtonStyle { HCSecondaryButtonStyle(compact: true) }
 }
 
 /// HearCat のロゴ(猫の頭)。LP の SVG パス(viewBox 26x26)をそのまま写した形。
@@ -375,7 +442,7 @@ struct EQBars: View {
         HStack(spacing: 3) {
             ForEach(0..<5, id: \.self) { i in
                 Capsule()
-                    .fill(HCColor.blueSoft)
+                    .fill(HCColor.cinnamon)
                     .frame(width: 3)
                     .scaleEffect(y: animating && active ? 1 : 0.25, anchor: .bottom)
                     .animation(

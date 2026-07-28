@@ -35,10 +35,10 @@ struct MenuPanel: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 300)
-        .background(HCColor.navyBackground)
+        .background(HCColor.mistDark)
         // パネルは LP と同じネイビー基調で固定する。
         .environment(\.colorScheme, .dark)
-        .tint(HCColor.blue)
+        .tint(HCColor.cinnamon)
         .background(WindowAccessor { window in
             model.panelWindow = window
         })
@@ -55,13 +55,13 @@ struct MenuPanel: View {
             Group {
                 if model.status.active {
                     CatHeadShape(includesEyes: true)
-                        .fill(HCColor.blueSoft, style: FillStyle(eoFill: true))
+                        .fill(HCColor.cinnamon, style: FillStyle(eoFill: true))
                 } else {
                     CatHeadShape()
                         .stroke(
-                            HCColor.whiteDim,
+                            HCColor.mistWhiteDim,
                             style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
-                        .overlay(CatHeadShape.Eyes().fill(HCColor.whiteDim))
+                        .overlay(CatHeadShape.Eyes().fill(HCColor.mistWhiteDim))
                 }
             }
             .frame(width: 17, height: 17)
@@ -73,11 +73,11 @@ struct MenuPanel: View {
                 // 経過時間。Text(_:style: .timer) が毎秒勝手に進んでくれる。
                 Text(startedAt, style: .timer)
                     .font(HCFont.monospacedDigit(.subheadline))
-                    .foregroundStyle(HCColor.whiteDim)
+                    .foregroundStyle(HCColor.mistWhiteDim)
             } else {
                 Text("待機中")
                     .font(HCFont.subheadline)
-                    .foregroundStyle(HCColor.whiteDim)
+                    .foregroundStyle(HCColor.mistWhiteDim)
             }
         }
     }
@@ -171,7 +171,7 @@ struct MenuPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(HCColor.whiteDim)
+        .foregroundStyle(HCColor.mistWhiteDim)
     }
 
     // MARK: - セッション中
@@ -195,6 +195,15 @@ struct MenuPanel: View {
                     .foregroundStyle(.orange)
                     .help(model.status.systemAudioError ?? "")
             }
+
+            Button {
+                model.requestCodeImpactAnalysis()
+            } label: {
+                Label("会議内容を関連資料と照合", systemImage: "text.magnifyingglass")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PanelButtonStyle())
+            .disabled(!model.status.transcribing)
 
             Button {
                 Task { await model.stopSession() }
@@ -223,7 +232,7 @@ struct MenuPanel: View {
         HStack(spacing: 8) {
             Text(label)
                 .font(HCFont.caption)
-                .foregroundStyle(HCColor.whiteDim)
+                .foregroundStyle(HCColor.mistWhiteDim)
                 .frame(width: 28, alignment: .leading)
             LevelMeter(level: level)
         }
@@ -294,7 +303,7 @@ struct LevelMeter: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(.white.opacity(0.12))
-                Capsule().fill(HCColor.blueSoft)
+                Capsule().fill(HCColor.cinnamon)
                     .frame(width: max(0, geo.size.width * normalized))
             }
         }

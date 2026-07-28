@@ -6,10 +6,15 @@
   --color-ink: #111318;
   --color-ink-dim: #5C6270;
   --color-line: #E6E8EC;
-  --color-navy: #0C1226;
-  --color-navy-2: #131B38;
-  --color-blue: #3D7BFF;
-  --color-blue-soft: #8FB4FF;
+
+  /* 新ブランド配色: 霧の底 + シナモンの茶(ノルウェージャンフォレストキャットの
+     「窓際に、静かに座る森の妖精」から引いた)。
+     --color-navy 系はダークセクション(Hero など)の背景と一体感の要となる色。
+     --color-blue 系はアクセントカラー(kicker、CTA、リンク)として cinnamon に振り替え。 */
+  --color-navy: #1A1D1F;
+  --color-navy-2: #262A2D;
+  --color-blue: #C89060;
+  --color-blue-soft: #D4A574;
 
   --font-head: "Zen Kaku Gothic New", sans-serif;
   --font-sans: "Noto Sans JP", sans-serif;

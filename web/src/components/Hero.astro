@@ -16,22 +16,20 @@ import LiveTranscript from "./LiveTranscript.astro";
           <i class="ring absolute inset-0 rounded-full" style="border: 1.5px solid rgba(143,180,255,.5); animation: ring 2.6s ease-out infinite;"></i>
           <i class="ring absolute inset-0 rounded-full" style="border: 1.5px solid rgba(143,180,255,.5); animation: ring 2.6s ease-out infinite; animation-delay: 1.3s;"></i>
           <div class="absolute inset-2 rounded-full flex items-center justify-center" style="background: rgba(61,123,255,.16);">
-            <Logo size={20} stroke="#8FB4FF" fillDots="#8FB4FF" />
+            <Logo size={20} stroke="#D4A574" fillDots="#D4A574" />
           </div>
         </div>
         <span class="text-[12.5px] tracking-[.12em] text-blue-soft font-bold">LISTENING</span>
       </div>
-      <h1 class="font-head font-black leading-[1.25] tracking-[.01em]" style="font-size: clamp(26px, 4.2vw, 44px); white-space: nowrap;">
-        <span class="l block" style="opacity: 0; transform: translateY(22px); animation: up .8s cubic-bezier(.2,.7,.2,1) forwards;">秘密は、外に出さない。</span>
-        <span class="l block" style="opacity: 0; transform: translateY(22px); animation: up .8s cubic-bezier(.2,.7,.2,1) forwards; animation-delay: .12s;">
-          必要なのは、<em class="not-italic text-blue-soft">Mac だけ</em>。
-        </span>
+      <h1 class="font-head font-black leading-[1.25] tracking-[.01em]" style="font-size: clamp(26px, 4.2vw, 44px); text-wrap: balance;">
+        <span class="l block" style="opacity: 0; transform: translateY(22px); animation: up .8s cubic-bezier(.2,.7,.2,1) forwards;"><span class="nw">秘密は、</span><span class="nw">外に出さない。</span></span>
+        <span class="l block" style="opacity: 0; transform: translateY(22px); animation: up .8s cubic-bezier(.2,.7,.2,1) forwards; animation-delay: .12s;"><span class="nw">必要なのは、</span><span class="nw"><em class="not-italic text-blue-soft">Mac だけ</em>。</span></span>
       </h1>
       <p
         class="mt-6 max-w-[42ch]"
         style="color: rgba(255,255,255,.62); opacity: 0; animation: up .8s .3s cubic-bezier(.2,.7,.2,1) forwards;"
       >
-        HearCat は、自分の声と通話相手の声をリアルタイムで日本語の文字にして残す、メニューバー常駐アプリ。録音も文字起こしも要約も、すべてお使いの Mac の中だけで完結します。
+        HearCat は、自分の声と通話相手の声をリアルタイムで日本語の文字にして残す、メニューバー常駐アプリ。録音も文字起こしも要約も、既定ではすべてお使いの Mac の中だけで完結します。
       </p>
       <div class="mt-[34px] flex gap-[14px] flex-wrap" style="opacity: 0; animation: up .8s .45s cubic-bezier(.2,.7,.2,1) forwards;">
         <a
@@ -50,7 +48,7 @@ import LiveTranscript from "./LiveTranscript.astro";
         >AI と使う</a>
       </div>
       <p class="mt-5 text-[12px]" style="color: rgba(255,255,255,.42); opacity: 0; animation: up .8s .55s forwards;">
-        macOS 26 以降 / Apple Silicon。会議の内容がインターネットへ送られることはありません。
+        macOS 26 以降（要約は Apple Silicon のみ）。会議の内容が勝手にインターネットへ送られることはありません。
       </p>
     </div>
 
@@ -60,9 +58,12 @@ import LiveTranscript from "./LiveTranscript.astro";
 
 <style>
   .hero-grid { grid-template-columns: minmax(0, 10fr) minmax(0, 11fr); }
+  .hero h1 .l,
+  .hero h1 .nw { white-space: nowrap; }
   @media (max-width: 880px) {
     .hero { padding: 64px 0 72px !important; }
     .hero-grid { grid-template-columns: 1fr !important; gap: 44px !important; }
+    .hero h1 .l { white-space: normal; }
   }
   @media (prefers-reduced-motion: reduce) {
     .pulse .ring { animation: none; }

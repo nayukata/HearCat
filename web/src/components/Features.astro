@@ -10,29 +10,29 @@ import Card from "./Card.astro";
     </div>
     <div class="mt-12 grid gap-[18px]" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
       <Card title="両方の声を聞き分ける">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
         マイクの声は「自分」、通話相手など Mac から出る音は「相手」。発言が確定するたび、時刻と話者付きで記録に追記されます。
       </Card>
       <Card title="会議をまるごと録音">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="#3D7BFF" stroke="none"/></svg>
-        文字起こしと同時に、会議の音声も保存します。録音だけを止めて文字起こしは続ける、といった使い分けもできます。
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="#C89060" stroke="none"/></svg>
+        文字起こしと同時に、会議の音声も保存します。無音が5分続けば自動で停止するので、録りっぱなしになりません。
       </Card>
       <Card title="途中経過もその場で見える">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         話している最中の暫定テキストは、ライブ画面でリアルタイムに確認できます。記録ファイルには確定した発言だけが残ります。
       </Card>
-      <Card title="止めたら、要約ができている">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" y1="10" x2="7" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="7" y2="18"/></svg>
-        セッションを止めると、概要・論点・決定事項・TODO が自動でまとまります。過去のセッションからも、ボタンひとつで生成し直せます。
+      <Card title="話題ごとに、自動で要約">
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" y1="10" x2="7" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="7" y2="18"/></svg>
+        セッションを止めると、オンデバイス AI が話題ごとの要約を自動で作ります。Claude Code や Codex にワンクリックで任せて、精度を上げることもできます。
         <small class="block text-[12px] mt-[6px]" style="color:#9AA0AC;">要約は Apple Intelligence が有効な Apple Silicon 機のみ。</small>
       </Card>
       <Card title="マイクの感度調整">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v3a8 8 0 0 0 16 0v-3"/><line x1="12" y1="19" x2="12" y2="23"/><rect x="9" y="3" width="6" height="12" rx="3"/></svg>
-        入力デバイスの選択、エコー除去、入力感度の自動/手動調整に対応。手動時はレベルメーターを見ながらしきい値を合わせられます。スピーカーから出た相手の声を自分の発言と誤認するのを防ぎます。
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v3a8 8 0 0 0 16 0v-3"/><line x1="12" y1="19" x2="12" y2="23"/><rect x="9" y="3" width="6" height="12" rx="3"/></svg>
+        エコー除去と入力感度の調整で、スピーカーから出た相手の声を「自分」と拾うのを防ぎます。感度は自動でも手動でも。
       </Card>
       <Card title="どこからでも呼び出す">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3D7BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6" y2="10"/><line x1="10" y1="10" x2="10" y2="10"/><line x1="14" y1="10" x2="14" y2="10"/><line x1="18" y1="10" x2="18" y2="10"/><line x1="8" y1="14" x2="16" y2="14"/></svg>
-        セッションの開始/停止・録音・文字起こし・履歴・設定にホットキーを割り当てられます。他のアプリを使っている最中でも 1 発。録音や文字起こしのキーはセッション外で押しても、その機能だけオンで即開始します。
+        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6" y2="10"/><line x1="10" y1="10" x2="10" y2="10"/><line x1="14" y1="10" x2="14" y2="10"/><line x1="18" y1="10" x2="18" y2="10"/><line x1="8" y1="14" x2="16" y2="14"/></svg>
+        開始/停止・録音・文字起こし・履歴・設定にホットキーを割り当てられます。他のアプリを使っている最中でも 1 発で呼び出せます。
       </Card>
     </div>
   </div>
