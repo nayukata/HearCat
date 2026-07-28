@@ -47,6 +47,7 @@ enum AgentCLI: String, CaseIterable, Codable, Sendable, Hashable {
         case .claude:
             return [
                 "\(home)/.claude/local/claude",
+                "\(home)/.local/bin/claude",
                 "/opt/homebrew/bin/claude",
                 "/usr/local/bin/claude",
             ]
@@ -145,6 +146,10 @@ final class AgentCLIDetector {
                 found.append(cli)
             }
             availableCLIs = found
+            // 1つも見つからなかったときは検出済みにしない。HearCat は何日も起動したままに
+            // なるため、起動時の一度きりの失敗(PATH が整う前・シェル起動の失敗など)を
+            // 抱え込むと、その間ずっと CLI 由来の機能が消えたままになる。
+            if found.isEmpty { detected = false }
         }
     }
 }
@@ -207,6 +212,34 @@ private enum AgentSummarizePrompt {
     }
 }
 
+/// エージェント CLI へ渡す環境変数。GUI アプリの環境はターミナルより痩せており、
+/// 欠けると CLI が「ログインしていない」と判断することがある(実測: USER を落とすと
+/// claude が保存済みの認証情報に到達できず "Not logged in" になる)。
+/// 足りないものだけ補い、既にある値は上書きしない。
+private enum AgentProcessEnvironment {
+    static func make(binaryPath: String) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if env["HOME"]?.isEmpty != false {
+            env["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
+        }
+        if env["USER"]?.isEmpty != false { env["USER"] = NSUserName() }
+        if env["LOGNAME"]?.isEmpty != false { env["LOGNAME"] = NSUserName() }
+        // CLI 自身がサブプロセス(node、git など)を起動するため、CLI の置き場所と
+        // 標準的な bin を PATH に載せておく。
+        let extraPaths = [
+            (binaryPath as NSString).deletingLastPathComponent,
+            "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+        ]
+        let current = env["PATH"]?.split(separator: ":").map(String.init) ?? []
+        var merged = current
+        for path in extraPaths where !merged.contains(path) {
+            merged.append(path)
+        }
+        env["PATH"] = merged.joined(separator: ":")
+        return env
+    }
+}
+
 /// エージェント CLI での要約実行。claude / codex の差分(引数の組み立て・出力の取り出し方)を
 /// このファイル内に閉じ込める。
 enum AgentSummarizer {
@@ -240,6 +273,14 @@ enum AgentSummarizer {
         guard let binaryPath = await AgentCLIResolver.resolve(cli) else {
             throw AgentSummarizeError.notInstalled(cli)
         }
+        // 紐付けた資料フォルダが移動・削除されていると、存在しない作業ディレクトリを
+        // 指定した時点でプロセス起動そのものが失敗する。資料無しの要約は作れるので、
+        // 紐付けだけを落として続行する。
+        let referenceFolder = referenceFolder.flatMap { path -> String? in
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            return exists && isDirectory.boolValue ? path : nil
+        }
 
         let outputFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("hearcat-agent-\(outputPrefix)-\(UUID().uuidString).txt")
@@ -247,6 +288,7 @@ enum AgentSummarizer {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
+        process.environment = AgentProcessEnvironment.make(binaryPath: binaryPath)
         process.arguments = arguments(
             for: cli,
             prompt: prompt,
@@ -273,10 +315,18 @@ enum AgentSummarizer {
         }
 
         guard result.exitCode == 0 else {
-            if isAuthError(result.stderr) {
+            // claude はログイン切れを標準出力側に出すことがある(実測:
+            // 「Failed to authenticate: OAuth session expired and could not be refreshed」)。
+            // 標準エラーだけを見ていると、直せる失敗が「終了コード 1」としか伝わらない。
+            let diagnostics = [result.stderr, result.stdout]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            if isAuthError(diagnostics) {
                 throw AgentSummarizeError.notAuthenticated(cli)
             }
-            throw AgentSummarizeError.failed(exitCode: result.exitCode, stderr: summarize(stderr: result.stderr))
+            throw AgentSummarizeError.failed(
+                exitCode: result.exitCode, stderr: summarize(stderr: diagnostics))
         }
 
         let rawOutput: String
@@ -388,9 +438,12 @@ enum AgentSummarizer {
         }
     }
 
-    private static func isAuthError(_ stderr: String) -> Bool {
-        let lowered = stderr.lowercased()
-        return lowered.contains("login") || lowered.contains("authentication") || lowered.contains("unauthorized")
+    /// ログイン切れかどうか。CLI ごとに文言が違ううえ版によっても変わるため、
+    /// 語幹で拾う("authenticate" は "authentication" では拾えない)。
+    private static func isAuthError(_ output: String) -> Bool {
+        let lowered = output.lowercased()
+        return ["login", "log in", "authenticat", "unauthorized", "oauth", "credential"]
+            .contains { lowered.contains($0) }
     }
 
     /// エラーメッセージに載せる stderr の要約(長大なログをそのまま出さない)。
