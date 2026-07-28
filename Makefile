@@ -142,11 +142,19 @@ GITHUB_REPO := nayukata/HearCat
 
 # `make dist` の dmg から appcast.xml を作り、LP (web/public/) に配置する。
 # 秘密鍵は generate_keys が Keychain に保存したものを自動で使う。
+#
+# --maximum-versions 1: appcast には現在バージョンだけを載せる。generate_appcast の
+# --download-url-prefix は一括で全 dmg に同じ prefix を付けるため、これを指定せず
+# 過去バージョンも appcast に含めると、たとえば旧 0.1.0 のエントリまで最新タグ
+# v<APP_VERSION> の URL を指してしまい、Sparkle のロールバック提示や履歴表示から
+# ダウンロードすると 404 になる。過去版のロールバックが必要になったら、その時に
+# 個別バージョンの appcast を生成して静的にホストする方針。
 appcast: dist $(SPARKLE_TOOLS_DIR)/generate_appcast
 	mkdir -p $(SPARKLE_ARCHIVE_DIR)
 	cp $(DMG) $(SPARKLE_ARCHIVE_DIR)/HearCat-$(APP_VERSION).dmg
 	$(SPARKLE_TOOLS_DIR)/generate_appcast \
 		--download-url-prefix https://github.com/$(GITHUB_REPO)/releases/download/v$(APP_VERSION)/ \
+		--maximum-versions 1 \
 		$(SPARKLE_ARCHIVE_DIR)
 	cp $(SPARKLE_ARCHIVE_DIR)/appcast.xml web/public/appcast.xml
 	@echo "appcast.xml を web/public/ に配置しました。"

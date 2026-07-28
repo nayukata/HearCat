@@ -6,7 +6,7 @@ import os
 /// ヘッドレスの AI エージェント CLI(claude / codex)で高精度要約を作る。
 /// オンデバイス(TranscriptSummarizer)と違い、文字起こしが外部サービスへ送信されるため、
 /// 呼び出し側(SessionDetailView)で初回同意を取ってから使うこと。
-enum AgentCLI: String, CaseIterable, Sendable, Hashable {
+enum AgentCLI: String, CaseIterable, Codable, Sendable, Hashable {
     case claude
     case codex
 
@@ -26,6 +26,16 @@ enum AgentCLI: String, CaseIterable, Sendable, Hashable {
         switch self {
         case .claude: return .claude
         case .codex: return .codex
+        }
+    }
+
+    /// SummaryEngine → AgentCLI の逆写像。オンデバイス(.appleIntelligence)には
+    /// 対応する CLI が無いので nil を返す。
+    init?(summaryEngine: SummaryEngine) {
+        switch summaryEngine {
+        case .claude: self = .claude
+        case .codex: self = .codex
+        case .appleIntelligence: return nil
         }
     }
 
@@ -67,22 +77,50 @@ enum AgentCLIResolver {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
             process.arguments = ["-lc", "command -v \(binaryName)"]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            // stderr を読み出さないと、`.zshrc` が oh-my-zsh の起動診断や Homebrew の
+            // 警告を多く吐く環境で pipe バッファ(既定 64KB)が埋まり、zsh が write で
+            // ブロック → terminationHandler が発火せず、この関数が永久に返らない
+            // (= CLI 検出が「未検出」で張り付く)。stdout も同じ理屈でバックグラウンド
+            // 読み取りに揃える。
+            let stdout = AgentOutputBuffer()
+            let stderr = AgentOutputBuffer()
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                stdout.append(handle.availableData)
+            }
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                stderr.append(handle.availableData)
+            }
+
             process.terminationHandler = { _ in
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8)?
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                let output = String(data: stdout.snapshot(), encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 continuation.resume(returning: (output?.isEmpty == false) ? output : nil)
             }
             do {
                 try process.run()
             } catch {
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(returning: nil)
             }
         }
     }
+}
+
+/// 標準出力・標準エラーの蓄積用バッファ。readabilityHandler は GCD の内部キューから
+/// 呼ばれるため、Sendable な形でロックしながら溜める。
+/// AgentCLIResolver と AgentSummarizer の両方から使うのでファイル可視性で置く。
+fileprivate final class AgentOutputBuffer: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock(initialState: Data())
+    func append(_ chunk: Data) { lock.withLock { $0.append(chunk) } }
+    func snapshot() -> Data { lock.withLock { $0 } }
 }
 
 /// 検出済みエージェント CLI の一覧。アプリ起動後にバックグラウンドで1回だけ検出し、
@@ -128,12 +166,12 @@ enum AgentSummarizeError: LocalizedError {
         case .noTranscript:
             return "文字起こしがありません"
         case .timedOut:
-            return "要約の生成がタイムアウトしました(5分)"
+            return "AI 処理がタイムアウトしました(5分)"
         case .failed(let exitCode, let stderr):
             let summary = stderr.isEmpty ? "" : ": \(stderr)"
-            return "要約の生成に失敗しました(終了コード \(exitCode))\(summary)"
+            return "AI 処理に失敗しました(終了コード \(exitCode))\(summary)"
         case .emptyOutput:
-            return "要約の生成に失敗しました(応答が空でした)"
+            return "AI からの応答が空でした"
         }
     }
 }
@@ -175,23 +213,46 @@ enum AgentSummarizer {
     private static let timeout: TimeInterval = 300
 
     static func summarize(
-        using cli: AgentCLI, transcript: String, referenceFolder: String?
+        using cli: AgentCLI,
+        model: String?,
+        transcript: String,
+        referenceFolder: String?
+    ) async throws -> String {
+        try await execute(
+            using: cli,
+            input: transcript,
+            referenceFolder: referenceFolder,
+            prompt: AgentSummarizePrompt.build(referenceFolder: referenceFolder),
+            outputPrefix: "summary",
+            model: model)
+    }
+
+    /// 要約とコード影響調査で共用する、読み取り専用のエージェント実行経路。
+    /// プロンプトと入力だけを呼び出し側から受け取り、CLI ごとの差や制限はここに閉じ込める。
+    static func execute(
+        using cli: AgentCLI,
+        input: String,
+        referenceFolder: String?,
+        prompt: String,
+        outputPrefix: String,
+        model: String? = nil
     ) async throws -> String {
         guard let binaryPath = await AgentCLIResolver.resolve(cli) else {
             throw AgentSummarizeError.notInstalled(cli)
         }
 
         let outputFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("hearcat-agent-summary-\(UUID().uuidString).txt")
+            .appendingPathComponent("hearcat-agent-\(outputPrefix)-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: outputFile) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = arguments(
             for: cli,
-            prompt: AgentSummarizePrompt.build(referenceFolder: referenceFolder),
+            prompt: prompt,
             referenceFolder: referenceFolder,
-            outputFile: outputFile)
+            outputFile: outputFile,
+            model: model)
         if let referenceFolder {
             process.currentDirectoryURL = URL(fileURLWithPath: referenceFolder)
         }
@@ -205,7 +266,7 @@ enum AgentSummarizer {
 
         let result = try await withTaskCancellationHandler {
             try await run(
-                process: process, transcript: transcript,
+                process: process, transcript: input,
                 stdinPipe: stdinPipe, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
         } onCancel: {
             process.terminate()
@@ -235,11 +296,18 @@ enum AgentSummarizer {
     }
 
     private static func arguments(
-        for cli: AgentCLI, prompt: String, referenceFolder: String?, outputFile: URL
+        for cli: AgentCLI,
+        prompt: String,
+        referenceFolder: String?,
+        outputFile: URL,
+        model: String?
     ) -> [String] {
         switch cli {
         case .claude:
             var args = ["-p", prompt, "--output-format", "text"]
+            if let model {
+                args += ["--model", model]
+            }
             // referenceFolder が無ければ許可ツールのフラグ自体を渡さない
             // (ヘッドレスでは未許可のツールは自動拒否されるため、そのままで安全)。
             if referenceFolder != nil {
@@ -253,6 +321,9 @@ enum AgentSummarizer {
             // cwd になるため、いずれの場合も常に付ける。read-only サンドボックスは
             // 別途指定済みで書き込みは防いでいるため、安全性は変わらない。
             var args = ["exec", "--sandbox", "read-only", "--skip-git-repo-check"]
+            if let model {
+                args += ["--model", model]
+            }
             if let referenceFolder {
                 args += ["-C", referenceFolder]
             }
@@ -267,8 +338,8 @@ enum AgentSummarizer {
     ) async throws -> (exitCode: Int32, stdout: String, stderr: String) {
         try await withCheckedThrowingContinuation { continuation in
             let resumed = OSAllocatedUnfairLock(initialState: false)
-            let stdout = OutputBuffer()
-            let stderr = OutputBuffer()
+            let stdout = AgentOutputBuffer()
+            let stderr = AgentOutputBuffer()
 
             let resumeOnce: @Sendable (Result<(exitCode: Int32, stdout: String, stderr: String), Error>) -> Void = { result in
                 let shouldResume = resumed.withLock { done in
@@ -315,14 +386,6 @@ enum AgentSummarizer {
                 resumeOnce(.failure(AgentSummarizeError.timedOut))
             }
         }
-    }
-
-    /// 標準出力・標準エラーの蓄積用バッファ。readabilityHandler は GCD の内部キューから
-    /// 呼ばれるため、Sendable な形でロックしながら溜める。
-    private final class OutputBuffer: @unchecked Sendable {
-        private let lock = OSAllocatedUnfairLock(initialState: Data())
-        func append(_ chunk: Data) { lock.withLock { $0.append(chunk) } }
-        func snapshot() -> Data { lock.withLock { $0 } }
     }
 
     private static func isAuthError(_ stderr: String) -> Bool {

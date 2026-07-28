@@ -44,4 +44,18 @@ struct ResolveFolderNameTests {
             referenceFolders: ["プロジェクトA": "/Users/x/docs-old"])
         #expect(name == "プロジェクトA-4")
     }
+
+    @Test func 接尾辞候補が同じ資料フォルダに紐付いていれば再利用する() {
+        // 過去に別 path のせいで作られた「プロジェクトA-2」がまさに今選んだ path に
+        // 紐付いていれば、新規に「プロジェクトA-3」を作らず既存の A-2 を返す。
+        // 選び直すたびに Foo-2, Foo-3, Foo-4 … と増え続けるのを避ける。
+        let name = SessionStore.resolveFolderName(
+            candidate: "プロジェクトA", selectedPath: "/Users/x/docs-new",
+            existingFolders: ["プロジェクトA", "プロジェクトA-2"],
+            referenceFolders: [
+                "プロジェクトA": "/Users/x/docs-old",
+                "プロジェクトA-2": "/Users/x/docs-new",
+            ])
+        #expect(name == "プロジェクトA-2")
+    }
 }

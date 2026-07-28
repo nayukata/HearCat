@@ -258,6 +258,10 @@ public final class SessionEngine {
     private static let autoStopSilence: TimeInterval = 5 * 60
     /// 無音の監視タスク。teardown で必ず止める。
     private var autoStopTask: Task<Void, Never>?
+    /// 最後に発話(または実音声)を検知した時刻。pump が更新し watchdog が読む。
+    /// setAutoStop での「オフ→オン」切替時に、無効化中に溜まった無音を新しい起点として
+    /// リセットするためインスタンスからも触れるように保持する。
+    private var lastVoiceAt: OSAllocatedUnfairLock<Date>?
 
     public init(locale: Locale = Locale(identifier: "ja-JP")) {
         self.locale = locale
@@ -393,6 +397,7 @@ public final class SessionEngine {
         // watchdog(MainActor)が読む。録音/文字起こしのトグルとは独立に更新する
         // (録音だけのセッションでも自動停止は効かせたいため)。
         let lastVoiceAt = OSAllocatedUnfairLock(initialState: Date())
+        self.lastVoiceAt = lastVoiceAt
         let onLevel = self.onLevel
         let micBuffers = mic.buffers
         let micGateSettings = self.micGateSettings
@@ -471,7 +476,10 @@ public final class SessionEngine {
         status.active = true
         status.recording = record
         status.transcribing = transcribe
-        status.sessionID = sessionDir.lastPathComponent
+        // SessionInfo.id と同じ規則(グループありなら「グループ名/ディレクトリ名」)にする。
+        // 直だと片方だけディレクトリ名になり、自動要約の照合(SessionStore.list().first(where:))が
+        // 空振りしていた。
+        status.sessionID = SessionStore.relativeID(for: sessionDir)
         status.sessionDirectory = sessionDir.path
         status.transcriptPath = transcriptURL.path
         status.startedAt = startedAt
@@ -503,6 +511,7 @@ public final class SessionEngine {
         // 0. 無音監視を止める(自動停止起点の teardown 中に再発火させない)。
         autoStopTask?.cancel()
         autoStopTask = nil
+        lastVoiceAt = nil
 
         // 1. 音源を止めてバッファストリームを finish させ、pump が末尾まで流し切るのを待つ。
         mic?.stop()
@@ -572,8 +581,16 @@ public final class SessionEngine {
 
     /// 無音自動停止のオン/オフを変える。セッション中でも即座に効く
     /// (次のセッションにも引き継がれる。setGains と同じ方針)。
+    ///
+    /// オフ→オンへ切り替える瞬間は、無効化中に溜まった無音を「これ以前」として扱う。
+    /// リセットしないと、無音のまま長時間作業したセッションでオンに戻した直後の watchdog
+    /// tick が「5分以上の無音」と判定して即停止してしまう。
     public func setAutoStop(enabled: Bool) {
+        let wasEnabled = autoStopEnabled
         autoStopEnabled = enabled
+        if enabled, !wasEnabled {
+            lastVoiceAt?.withLock { $0 = Date() }
+        }
     }
 
     // SFSpeechRecognizer.requestAuthorization の完了ハンドラは TCC が背景スレッドで呼ぶ。

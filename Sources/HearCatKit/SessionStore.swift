@@ -116,13 +116,26 @@ public enum SessionStore {
         return dir
     }
 
+    /// セッションディレクトリの URL から SessionInfo.id を計算する。
+    /// SessionEngine の status.sessionID もこの規則を通し、
+    /// 「list() が返す id」と「今動いているセッションの id」の照合が必ず成立するようにする
+    /// (両者が食い違うと、停止直後の自動要約や履歴の自動選択が空振りする)。
+    public static func relativeID(for sessionDirectory: URL) -> String {
+        let base = sessionsDirectory.standardizedFileURL.pathComponents
+        let target = sessionDirectory.standardizedFileURL.pathComponents
+        guard target.starts(with: base), target.count > base.count else {
+            return sessionDirectory.lastPathComponent
+        }
+        return target.dropFirst(base.count).joined(separator: "/")
+    }
+
     /// 全セッションを新しい順で返す。sessions 直下と、プロジェクトフォルダ1階層の中を見る。
     public static func list() -> [SessionInfo] {
         var sessions: [SessionInfo] = []
         for url in subdirectories(of: sessionsDirectory) {
             if let parsed = parse(directoryName: url.lastPathComponent) {
                 sessions.append(SessionInfo(
-                    id: url.lastPathComponent, directory: url,
+                    id: relativeID(for: url), directory: url,
                     startDate: parsed.startDate, name: parsed.name, folder: nil))
             } else {
                 let folder = url.lastPathComponent
@@ -131,7 +144,7 @@ public enum SessionStore {
                         continue
                     }
                     sessions.append(SessionInfo(
-                        id: "\(folder)/\(child.lastPathComponent)", directory: child,
+                        id: relativeID(for: child), directory: child,
                         startDate: parsed.startDate, name: parsed.name, folder: folder))
                 }
             }
@@ -249,19 +262,28 @@ public enum SessionStore {
     ///   (同じ操作のやり直しなので、グループを増やさない)。
     /// - 候補名のグループが別パスへ紐付け済みなら、「候補名-2」のように空いている
     ///   接尾辞付きの名前を返す(既存の紐付けを壊さず、別グループとして分ける)。
+    ///   このとき、接尾辞候補が「選んだのと同じパスに既に紐付いている」なら
+    ///   それを再利用する(過去に同じ操作で作った Foo-2 を再度作り直さないため)。
     public static func resolveFolderName(
         candidate: String, selectedPath: String,
         existingFolders: [String], referenceFolders: [String: String]
     ) -> String {
         guard existingFolders.contains(candidate) else { return candidate }
-        if let linkedPath = referenceFolders[candidate], linkedPath != selectedPath {
-            var suffix = 2
-            while existingFolders.contains("\(candidate)-\(suffix)") {
-                suffix += 1
-            }
-            return "\(candidate)-\(suffix)"
+        let candidateLinkedPath = referenceFolders[candidate]
+        if candidateLinkedPath == nil || candidateLinkedPath == selectedPath {
+            return candidate
         }
-        return candidate
+        var suffix = 2
+        while true {
+            let name = "\(candidate)-\(suffix)"
+            // 過去の同じ操作で作った接尾辞グループが同じパスに紐付いていれば、
+            // 新規に作らず再利用する(そうしないと選ぶたびに Foo-2, Foo-3, Foo-4 …と増える)。
+            if referenceFolders[name] == selectedPath { return name }
+            // それ以外の既存グループ(別パスに紐付いている、または未紐付けだが名前だけ埋まっている)
+            // は避けて次の接尾辞へ進む。空きが見つかったらそこを新規に使う。
+            if !existingFolders.contains(name) { return name }
+            suffix += 1
+        }
     }
 
     /// 空のプロジェクトフォルダを作る。
