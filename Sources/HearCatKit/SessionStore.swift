@@ -13,21 +13,65 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     /// 所属するプロジェクトフォルダ。未分類なら nil。
     public let folder: String?
 
-    /// 旧形式(transcript.md / audio.m4a の固定名)のセッションも読めるよう、両方の名前を探す。
-    public var transcriptURL: URL? {
-        existing("\(directory.lastPathComponent).md") ?? existing("transcript.md")
+    /// セッションディレクトリに置く成果物の名前。ここが「どのファイルがどう名付けられるか」の
+    /// 正本で、保存・リネーム・受け渡し(SessionPackage)はすべてこれを通す
+    /// (規則が散ると、成果物を1つ増やしたときに一部の経路だけ取り残される)。
+    public enum Artifact: CaseIterable, Sendable {
+        case transcript
+        case audio
+        case summary
+        case summaryEngine
+        case cleaned
+
+        /// そのセッションディレクトリでのファイル名。文字起こしと録音はディレクトリ名と
+        /// 同じ基底名を持つ(Finder で1ファイルだけ取り出しても、どの会議か分かるように)。
+        public func fileName(inDirectoryNamed directoryName: String) -> String {
+            switch self {
+            case .transcript: return "\(directoryName).md"
+            case .audio: return "\(directoryName).m4a"
+            case .summary: return "summary.md"
+            case .summaryEngine: return "summary.engine"
+            case .cleaned: return "cleaned.md"
+            }
+        }
+
+        /// ディレクトリ名に依存しない固定名。旧形式(transcript.md / audio.m4a)の
+        /// セッションを読むときの別名であり、受け渡しパッケージ(SessionPackage)の
+        /// 中でもこの名前を使う(箱の中の名前がセッション名で揺れないように)。
+        public var portableFileName: String {
+            switch self {
+            case .transcript: return "transcript.md"
+            case .audio: return "audio.m4a"
+            case .summary, .summaryEngine, .cleaned:
+                // ディレクトリ名を使わない成果物は、保存時の名前がそのまま固定名。
+                return fileName(inDirectoryNamed: "")
+            }
+        }
+
+        /// 保存名とは別に探すべき旧形式の名前。無ければ nil。
+        var legacyFileName: String? {
+            let portable = portableFileName
+            return portable == fileName(inDirectoryNamed: "") ? nil : portable
+        }
     }
+
+    /// 成果物の実体。無ければ nil。旧形式の固定名も探す。
+    public func url(of artifact: Artifact) -> URL? {
+        existing(artifact.fileName(inDirectoryNamed: directory.lastPathComponent))
+            ?? artifact.legacyFileName.flatMap(existing)
+    }
+
+    public var transcriptURL: URL? { url(of: .transcript) }
     /// 録音(モノラル、自分と相手のミックス)。録音オフのセッションには無い。
-    public var audioURL: URL? {
-        existing("\(directory.lastPathComponent).m4a") ?? existing("audio.m4a")
-    }
+    public var audioURL: URL? { url(of: .audio) }
     /// 要約はアプリ内で表示する用途のため固定名。
-    public var summaryURL: URL? { existing("summary.md") }
+    public var summaryURL: URL? { url(of: .summary) }
     /// エージェント CLI で清書した文字起こし(hearcat-clean スキル由来)。無ければ nil。
-    public var cleanedURL: URL? { existing("cleaned.md") }
+    public var cleanedURL: URL? { url(of: .cleaned) }
 
     /// summary.md と対になる固定名。要約を生成したエンジンの記録(SessionStore.writeSummaryEngine 参照)。
-    fileprivate static let summaryEngineFileName = "summary.engine"
+    fileprivate static let summaryEngineFileName =
+        Artifact.summaryEngine.fileName(inDirectoryNamed: "")
 
     /// 要約を生成したエンジン。無ければ nil(この機能より前に生成された過去の要約、
     /// または読み取り失敗)。現在の設定から推測せず、生成時点に書かれた記録だけを見る。
@@ -65,7 +109,15 @@ public enum SessionStore {
     /// フォーマット文字列と出力("2026-07-06_000858")は同じ長さで、名前の切り出しに使う。
     private static let idFormat = "yyyy-MM-dd_HHmmss"
 
-    public static var rootDirectory: URL {
+    /// 保存先のルート。既定は Application Support/HearCat。
+    ///
+    /// アプリと CLI が同じパスを見ることが IPC 成立の前提なので、製品コードからは
+    /// 絶対に書き換えないこと。差し替え口があるのは、保存や取り込みを本番の保存先に
+    /// 触れずに検証するためで、書き換えてよいのはテストと検証ツールだけ。
+    /// (差し替えるテストは書き換えが競合しないよう .serialized で直列に走らせる。)
+    public nonisolated(unsafe) static var rootDirectory = defaultRootDirectory
+
+    public static var defaultRootDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("HearCat", isDirectory: true)
     }
@@ -106,14 +158,72 @@ public enum SessionStore {
     public static func createSessionDirectory(
         startDate: Date, name: String = "", folder: String? = nil
     ) throws -> URL {
-        let cleaned = sanitize(name)
-        let datePart = makeFormatter().string(from: startDate)
-        let dirName = cleaned.isEmpty ? datePart : "\(datePart) \(cleaned)"
-        let parent = folder.map { sessionsDirectory.appendingPathComponent(sanitize($0), isDirectory: true) }
-            ?? sessionsDirectory
-        let dir = parent.appendingPathComponent(dirName, isDirectory: true)
+        let dir = parentDirectory(forFolder: folder)
+            .appendingPathComponent(
+                directoryName(startDate: startDate, name: name), isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// 既存のどのセッションともぶつからないディレクトリを作り、実際に使った名前と
+    /// グループ名を一緒に返す(どちらも sanitize 後の、ディスク上の実際の値)。
+    /// 取り込み(SessionPackage)のように「同じ日時・同じ名前のセッションが既にあり得る」場面で使う。
+    /// createSessionDirectory は既存ディレクトリがあってもそのまま返す(録音の途中再開を
+    /// 壊さないため)ので、そちらを取り込みに使うと既存の記録へ上書きしてしまう。
+    /// 衝突した場合は名前に「(2)」から順に接尾辞を足し、別のセッションとして並べる。
+    public static func createUniqueSessionDirectory(
+        startDate: Date, name: String = "", folder rawFolder: String? = nil
+    ) throws -> (directory: URL, name: String, folder: String?) {
+        // 外から渡ってきた名前(受け取ったパッケージ、取り込み画面の入力)をそのまま
+        // ディレクトリ名にしない。日時形式のグループ名は list() がセッションと誤読するため、
+        // 通常のグループ作成と同じ検証を通す。
+        let folder = try rawFolder
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+            .map { try validFolderName($0) }
+
+        let fm = FileManager.default
+        let parent = parentDirectory(forFolder: folder)
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let existing = Set((try? fm.contentsOfDirectory(atPath: parent.path)) ?? [])
+        let resolved = uniqueSessionDirectoryName(
+            startDate: startDate, name: name, existingNames: existing)
+        let dir = parent.appendingPathComponent(resolved.directoryName, isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return (dir, resolved.name, folder)
+    }
+
+    /// createUniqueSessionDirectory が使う名前決めの本体。
+    /// 「日時 名前」が既存と衝突する場合、名前に「(2)」から順に接尾辞を足して空きを探す。
+    static func uniqueSessionDirectoryName(
+        startDate: Date, name: String, existingNames: Set<String>
+    ) -> (directoryName: String, name: String) {
+        let base = sanitize(name)
+        var candidate = base
+        var suffix = 2
+        while true {
+            let dirName = directoryName(startDate: startDate, name: candidate)
+            if !existingNames.contains(dirName) {
+                return (dirName, candidate)
+            }
+            candidate = base.isEmpty ? "(\(suffix))" : "\(base) (\(suffix))"
+            suffix += 1
+        }
+    }
+
+    /// セッションディレクトリの名前。parse(directoryName:) が読む側の正本なので、
+    /// 書く側はこの1関数だけを通す(区切りの空白や sanitize の有無がずれると、
+    /// 自分で書いた名前を自分で読めなくなる)。
+    static func directoryName(startDate: Date, name: String) -> String {
+        let cleaned = sanitize(name)
+        let datePart = makeFormatter().string(from: startDate)
+        return cleaned.isEmpty ? datePart : "\(datePart) \(cleaned)"
+    }
+
+    /// セッションディレクトリを置く親。グループ名が nil なら sessions 直下(未分類)。
+    private static func parentDirectory(forFolder folder: String?) -> URL {
+        folder.map { sessionsDirectory.appendingPathComponent(sanitize($0), isDirectory: true) }
+            ?? sessionsDirectory
     }
 
     /// セッションディレクトリの URL から SessionInfo.id を計算する。
@@ -210,8 +320,7 @@ public enum SessionStore {
     /// 変更後の SessionInfo を返す。旧形式の固定名ファイルもこの機会に新形式へ揃える。
     public static func rename(_ session: SessionInfo, to rawName: String) throws -> SessionInfo {
         let name = sanitize(rawName)
-        let datePart = makeFormatter().string(from: session.startDate)
-        let newDirName = name.isEmpty ? datePart : "\(datePart) \(name)"
+        let newDirName = directoryName(startDate: session.startDate, name: name)
         guard newDirName != session.directory.lastPathComponent else { return session }
 
         let fm = FileManager.default
@@ -220,13 +329,14 @@ public enum SessionStore {
         guard !fm.fileExists(atPath: newDir.path) else {
             throw StoreError.destinationExists(newDirName)
         }
-        if let transcript = session.transcriptURL {
-            try fm.moveItem(
-                at: transcript, to: session.directory.appendingPathComponent("\(newDirName).md"))
-        }
-        if let audio = session.audioURL {
-            try fm.moveItem(
-                at: audio, to: session.directory.appendingPathComponent("\(newDirName).m4a"))
+        // ディレクトリ名に連動する成果物(文字起こし・録音)を新しい名前へ揃える。
+        // どれが連動するかは Artifact 側の規則に従う(ここで名前を組み立て直さない)。
+        for artifact in SessionInfo.Artifact.allCases {
+            let newName = artifact.fileName(inDirectoryNamed: newDirName)
+            guard let current = session.url(of: artifact),
+                current.lastPathComponent != newName
+            else { continue }
+            try fm.moveItem(at: current, to: session.directory.appendingPathComponent(newName))
         }
         try fm.moveItem(at: session.directory, to: newDir)
         return SessionInfo(
@@ -333,6 +443,14 @@ public enum SessionStore {
         // 日時で始まる名前はセッションと見分けが付かなくなるため使えない。
         guard parse(directoryName: name) == nil else { throw StoreError.reservedName(name) }
         return name
+    }
+
+    /// ディレクトリ名として保存される形のセッション名。カレンダーの予定名と
+    /// 保存済みセッション名を突き合わせる側(グループの自動推測)から呼ぶ。
+    /// 保存時に文字が置換されることを知らずに生の予定名と比べると、
+    /// 「/」「:」を含む予定名が永久に一致しなくなる。
+    public static func storedName(for rawName: String) -> String {
+        sanitize(rawName)
     }
 
     /// ファイル名に使えない文字を除いたセッション名/フォルダ名にする。

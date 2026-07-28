@@ -63,6 +63,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = SparkleUpdater.shared
     }
 
+    /// Finder で .hearcat をダブルクリックした時などに呼ばれる。
+    /// ここでは取り込まず、中身を確認する画面まで持っていく(他人の会話の録音が入り得るため、
+    /// 何が入っているかを見せずに保存先へ書き込むことはしない)。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        AppModel.shared.requestImport(of: urls)
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let model = AppModel.shared
         guard model.status.active else {

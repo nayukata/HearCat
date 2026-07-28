@@ -87,6 +87,13 @@ struct MenuPanel: View {
     private var idleSection: some View {
         VStack(spacing: 10) {
             groupPicker
+                // 今の予定に紐づくグループへ選択を寄せる。会議が始まっているのに
+                // 前回のグループのままだと、そのまま開始して別のグループへ入ってしまう。
+                .task {
+                    await model.syncGroupSelectionWithCurrentEvent()
+                    // 起動直後に検出が失敗していた場合の取り戻し(検出済みなら何もしない)。
+                    AgentCLIDetector.shared.detectIfNeeded()
+                }
             if let target = referenceFolderLinkTarget {
                 referenceFolderHint(target: target)
             }
@@ -155,12 +162,16 @@ struct MenuPanel: View {
     /// (ここでは専用のチュートリアル画面は作らない)。
     private func referenceFolderHint(target: ReferenceFolderLinkTarget) -> some View {
         Button {
+            // このパネルはフォーカスが移ると閉じるため、パネルの親にはできない。
+            // 貼り付け先を渡さず、FilePanel 側の保険(今フォーカスのあるスクリーンへ寄せる)に委ねる。
             switch target {
             case .existingGroup(let folder):
-                ReferenceFolderPicker.pick(forGroup: folder)
+                Task { await ReferenceFolderPicker.pick(forGroup: folder, from: nil) }
             case .newGroupFromUnclassified:
                 // 選んだフォルダから新規グループを作り、次回からの既定グループにする。
-                ReferenceFolderPicker.pickForNewGroup { folder in
+                Task {
+                    guard let folder = await ReferenceFolderPicker.pickForNewGroup(from: nil)
+                    else { return }
                     model.settings.defaultSessionGroup = folder
                     model.refreshSessions()
                 }
@@ -178,6 +189,14 @@ struct MenuPanel: View {
 
     private var activeSection: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // 保存先グループはセッション中に変えられないため、確認のためだけに出す。
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                Text(model.activeSessionFolder ?? "未分類")
+            }
+            .font(HCFont.caption)
+            .foregroundStyle(HCColor.mistWhiteDim)
+
             toggleRow("録音", isOn: recordingBinding)
             toggleRow("文字起こし", isOn: transcribingBinding)
 

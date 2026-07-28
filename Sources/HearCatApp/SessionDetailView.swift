@@ -2,6 +2,7 @@ import AppKit
 import HearCatKit
 import HearCatSummarize
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 過去セッションの詳細。文字起こしの閲覧、録音の再生、要約の生成、削除ができる。
 struct SessionDetailView: View {
@@ -32,6 +33,22 @@ struct SessionDetailView: View {
     /// NSMenuItem の target。NSMenuItem は target を弱参照するため、
     /// ビューの生存期間だけ強参照を保持する必要がある。
     @State private var summarizeMenuActionHandler = MenuActionHandler()
+    /// 共有メニューの位置の基準。要約メニューとはボタンの位置が違うため別に持つ
+    /// (項目の target は同時に開かないので summarizeMenuActionHandler を共用する)。
+    @State private var shareMenuAnchor: NSView?
+    /// セッションの書き出し中。数十 MB の録音を含むとすぐには終わらないため、
+    /// ボタンを進捗表示に差し替えて二重実行も防ぐ。
+    @State private var exporting = false
+    /// 共有(画像コピー・書き出し)の結果。成功は一定時間で消え、失敗は理由を残す。
+    @State private var shareNotice: ShareNotice?
+    /// 録音があるか。session.audioURL は実体の存在確認を伴うため、body の評価のたびに
+    /// ディスクを見にいかないよう、読み込み時に控えた値を使う。
+    @State private var hasAudio = false
+
+    private struct ShareNotice: Equatable {
+        let message: String
+        let isError: Bool
+    }
 
     /// 生成中の表示は AppModel の状態に従う(停止直後の自動生成でも進捗が見えるように)。
     private var isSummarizing: Bool {
@@ -50,6 +67,15 @@ struct SessionDetailView: View {
         AgentCLIDetector.shared.availableCLIs
     }
 
+    /// 停止直後の自動要約が失敗していた場合の理由。要約が無い理由が分からないままだと
+    /// 直しようがないため、この画面(= 要約を作り直せる場所)に出す。
+    private var autoSummaryFailureMessage: String? {
+        guard summary == nil, let failure = model.autoSummaryFailure,
+            failure.sessionID == session.id
+        else { return nil }
+        return "自動要約に失敗しました: \(failure.message)"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -61,6 +87,14 @@ struct SessionDetailView: View {
             content
         }
         .task(id: session.id) { load(forceNewPlayer: true) }
+        // 成功の合図は用が済んだら消す。失敗は理由が読めるよう残す。
+        // 画面を離れた時と次の合図が来た時に、この待機は自動でキャンセルされる。
+        .task(id: shareNotice) {
+            guard let shareNotice, !shareNotice.isError else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self.shareNotice = nil
+        }
         // 停止直後に詳細へ遷移した場合、最後の発話の確定はまだファイルに
         // 書かれていないことがある。refreshSessions のたびに読み直して追従する。
         .onChange(of: model.sessionsVersion) { load(forceNewPlayer: false) }
@@ -89,6 +123,7 @@ struct SessionDetailView: View {
                 }
                 .controlSize(.small)
             }
+            shareButton
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([session.directory])
             } label: {
@@ -124,9 +159,16 @@ struct SessionDetailView: View {
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if let summaryError {
-                    Label(summaryError, systemImage: "exclamationmark.triangle")
+                if let message = summaryError ?? autoSummaryFailureMessage {
+                    Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
+                }
+                if let shareNotice {
+                    Label(
+                        shareNotice.message,
+                        systemImage: shareNotice.isError
+                            ? "exclamationmark.triangle" : "checkmark.circle")
+                        .foregroundStyle(shareNotice.isError ? .orange : .secondary)
                 }
                 if let summary {
                     GroupBox {
@@ -215,8 +257,10 @@ struct SessionDetailView: View {
             from: transcript ?? "", sessionStart: session.startDate)
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         summaryEngine = session.summaryEngine
+        let audioURL = session.audioURL
+        hasAudio = audioURL != nil
         if forceNewPlayer || player?.hasAudio != true {
-            player = SessionPlayer(audioURL: session.audioURL)
+            player = SessionPlayer(audioURL: audioURL)
         }
     }
 
@@ -285,15 +329,32 @@ struct SessionDetailView: View {
         }
     }
 
+    /// ボタンの直下に出すメニューの土台。
+    /// NSMenu は既定で autoenablesItems = true で、この場合 target/action が有効な
+    /// 項目は isEnabled への手動代入を無視して常に有効化される。使えない項目が
+    /// 押せてしまうため、自動有効化を切って isEnabled をそのまま尊重させる。
+    private func makeMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        return menu
+    }
+
+    /// メニューをボタンの直下に出す。popUp の指定点はメニューの左上角。素の NSView は
+    /// isFlipped = false(非 flipped、y=0 が下端)なので、ボタン直下に出すには負のオフセットを
+    /// 使う。NSHostingView 等の flipped なビューに載る場合は上端 y=0 なので、そちらは
+    /// 高さぶん下げる。
+    private func popUp(_ menu: NSMenu, below anchor: NSView) {
+        let point = anchor.isFlipped
+            ? NSPoint(x: 0, y: anchor.bounds.height + 4)
+            : NSPoint(x: 0, y: -4)
+        menu.popUp(positioning: nil, at: point, in: anchor)
+    }
+
     /// NSMenu を要約ボタンの直下にポップアップする。項目: オンデバイス、検出済み
     /// エージェント CLI ごと、(関連フォルダ未設定のグループなら)関連フォルダの設定。
     private func popUpSummarizeMenu() {
         guard let anchor = summarizeMenuAnchor else { return }
-        let menu = NSMenu()
-        // NSMenu は既定で autoenablesItems = true で、この場合 target/action が有効な
-        // 項目は isEnabled への手動代入を無視して常に有効化される。オンデバイス不可の
-        // 環境でも項目が押せてしまうため、自動有効化を切って isEnabled をそのまま尊重させる。
-        menu.autoenablesItems = false
+        let menu = makeMenu()
 
         let onDeviceItem = summarizeMenuActionHandler.makeItem("Apple Intelligence で生成") {
             Task { await summarize() }
@@ -322,7 +383,7 @@ struct SessionDetailView: View {
             let referenceFolderItem = summarizeMenuActionHandler.makeItem("資料フォルダと紐付けて要約精度を上げる…") {
                 switch target {
                 case .existingGroup(let folder):
-                    ReferenceFolderPicker.pick(forGroup: folder)
+                    Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
                 case .newGroupFromUnclassified:
                     linkToNewGroup()
                 }
@@ -331,13 +392,102 @@ struct SessionDetailView: View {
             menu.addItem(referenceFolderItem)
         }
 
-        // popUp の指定点はメニューの左上角。素の NSView は isFlipped = false(非 flipped、
-        // y=0 が下端)なので、ボタン直下に出すには負のオフセットを使う。NSHostingView 等の
-        // flipped なビューに載る場合は上端 y=0 なので、そちらは高さぶん下げる。
-        let point = anchor.isFlipped
-            ? NSPoint(x: 0, y: anchor.bounds.height + 4)
-            : NSPoint(x: 0, y: -4)
-        menu.popUp(positioning: nil, at: point, in: anchor)
+        popUp(menu, below: anchor)
+    }
+
+    // MARK: - 共有
+
+    /// 共有の入り口。渡す相手が HearCat を使っているかどうかで必要なものが違うため、
+    /// 「要約の画像」(使っていない人向け)と「セッションの書き出し」(使っている人向け)を
+    /// 1つのメニューに並べ、選ぶだけで済むようにする。
+    private var shareButton: some View {
+        Button {
+            popUpShareMenu()
+        } label: {
+            if exporting {
+                ProgressView().controlSize(.small)
+            } else {
+                HStack(spacing: 4) {
+                    Label("共有", systemImage: "square.and.arrow.up")
+                    Image(systemName: "chevron.down").imageScale(.small)
+                }
+            }
+        }
+        .disabled(exporting || (summary == nil && transcript == nil && !hasAudio))
+        .background(MenuAnchorView(anchor: $shareMenuAnchor))
+    }
+
+    private func popUpShareMenu() {
+        guard let anchor = shareMenuAnchor else { return }
+        let menu = makeMenu()
+
+        // 画像は要約があってこそ意味があるため、要約が無いセッションでは選べない。
+        for scope in SummaryShareScope.allCases {
+            let item = summarizeMenuActionHandler.makeItem(scope.menuTitle) {
+                copySummaryImage(scope: scope)
+            }
+            item.subtitle = scope.menuSubtitle
+            item.isEnabled = summary != nil
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        let withAudio = summarizeMenuActionHandler.makeItem("セッションを書き出す (録音つき)…") {
+            exportSession(includeAudio: true)
+        }
+        withAudio.subtitle = "相手の HearCat に、文字起こし・要約・録音がそのまま入る"
+        withAudio.isEnabled = hasAudio
+        menu.addItem(withAudio)
+
+        let textOnly = summarizeMenuActionHandler.makeItem("セッションを書き出す (テキストのみ)…") {
+            exportSession(includeAudio: false)
+        }
+        textOnly.subtitle = "録音を含めないぶん軽い。メールにも添付しやすい"
+        textOnly.isEnabled = transcript != nil
+        menu.addItem(textOnly)
+
+        popUp(menu, below: anchor)
+    }
+
+    private func copySummaryImage(scope: SummaryShareScope) {
+        guard let summary else { return }
+        do {
+            try SummaryShareImage.copyToPasteboard(
+                session: session, markdown: summary, scope: scope)
+            notifyShare("要約の画像をコピーしました", isError: false)
+        } catch {
+            notifyShare(error.localizedDescription, isError: true)
+        }
+    }
+
+    /// 保存先を選ばせてから .hearcat を書き出す。録音を含めると数十 MB になり得るため、
+    /// 圧縮は別スレッドで走らせて UI を止めない。
+    private func exportSession(includeAudio: Bool) {
+        let target = session
+        Task {
+            guard let destination = await SessionPackagePicker.chooseDestination(
+                for: target, from: model.mainWindow)
+            else { return }
+            exporting = true
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try SessionPackage.export(
+                        target, includeAudio: includeAudio, to: destination)
+                }.value
+                notifyShare("\(destination.lastPathComponent) に書き出しました", isError: false)
+            } catch {
+                notifyShare(error.localizedDescription, isError: true)
+            }
+            exporting = false
+        }
+    }
+
+    /// 共有の結果を伝える。成功は用が済んだら自然に消し、失敗は消さずに残す。
+    /// 消すのは .task(id:) に任せる(自前のタスクを眠らせると、その間ビューと
+    /// 親から渡されたクロージャを掴んだままになる)。
+    private func notifyShare(_ message: String, isError: Bool) {
+        shareNotice = ShareNotice(message: message, isError: isError)
     }
 
     /// 初回だけ外部送信の同意を求める。同意済みならそのまま実行する。
@@ -380,8 +530,10 @@ struct SessionDetailView: View {
     /// 未分類のセッションから資料フォルダを紐付ける。選んだフォルダの名前で新しいグループを
     /// 作り(既存の未紐付けグループがあれば流用)、このセッション自体もそこへ移す。
     private func linkToNewGroup() {
-        ReferenceFolderPicker.pickForNewGroup { folder in
-            guard let newID = model.move(session, toFolder: folder) else { return }
+        Task {
+            guard let folder = await ReferenceFolderPicker.pickForNewGroup(from: model.mainWindow),
+                let newID = model.move(session, toFolder: folder)
+            else { return }
             onMove(newID)
         }
     }

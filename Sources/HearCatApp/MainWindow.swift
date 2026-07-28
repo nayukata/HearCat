@@ -88,6 +88,7 @@ struct MainWindow: View {
         .modifier(BulkDeleteConfirmation(
             targets: $deletingSessions,
             onConfirm: performDeletion))
+        .modifier(SessionImportPresentation(model: model))
         .alert(
             "セッション名を変更", isPresented: presented($renameTarget), presenting: renameTarget
         ) { session in
@@ -217,7 +218,8 @@ struct MainWindow: View {
         }
     }
 
-    /// サイドバー下部の常設ボタン。グループ分けできることを見えるようにする。
+    /// サイドバー下部の常設ボタン。グループ分けできることと、
+    /// 受け取ったセッションをここから取り込めることを見えるようにする。
     private var newFolderBar: some View {
         HStack {
             Button {
@@ -230,6 +232,15 @@ struct MainWindow: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             Spacer()
+            Button {
+                model.requestImportFromPanel()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+                    .font(HCFont.callout)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("受け取ったセッション (.hearcat) を取り込む")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -268,7 +279,7 @@ struct MainWindow: View {
                     if !AgentCLIDetector.shared.availableCLIs.isEmpty {
                         if model.settings.referenceFolders[folder] != nil {
                             Button("関連フォルダを変更…") {
-                                ReferenceFolderPicker.pick(forGroup: folder)
+                                Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
                             }
                             Button("関連フォルダを解除") {
                                 model.settings.referenceFolders.removeValue(forKey: folder)
@@ -277,7 +288,7 @@ struct MainWindow: View {
                             // ラベルは機能名(関連フォルダ)でなく効能(要約精度が上がる)で語る。
                             // 「関連フォルダ」という名前だけでは初見で何が嬉しいか伝わらないため。
                             Button("資料フォルダと紐付けて要約精度を上げる…") {
-                                ReferenceFolderPicker.pick(forGroup: folder)
+                                Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
                             }
                         }
                     }
@@ -416,12 +427,15 @@ struct MainWindow: View {
             })
     }
 
-    /// 「対象が入っていたら表示」のダイアログ用 Binding。閉じる時に対象を空にする。
-    private func presented<T>(_ target: Binding<T?>) -> Binding<Bool> {
-        Binding(
-            get: { target.wrappedValue != nil },
-            set: { if !$0 { target.wrappedValue = nil } })
-    }
+}
+
+/// 「対象が入っていたら表示」のダイアログ用 Binding。閉じる時に対象を空にする。
+/// 対象を持つ形のダイアログは全部これを通す(閉じた時の後始末の作法を1つに保つため)。
+@MainActor
+func presented<T>(_ target: Binding<T?>) -> Binding<Bool> {
+    Binding(
+        get: { target.wrappedValue != nil },
+        set: { if !$0 { target.wrappedValue = nil } })
 }
 
 /// 一括削除の確認ダイアログを提供する ViewModifier。MainWindow.body が

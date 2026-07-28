@@ -3,6 +3,7 @@ import Foundation
 import Observation
 import HearCatKit
 import HearCatSummarize
+import UniformTypeIdentifiers
 
 enum CodeImpactAnalysisState {
     case idle
@@ -18,6 +19,19 @@ enum CodeImpactAnalysisState {
 enum SessionFolder: Sendable {
     case auto
     case explicit(String?)
+}
+
+/// 自動要約の前提が揃っていない場合の理由。手動実行では起きない
+/// (ボタン側が使えないエンジンを出さない)ため、自動経路のためだけに持つ。
+private enum AutoSummaryError: LocalizedError {
+    case onDeviceUnavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .onDeviceUnavailable(let reason):
+            return "Apple Intelligence が使えません(\(reason))"
+        }
+    }
 }
 
 private enum CodeImpactContextError: LocalizedError {
@@ -90,7 +104,20 @@ final class AppModel {
     @ObservationIgnored weak var panelWindow: NSWindow?
     /// openWindow は SwiftUI の Environment からしか取れないため、
     /// 常に生きているメニューバーのラベルビューから注入してもらう。
-    @ObservationIgnored var openWindowAction: ((String) -> Void)?
+    /// 注入より前に来た履歴ウィンドウの表示要求は、注入された時点で改めて実行する。
+    @ObservationIgnored var openWindowAction: ((String) -> Void)? {
+        didSet {
+            guard needsHistoryWindow, openWindowAction != nil else { return }
+            needsHistoryWindow = false
+            showHistory()
+        }
+    }
+
+    /// 履歴ウィンドウを開こうとしたが、openWindowAction がまだ注入されていなかった。
+    /// Finder で .hearcat を開いてアプリ自体がそこで起動した場合、
+    /// application(_:open:) はメニューバーのラベルビューが現れるより先に走る。
+    /// ここで覚えておかないと、取り込みの確認画面が出ないまま終わってしまう。
+    @ObservationIgnored private var needsHistoryWindow = false
 
     /// ライブ表示用。liveTimeline は画面の並び(行の席は固定)、liveFinals は
     /// 確定分の時系列(コピー用。ファイルと同じ発話開始時刻順)。
@@ -106,6 +133,19 @@ final class AppModel {
     /// refreshSessions が呼ばれるたびに増える版数。停止直後は最終行の書き込みが
     /// 完了直前まで遅れるため、SessionDetailView が読み直すきっかけに使う。
     private(set) var sessionsVersion = 0
+
+    /// グループ選択をどの予定名に合わせたか。同じ予定の間に手で選び直した
+    /// グループを、パネルを開き直すたびに上書きしないための記憶。
+    @ObservationIgnored private var appliedGroupCalendarTitle: String?
+
+    /// 直前の自動要約の失敗。詳細画面で理由を出し、手動で作り直せるようにする
+    /// (握りつぶすと「要約が出ない」以上のことがユーザーに何も伝わらない)。
+    private(set) var autoSummaryFailure: AutoSummaryFailure?
+
+    struct AutoSummaryFailure: Equatable {
+        let sessionID: String
+        let message: String
+    }
 
     private init() {
         engine.onStatusChange = { [weak self] status in
@@ -272,6 +312,10 @@ final class AppModel {
             try await engine.start(
                 record: record, transcribe: transcribe,
                 name: calendarTitle ?? "", folder: resolvedFolder)
+            // 実際の保存先をパネルのグループ選択にも反映する。ここを揃えないと、
+            // 会議名から推測して別グループへ保存したのに、パネルは前回のグループを
+            // 出したままになり「切り替わっていない」ように見える。
+            applyGroupSelection(resolvedFolder, forCalendarTitle: calendarTitle)
             refreshSessions()
         } catch {
             lastError = error.localizedDescription
@@ -289,6 +333,37 @@ final class AppModel {
         return Self.inferSessionFolder(
             forCalendarTitle: title, in: sessions,
             fallback: settings.defaultSessionGroup)
+    }
+
+    /// 待機中に、今の(またはまもなく始まる)予定に紐づくグループへ選択を寄せる。
+    /// メニューバーのパネルを開くたびに呼ばれるため、次の2点を守る。
+    /// - 同じ予定の間に手で選び直したグループは尊重する(適用済みの予定名を覚えておく)。
+    /// - 同名の履歴が無い予定では何もしない(推測できないのに選択を書き換えない)。
+    func syncGroupSelectionWithCurrentEvent() async {
+        guard !status.active, settings.calendarNaming else { return }
+        guard let title = await CalendarNamer.currentEventTitle(), !title.isEmpty else { return }
+        guard title != appliedGroupCalendarTitle else { return }
+        // 同名の履歴が無い予定では、fallback として渡した今の選択がそのまま返り、
+        // 選択は動かない(推測できないのに書き換えない)。履歴が「未分類」を指す
+        // 予定では nil が返り、未分類へ戻る。
+        let inferred = Self.inferSessionFolder(
+            forCalendarTitle: title, in: sessions, fallback: settings.defaultSessionGroup)
+        applyGroupSelection(inferred, forCalendarTitle: title)
+    }
+
+    /// グループ選択(パネルの表示 = 次回の既定)を更新し、その根拠になった予定名を控える。
+    private func applyGroupSelection(_ folder: String?, forCalendarTitle title: String?) {
+        appliedGroupCalendarTitle = title
+        guard settings.defaultSessionGroup != folder else { return }
+        settings.defaultSessionGroup = folder
+    }
+
+    /// 進行中セッションの保存先グループ(未分類なら nil)。パネルに出して、
+    /// 「今どこへ保存されているか」をセッション中でも確かめられるようにする。
+    var activeSessionFolder: String? {
+        guard status.active, let id = status.sessionID else { return nil }
+        let parts = id.split(separator: "/")
+        return parts.count > 1 ? String(parts[0]) : nil
     }
 
     /// カレンダーの予定名と同じ名前で過去に保存されたセッションから、最も多く入っているグループを返す。
@@ -321,8 +396,12 @@ final class AppModel {
         return best.key
     }
 
+    /// 突き合わせは「保存されるときの名前」に揃える。セッション名は保存時に
+    /// 「/」「:」が「-」へ置換されるため、生の予定名のまま比べると、それらを含む
+    /// 予定(「A / B 定例」など)が履歴と一致せず、常に既定グループへ落ちてしまう。
+    /// storedName が既に前後の空白を落としているため、ここでは小文字化だけでよい。
     private static func normalizeSessionTitle(_ s: String) -> String {
-        s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        SessionStore.storedName(for: s).lowercased()
     }
 
     func stopSession() async {
@@ -355,6 +434,7 @@ final class AppModel {
         let result = try await TranscriptSummarizer.summarize(transcript: transcript)
         let url = session.directory.appendingPathComponent("summary.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
+        clearAutoSummaryFailure(for: session)
         // チップ表示用にエンジン種別を固定する。失敗しても要約自体は生成できているので
         // 握りつぶす(チップが出ないだけで実害はない)。
         try? SessionStore.writeSummaryEngine(.appleIntelligence, for: session)
@@ -383,8 +463,15 @@ final class AppModel {
         let url = session.directory.appendingPathComponent("summary.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
         try? SessionStore.writeSummaryEngine(cli.summaryEngine, for: session)
+        clearAutoSummaryFailure(for: session)
         refreshSessions()
         return result
+    }
+
+    /// 手動で作り直せたセッションについては、自動要約の失敗表示を取り下げる。
+    private func clearAutoSummaryFailure(for session: SessionInfo) {
+        guard autoSummaryFailure?.sessionID == session.id else { return }
+        autoSummaryFailure = nil
     }
 
     // MARK: - 進行中の会議を関連資料と照合する
@@ -519,9 +606,11 @@ final class AppModel {
         codeImpactOverlayController?.show()
     }
 
-    /// 停止直後の自動要約。失敗しても何も出さない(履歴の手動ボタンで
-    /// いつでも作り直せるため)。要約済みのセッションには手を出さない。
+    /// 停止直後の自動要約。要約済みのセッションには手を出さない。
     /// 使うエンジンは settings.autoSummaryEngine で決める(nil なら何もしない)。
+    /// 失敗した場合は理由を残す(autoSummaryFailure と lastError)。以前は例外を
+    /// 握りつぶしていたため、CLI のログイン切れのような直せる失敗でも
+    /// 「要約が生成されない」ことしか分からなかった。
     private func autoSummarize(sessionID: String) {
         guard let engine = settings.autoSummaryEngine else { return }
         Task {
@@ -534,18 +623,28 @@ final class AppModel {
                 let transcript = try? String(contentsOf: url, encoding: .utf8),
                 !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return }
-            switch engine {
-            case .appleIntelligence:
-                guard OnDeviceModel.unavailableReason() == nil else { return }
-                _ = try? await generateSummary(for: session, transcript: transcript)
-            case .claude, .codex:
-                // エージェント要約は文字起こしを外部へ送るため、明示的に同意した人だけ動かす。
-                // 選択の同意が未取得(古い設定を持ち込んだケース)ならスキップ。
-                guard settings.agentSummaryConsented else { return }
-                guard let cli = AgentCLI(summaryEngine: engine),
-                    AgentCLIDetector.shared.availableCLIs.contains(cli)
-                else { return }
-                _ = try? await generateAgentSummary(for: session, using: cli)
+            do {
+                switch engine {
+                case .appleIntelligence:
+                    if let reason = OnDeviceModel.unavailableReason() {
+                        throw AutoSummaryError.onDeviceUnavailable(reason)
+                    }
+                    _ = try await generateSummary(for: session, transcript: transcript)
+                case .claude, .codex:
+                    // エージェント要約は文字起こしを外部へ送るため、明示的に同意した人だけ動かす。
+                    // 選択の同意が未取得(古い設定を持ち込んだケース)ならスキップ。
+                    guard settings.agentSummaryConsented else { return }
+                    guard let cli = AgentCLI(summaryEngine: engine) else { return }
+                    // 検出済み一覧(起動時に1回だけ走る)で門番をしない。検出が失敗して
+                    // いるだけで自動要約が黙って止まるより、実行して「見つからない」と
+                    // 報告するほうが直せる。
+                    _ = try await generateAgentSummary(for: session, using: cli)
+                }
+                autoSummaryFailure = nil
+            } catch {
+                autoSummaryFailure = AutoSummaryFailure(
+                    sessionID: session.id, message: error.localizedDescription)
+                lastError = "自動要約に失敗しました: \(error.localizedDescription)"
             }
         }
     }
@@ -668,7 +767,12 @@ final class AppModel {
         if status.active {
             mainWindowSelectionRequest = MainWindow.liveID
         }
-        openWindowAction?("main")
+        guard let openWindowAction else {
+            // 起動直後でまだ注入されていない。注入された時点でここへ戻ってくる。
+            needsHistoryWindow = true
+            return
+        }
+        openWindowAction("main")
         bringToFrontLater { AppModel.shared.mainWindow }
     }
 
@@ -777,6 +881,83 @@ final class AppModel {
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    // MARK: - セッションの取り込み(.hearcat)
+
+    /// 確認待ちの取り込み。展開済みの一時ファイルを抱えているため、
+    /// 取り込むか取りやめるかのどちらかを必ず通すこと(どちらも一時ファイルを片付ける)。
+    private(set) var pendingImport: PendingImport?
+    /// 取り込みキュー。複数ファイルをまとめて開かれた場合、1件ずつ確認してもらう。
+    @ObservationIgnored private var importQueue: [URL] = []
+    /// パッケージを開けなかった理由。履歴ウィンドウがアラートで出す。
+    var importError: String?
+
+    struct PendingImport: Identifiable {
+        let id = UUID()
+        /// 開いた元のファイル。表示用(どのファイルの話かを画面に出す)。
+        let sourceName: String
+        let opened: SessionPackage.Opened
+    }
+
+    /// ファイルを選んで取り込む。Finder でのダブルクリックだけだと、
+    /// 「書き出しはアプリの中、取り込みはアプリの外」と入口が非対称になるため、
+    /// 履歴ウィンドウからも同じことができるようにする。
+    func requestImportFromPanel() {
+        Task {
+            requestImport(of: await SessionPackagePicker.chooseFiles(from: mainWindow))
+        }
+    }
+
+    /// Finder から渡されたファイルを、確認画面まで持っていく。
+    func requestImport(of urls: [URL]) {
+        let packages = SessionPackagePicker.packages(in: urls)
+        guard !packages.isEmpty else { return }
+        importQueue.append(contentsOf: packages)
+        // 確認画面は履歴ウィンドウの上に出すため、閉じていれば開く。
+        showHistory()
+        openNextImport()
+    }
+
+    /// キューの先頭を展開して確認画面に載せる。展開は I/O が重いので別スレッドで行う。
+    private func openNextImport() {
+        guard pendingImport == nil, !importQueue.isEmpty else { return }
+        let url = importQueue.removeFirst()
+        Task {
+            do {
+                let opened = try await Task.detached(priority: .userInitiated) {
+                    try SessionPackage.open(url)
+                }.value
+                pendingImport = PendingImport(
+                    sourceName: url.lastPathComponent, opened: opened)
+            } catch {
+                importError = "\(url.lastPathComponent): \(error.localizedDescription)"
+                // 1件失敗しても、まとめて開かれた残りは続けて確認できるようにする。
+                openNextImport()
+            }
+        }
+    }
+
+    /// 確認画面で選ばれたグループへ取り込む。取り込んだセッションを選択状態にする。
+    func confirmImport(_ pending: PendingImport, intoFolder folder: String?) {
+        defer {
+            pendingImport = nil
+            openNextImport()
+        }
+        do {
+            let session = try SessionPackage.install(pending.opened, intoFolder: folder)
+            refreshSessions()
+            mainWindowSelectionRequest = session.id
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    /// 取り込まずに閉じる。展開済みの一時ファイルはここで片付ける。
+    func cancelImport(_ pending: PendingImport) {
+        pending.opened.discard()
+        pendingImport = nil
+        openNextImport()
     }
 
     private func mutateSession(

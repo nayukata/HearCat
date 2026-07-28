@@ -1,6 +1,38 @@
 import HearCatKit
 import SwiftUI
 
+/// 要約本文の描き方。画面表示(SummaryView)と画像書き出し(SummaryShareCard)で、
+/// セクション構成は共有したまま見た目と操作性だけを切り替える。
+/// 構成そのものを2つ持つと、要約の形式を変えたときに片方だけ古いまま残り、
+/// 画像側の欠落は受け取った相手にしか見えない。
+struct SummaryBodyStyle {
+    let headingStyle: AnyShapeStyle
+    let bodyStyle: AnyShapeStyle
+    let font: Font
+    /// 話題を折りたたみにして、本文を選択可能にするか。画像では固定表示にする。
+    let isInteractive: Bool
+    /// 「話題ごとのまとめ」を含めるか。画像の要点モードでは落とす。
+    let includesTopics: Bool
+
+    /// アプリ内の表示。色は環境に任せる(明暗どちらのテーマでも読める)。
+    static let screen = SummaryBodyStyle(
+        headingStyle: AnyShapeStyle(.secondary),
+        bodyStyle: AnyShapeStyle(.primary),
+        font: HCFont.body,
+        isInteractive: true,
+        includesTopics: true)
+
+    /// 他の人へ渡す画像。暗い背景に固定するため、色も明示する。
+    static func shareCard(includesTopics: Bool) -> SummaryBodyStyle {
+        SummaryBodyStyle(
+            headingStyle: AnyShapeStyle(HCColor.cinnamon),
+            bodyStyle: AnyShapeStyle(HCColor.mistBody),
+            font: HCFont.callout,
+            isInteractive: false,
+            includesTopics: includesTopics)
+    }
+}
+
 /// 要約の構造化表示。想定の 4 セクション形式(概要 / 話題ごとのまとめ / 決定事項 /
 /// TODO・宿題)なら見出し・折りたたみ・担当チップで描画し、形式が想定外なら
 /// 原文をそのまま表示する(内容を欠落させないことを優先)。
@@ -8,22 +40,33 @@ struct SummaryView: View {
     let markdown: String
 
     var body: some View {
-        Group {
-            if let parsed = SummaryParser.parse(markdown) {
-                StructuredSummaryView(summary: parsed)
-            } else {
-                Text(markdown)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        SummaryBody(markdown: markdown, style: .screen)
+            // GroupBox 既定の内側余白は薄く、本文が枠線に張り付いて見えるため足す。
+            .padding(8)
+    }
+}
+
+/// 要約本文。形式が想定外なら原文をそのまま出す。
+struct SummaryBody: View {
+    let markdown: String
+    let style: SummaryBodyStyle
+
+    var body: some View {
+        if let parsed = SummaryParser.parse(markdown) {
+            StructuredSummaryView(summary: parsed, style: style)
+        } else {
+            Text(markdown)
+                .font(style.font)
+                .foregroundStyle(style.bodyStyle)
+                .selectableText(style.isInteractive)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        // GroupBox 既定の内側余白は薄く、本文が枠線に張り付いて見えるため足す。
-        .padding(8)
     }
 }
 
 private struct StructuredSummaryView: View {
     let summary: ParsedSummary
+    let style: SummaryBodyStyle
 
     var body: some View {
         // 近接の法則: 見出しは自分の中身とだけ視覚的にまとまるよう、
@@ -31,16 +74,15 @@ private struct StructuredSummaryView: View {
         VStack(alignment: .leading, spacing: 20) {
             if !summary.overview.isEmpty {
                 section("概要") {
-                    Text(inline(summary.overview))
-                        .textSelection(.enabled)
+                    text(summary.overview)
                 }
             }
 
-            if !summary.topics.isEmpty {
+            if style.includesTopics, !summary.topics.isEmpty {
                 section("話題ごとのまとめ") {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: style.isInteractive ? 4 : 12) {
                         ForEach(summary.topics) { topic in
-                            TopicRow(topic: topic)
+                            TopicRow(topic: topic, style: style)
                         }
                     }
                 }
@@ -56,7 +98,7 @@ private struct StructuredSummaryView: View {
                 itemList(
                     summary.decisions,
                     icon: "checkmark.circle.fill",
-                    iconStyle: Color.green,
+                    iconStyle: AnyShapeStyle(Color.green),
                     iconFont: HCFont.callout)
             }
 
@@ -70,10 +112,9 @@ private struct StructuredSummaryView: View {
                                 Image(systemName: "circle")
                                     .font(HCFont.caption)
                                     .foregroundStyle(.secondary)
-                                Text(inline(todo.text))
-                                    .textSelection(.enabled)
+                                text(todo.text)
                                 if let assignee = todo.assignee {
-                                    AssigneeChip(name: assignee)
+                                    AssigneeChip(name: assignee, style: style)
                                 }
                             }
                         }
@@ -91,14 +132,14 @@ private struct StructuredSummaryView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(HCFont.style(.subheadline, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(style.headingStyle)
             content()
         }
     }
 
     @ViewBuilder
     private func itemList(
-        _ items: [String], icon: String, iconStyle: some ShapeStyle,
+        _ items: [String], icon: String, iconStyle: AnyShapeStyle,
         iconFont: Font = HCFont.caption
     ) -> some View {
         if items.isEmpty {
@@ -110,35 +151,43 @@ private struct StructuredSummaryView: View {
                         Image(systemName: icon)
                             .font(iconFont)
                             .foregroundStyle(iconStyle)
-                        Text(inline(item))
-                            .textSelection(.enabled)
+                        text(item)
                     }
                 }
             }
         }
     }
 
+    /// 本文1つぶん。行内 Markdown の解釈と、書体・色・選択可否をここに集約する。
+    private func text(_ body: String) -> some View {
+        Text(summaryInlineText(body))
+            .font(style.font)
+            .foregroundStyle(style.bodyStyle)
+            .selectableText(style.isInteractive)
+    }
+
     private var emptyNote: some View {
         Text("(なし)")
+            .font(style.font)
             .foregroundStyle(.secondary)
     }
 }
 
-/// 話題1つぶん。折りたたみで描画するが、初期状態は開いておく(閉じたままだと
+/// 話題1つぶん。画面では折りたたみで描画するが、初期状態は開いておく(閉じたままだと
 /// 中身を読むのに全話題をクリックする羽目になる。興味のない話題を閉じる操作の
-/// ほうが少ない)。見出しの無い話題(### より前の本文)は項目をそのまま並べる。
+/// ほうが少ない)。画像では折りたたみ自体を使わず、見出しと中身をそのまま並べる。
+/// 見出しの無い話題(### より前の本文)は項目をそのまま並べる。
 private struct TopicRow: View {
     let topic: ParsedSummary.Topic
+    let style: SummaryBodyStyle
     @State private var isExpanded = true
 
     var body: some View {
         if topic.title.isEmpty {
             blocks
         } else if topic.blocks.isEmpty {
-            Text(inline(topic.title))
-                .font(HCFont.style(.body, weight: .medium))
-                .textSelection(.enabled)
-        } else {
+            title
+        } else if style.isInteractive {
             DisclosureGroup(isExpanded: $isExpanded) {
                 blocks
                     .padding(.top, 4)
@@ -146,15 +195,25 @@ private struct TopicRow: View {
             } label: {
                 // 既定では開閉が矢印クリックにしか反応しないため、
                 // タイトル行のどこを押しても開閉できるようにする。
-                Text(inline(topic.title))
-                    .font(HCFont.style(.body, weight: .medium))
+                title
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         withAnimation { isExpanded.toggle() }
                     }
             }
+        } else {
+            VStack(alignment: .leading, spacing: 5) {
+                title
+                blocks
+            }
         }
+    }
+
+    private var title: some View {
+        Text(summaryInlineText(topic.title))
+            .font(HCFont.style(style.isInteractive ? .body : .callout, weight: .medium))
+            .selectableText(style.isInteractive)
     }
 
     /// 話題の本文。段落(自然文)はそのまま、箇条書きは「•」付きで描画する。
@@ -165,37 +224,60 @@ private struct TopicRow: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("•")
                             .foregroundStyle(.secondary)
-                        Text(inline(block.text))
-                            .textSelection(.enabled)
+                        body(block.text)
                     }
                 } else {
-                    Text(inline(block.text))
-                        .textSelection(.enabled)
+                    body(block.text)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    private func body(_ text: String) -> some View {
+        Text(summaryInlineText(text))
+            .font(style.font)
+            .foregroundStyle(style.bodyStyle)
+            .selectableText(style.isInteractive)
+    }
 }
 
 /// TODO の担当者チップ。セッション一覧のグループ表示と同じ .quaternary のカプセル。
+/// 画像では背景が暗色固定になるため、アクセント色で塗る。
 private struct AssigneeChip: View {
     let name: String
+    let style: SummaryBodyStyle
 
     var body: some View {
         Text(name)
             .font(HCFont.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(style.isInteractive ? AnyShapeStyle(.secondary) : AnyShapeStyle(HCColor.cinnamon))
             .padding(.horizontal, 8)
             .padding(.vertical, 1)
-            .background(Capsule().fill(.quaternary))
+            .background(
+                Capsule().fill(
+                    style.isInteractive
+                        ? AnyShapeStyle(.quaternary) : AnyShapeStyle(HCColor.cinnamon.opacity(0.14))))
             .fixedSize()
+    }
+}
+
+extension View {
+    /// 文字を選択できるようにするか。textSelection(.enabled) と (.disabled) は
+    /// 型が違って三項演算子で選べないため、分岐をここに閉じ込める。
+    @ViewBuilder
+    fileprivate func selectableText(_ enabled: Bool) -> some View {
+        if enabled {
+            textSelection(.enabled)
+        } else {
+            textSelection(.disabled)
+        }
     }
 }
 
 /// 行内の Markdown 装飾(**強調** など)だけを解釈して描画用の文字列にする。
 /// 解釈に失敗したら原文のまま表示する。
-private func inline(_ text: String) -> AttributedString {
+func summaryInlineText(_ text: String) -> AttributedString {
     (try? AttributedString(
         markdown: text,
         options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))

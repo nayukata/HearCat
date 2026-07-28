@@ -33,6 +33,46 @@
     <string>HearCat は通話相手など、Mac から出る音声を文字起こし・録音するためにシステム音声を録音します。</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>HearCat はセッション開始時に今の予定名をセッション名として自動で付けるためにカレンダーを読み取ります。</string>
+    <!-- セッションの受け渡しファイル(.hearcat)。ダブルクリックで HearCat が開き、
+         中身を確認してから取り込める(SessionPackage.swift 参照)。
+         中身は zip だが com.pkware.zip-archive には conform させない。
+         conform させるとアーカイブユーティリティが「解凍」の対象として横取りし、
+         ダブルクリックでフォルダが展開されるだけになってしまうため。 -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>dev.nayukata.hearcat.session</string>
+            <key>UTTypeDescription</key>
+            <string>HearCat セッション</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>hearcat</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>HearCat セッション</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>dev.nayukata.hearcat.session</string>
+            </array>
+        </dict>
+    </array>
     <!-- Sparkle 自動更新。SparkleUpdater.swift が debug ビルドでは起動しないため、
          このキーが存在してもチェックが暴発することはない。 -->
     <key>SUFeedURL</key>
