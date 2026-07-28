@@ -112,6 +112,13 @@ struct SessionDetailView: View {
             }
         }
         .padding()
+        // ヘッダー内のボタンは既定の透明背景 + tint 色のテキストだと、mistDark 上で
+        // cinnamon が沈んで読みにくい。.bordered にして「pill 型の tint 背景 + 濃いテキスト」
+        // の macOS 標準スタイルに寄せることで、クリック可能領域も明示する。
+        // 削除ボタンは role: .destructive を付けているので、.bordered と組み合わせても
+        // 破壊的操作特有の赤味が出て他ボタンと差別化される。
+        .buttonStyle(.hcSecondary)
+        .controlSize(.regular)
     }
 
     private var content: some View {

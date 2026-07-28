@@ -4,6 +4,39 @@ import Observation
 import HearCatKit
 import HearCatSummarize
 
+enum CodeImpactAnalysisState {
+    case idle
+    case requiresConsent(AgentCLI)
+    case analyzing(AgentCLI)
+    case completed(AgentCLI, String)
+    case failed(String)
+}
+
+/// セッション開始時にどのグループへ入れるかの指示。
+/// - auto: カレンダーの予定名と履歴から推測し、外れたら defaultSessionGroup に落とす。
+/// - explicit: 呼び出し側(ホットキーのグループ選択画面など)が確定した値。nil は未分類。
+enum SessionFolder: Sendable {
+    case auto
+    case explicit(String?)
+}
+
+private enum CodeImpactContextError: LocalizedError {
+    case inactive
+    case sessionNotFound
+    case referenceFolderMissing
+
+    var errorDescription: String? {
+        switch self {
+        case .inactive:
+            return "文字起こし中のセッションで使えます"
+        case .sessionNotFound:
+            return "進行中のセッションを読み込めませんでした"
+        case .referenceFolderMissing:
+            return "このセッションのグループに資料フォルダが紐付いていません"
+        }
+    }
+}
+
 /// アプリ全体の状態。エンジンと IPC サーバーを1個ずつ持つ。
 /// CLI(agent skill)からの命令も、メニューバーからの操作も、必ずここを経由する
 /// (操作経路が2系統あっても状態が食い違わないようにするため)。
@@ -23,6 +56,12 @@ final class AppModel {
     var lastError: String?
     /// 開始/停止処理の実行中。パネルのボタン連打で二重開始しないよう UI を無効化する。
     private(set) var busy = false
+
+    /// 進行中の会議と関連コードを照合した結果。専用オーバーレイだけが表示する。
+    private(set) var codeImpactAnalysisState: CodeImpactAnalysisState = .idle
+    @ObservationIgnored private var codeImpactTask: Task<Void, Never>?
+    @ObservationIgnored private var codeImpactRequestID: UUID?
+    @ObservationIgnored private var codeImpactOverlayController: CodeImpactOverlayController?
 
     /// 入力レベル(RMS)。メニューバーのパネルにメーターとして出す。
     private(set) var micLevel: Float = 0
@@ -201,12 +240,14 @@ final class AppModel {
 
     // MARK: - セッション操作
 
-    /// folder 省略時は AppSettings.shared.defaultSessionGroup を既定にする。
-    /// IPC(hearcat start)経由・ホットキー経由も folder を渡さずに呼ぶことで、
-    /// 同じ既定(直近選んだグループ)を通る。
+    /// folder 省略時(.auto)は、カレンダーの今の予定名と履歴からグループを推測し、
+    /// 同名の履歴が無ければ defaultSessionGroup にフォールバックする。
+    /// IPC(hearcat start)経由・メニューの録音ボタン・ホットキー(選択画面オフ)も
+    /// folder を渡さずに呼ぶことで、同じ推測経路を通る。
+    /// ホットキーの選択画面で確定した値は .explicit で渡す。
     func startSession(
         record: Bool = true, transcribe: Bool = true,
-        folder: String? = AppSettings.shared.defaultSessionGroup
+        folder: SessionFolder = .auto
     ) async {
         guard !busy else { return }
         busy = true
@@ -220,12 +261,68 @@ final class AppModel {
             liveFinals = []
             liveTimeline.removeAll()
             // カレンダーの今の予定名をセッション名にする(設定でオフにできる)。
-            let name = settings.calendarNaming ? await CalendarNamer.currentEventTitle() ?? "" : ""
-            try await engine.start(record: record, transcribe: transcribe, name: name, folder: folder)
+            let calendarTitle = settings.calendarNaming ? await CalendarNamer.currentEventTitle() : nil
+            let resolvedFolder: String?
+            switch folder {
+            case .explicit(let f):
+                resolvedFolder = f
+            case .auto:
+                resolvedFolder = autoInferredFolder(calendarTitle: calendarTitle)
+            }
+            try await engine.start(
+                record: record, transcribe: transcribe,
+                name: calendarTitle ?? "", folder: resolvedFolder)
             refreshSessions()
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// カレンダーの予定名から履歴を辿って推測したグループ。
+    /// 予定名が取れない・同名の履歴が無ければ defaultSessionGroup を返す。
+    /// ホットキーの選択画面の初期選択も同じ規則で決めるため、public にはしない
+    /// (呼び出し元は同じファイル内に限定)。
+    private func autoInferredFolder(calendarTitle: String?) -> String? {
+        guard let title = calendarTitle, !title.isEmpty else {
+            return settings.defaultSessionGroup
+        }
+        return Self.inferSessionFolder(
+            forCalendarTitle: title, in: sessions,
+            fallback: settings.defaultSessionGroup)
+    }
+
+    /// カレンダーの予定名と同じ名前で過去に保存されたセッションから、最も多く入っているグループを返す。
+    /// 同数なら直近のセッションのグループ(=最近の運用に寄せる)。
+    /// 同名の履歴が無ければ fallback を返す。
+    /// 判定は lowercased + 前後空白トリムで揃える(半角/全角の細かい正規化まではしない。
+    /// カレンダーの予定名は毎回同じ表記で入っている前提)。
+    static func inferSessionFolder(
+        forCalendarTitle title: String,
+        in sessions: [SessionInfo],
+        fallback: String?
+    ) -> String? {
+        let key = normalizeSessionTitle(title)
+        guard !key.isEmpty else { return fallback }
+        let matched = sessions.filter { normalizeSessionTitle($0.name) == key }
+        guard !matched.isEmpty else { return fallback }
+        // 未分類(nil)も「その名前でよく使われている置き場所」の1つとして数える。
+        var counts: [String?: Int] = [:]
+        var latest: [String?: Date] = [:]
+        for s in matched {
+            counts[s.folder, default: 0] += 1
+            if (latest[s.folder] ?? .distantPast) < s.startDate {
+                latest[s.folder] = s.startDate
+            }
+        }
+        guard let best = counts.max(by: { a, b in
+            if a.value != b.value { return a.value < b.value }
+            return (latest[a.key] ?? .distantPast) < (latest[b.key] ?? .distantPast)
+        }) else { return fallback }
+        return best.key
+    }
+
+    private static func normalizeSessionTitle(_ s: String) -> String {
+        s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func stopSession() async {
@@ -279,7 +376,10 @@ final class AppModel {
         }
         let referenceFolder = session.folder.flatMap { settings.referenceFolders[$0] }
         let result = try await AgentSummarizer.summarize(
-            using: cli, transcript: transcript, referenceFolder: referenceFolder)
+            using: cli,
+            model: settings.summaryAgentModel(for: cli),
+            transcript: transcript,
+            referenceFolder: referenceFolder)
         let url = session.directory.appendingPathComponent("summary.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
         try? SessionStore.writeSummaryEngine(cli.summaryEngine, for: session)
@@ -287,21 +387,166 @@ final class AppModel {
         return result
     }
 
+    // MARK: - 進行中の会議を関連資料と照合する
+
+    /// ホットキーとメニューバーの共通入口。実行中に繰り返し押された場合は、
+    /// 新しい処理を増やさず、進行中のオーバーレイだけを前面へ戻す。
+    func requestCodeImpactAnalysis() {
+        showCodeImpactOverlay()
+        if case .analyzing = codeImpactAnalysisState { return }
+
+        let cli = selectedCodeImpactAgent
+        do {
+            _ = try codeImpactContext()
+        } catch {
+            codeImpactAnalysisState = .failed(error.localizedDescription)
+            return
+        }
+        guard settings.codeImpactConsented else {
+            codeImpactAnalysisState = .requiresConsent(cli)
+            return
+        }
+        startCodeImpactAnalysis(using: cli)
+    }
+
+    /// 外部 AI へ文字起こしを送る初回確認後、そのまま同じ操作を続行する。
+    /// 同意は関連資料との照合に限定した codeImpactConsented を立てる。
+    /// 要約側(agentSummaryConsented)には波及させない(片方の同意で
+    /// もう片方が外部送信され得るプライバシー越境を防ぐため)。
+    func confirmCodeImpactAnalysis(using cli: AgentCLI) {
+        settings.codeImpactConsented = true
+        startCodeImpactAnalysis(using: cli)
+    }
+
+    func cancelCodeImpactAnalysis() {
+        codeImpactTask?.cancel()
+        codeImpactTask = nil
+        codeImpactRequestID = nil
+        codeImpactAnalysisState = .idle
+    }
+
+    func dismissCodeImpactOverlay() {
+        codeImpactOverlayController?.close()
+    }
+
+    private var selectedCodeImpactAgent: AgentCLI {
+        let preferred = settings.codeImpactAgent
+        let available = AgentCLIDetector.shared.availableCLIs
+        guard !available.isEmpty, !available.contains(preferred) else { return preferred }
+        return available[0]
+    }
+
+    /// 直前の結果を踏まえた追加質問を投げる。completed 状態からのみ可能で、
+    /// 質問文字列が空(またはトリムで空になる)なら誤送信として無視する。
+    /// 初回の consent は完了済みなので再確認しない。
+    func requestFollowUpCodeImpact(question: String) {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard case .completed(let cli, let previousResult) = codeImpactAnalysisState else { return }
+        showCodeImpactOverlay()
+        startCodeImpactAnalysis(using: cli, followUp: (trimmed, previousResult))
+    }
+
+    private func startCodeImpactAnalysis(
+        using cli: AgentCLI,
+        followUp: (question: String, previousResult: String)? = nil
+    ) {
+        let context: (transcript: String, referenceFolder: String)
+        do {
+            context = try codeImpactContext()
+        } catch {
+            codeImpactAnalysisState = .failed(error.localizedDescription)
+            return
+        }
+
+        // ここでは settings.codeImpactAgent へは書かない。
+        // selectedCodeImpactAgent は「保存された希望が使えない時に available[0] へ
+        // フォールバックする」経路のため、この時の cli を保存し戻すと、フォールバック値が
+        // ユーザーの選択として固定化されてしまう(希望の CLI が復帰しても Codex のまま等)。
+        let model = settings.codeImpactAgentModel(for: cli)
+        codeImpactAnalysisState = .analyzing(cli)
+        codeImpactTask?.cancel()
+        let requestID = UUID()
+        codeImpactRequestID = requestID
+        codeImpactTask = Task { [weak self] in
+            do {
+                let result = try await AgentCodeImpactAnalyzer.analyze(
+                    using: cli,
+                    model: model,
+                    transcript: context.transcript,
+                    referenceFolder: context.referenceFolder,
+                    previousResult: followUp?.previousResult,
+                    followUpQuestion: followUp?.question)
+                guard !Task.isCancelled, self?.codeImpactRequestID == requestID else { return }
+                self?.codeImpactAnalysisState = .completed(cli, result)
+            } catch {
+                guard !Task.isCancelled, self?.codeImpactRequestID == requestID else { return }
+                self?.codeImpactAnalysisState = .failed(error.localizedDescription)
+            }
+            if self?.codeImpactRequestID == requestID {
+                self?.codeImpactTask = nil
+                self?.codeImpactRequestID = nil
+            }
+        }
+    }
+
+    private func codeImpactContext() throws -> (transcript: String, referenceFolder: String) {
+        guard status.active, status.transcribing, let sessionDirectory = status.sessionDirectory else {
+            throw CodeImpactContextError.inactive
+        }
+        guard let session = SessionStore.list().first(where: { $0.directory.path == sessionDirectory }) else {
+            throw CodeImpactContextError.sessionNotFound
+        }
+        guard let folder = session.folder,
+            let referenceFolder = settings.referenceFolders[folder],
+            FileManager.default.fileExists(atPath: referenceFolder)
+        else {
+            throw CodeImpactContextError.referenceFolderMissing
+        }
+        guard let transcriptURL = session.transcriptURL,
+            let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8),
+            !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw AgentSummarizeError.noTranscript
+        }
+        return (transcript, referenceFolder)
+    }
+
+    private func showCodeImpactOverlay() {
+        if codeImpactOverlayController == nil {
+            codeImpactOverlayController = CodeImpactOverlayController(model: self)
+        }
+        codeImpactOverlayController?.show()
+    }
+
     /// 停止直後の自動要約。失敗しても何も出さない(履歴の手動ボタンで
     /// いつでも作り直せるため)。要約済みのセッションには手を出さない。
+    /// 使うエンジンは settings.autoSummaryEngine で決める(nil なら何もしない)。
     private func autoSummarize(sessionID: String) {
+        guard let engine = settings.autoSummaryEngine else { return }
         Task {
             // 最後の発話の確定は、停止よりファイル書き込みがわずかに遅れることがある。
             try? await Task.sleep(for: .seconds(2))
             guard summarizingSessionID == nil,
-                OnDeviceModel.unavailableReason() == nil,
                 let session = SessionStore.list().first(where: { $0.id == sessionID }),
                 session.summaryURL == nil,
                 let url = session.transcriptURL,
                 let transcript = try? String(contentsOf: url, encoding: .utf8),
                 !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return }
-            _ = try? await generateSummary(for: session, transcript: transcript)
+            switch engine {
+            case .appleIntelligence:
+                guard OnDeviceModel.unavailableReason() == nil else { return }
+                _ = try? await generateSummary(for: session, transcript: transcript)
+            case .claude, .codex:
+                // エージェント要約は文字起こしを外部へ送るため、明示的に同意した人だけ動かす。
+                // 選択の同意が未取得(古い設定を持ち込んだケース)ならスキップ。
+                guard settings.agentSummaryConsented else { return }
+                guard let cli = AgentCLI(summaryEngine: engine),
+                    AgentCLIDetector.shared.availableCLIs.contains(cli)
+                else { return }
+                _ = try? await generateAgentSummary(for: session, using: cli)
+            }
         }
     }
 
@@ -382,6 +627,8 @@ final class AppModel {
             } else {
                 Task { await startSessionViaHotkey(record: false, transcribe: true) }
             }
+        case .analyzeCodeImpact:
+            requestCodeImpactAnalysis()
         case .openHistory:
             showHistory()
         case .openSettings:
@@ -397,14 +644,19 @@ final class AppModel {
             await startSession(record: record, transcribe: transcribe)
             return
         }
-        guard let result = HotkeyGroupPicker.choose(defaultGroup: settings.defaultSessionGroup) else {
+        // 選択画面の初期選択も、カレンダーの予定名+履歴からの推測に合わせる
+        // (同じ会議名を初期表示する = ユーザーはそのまま「開始」を押すだけで済む)。
+        // 推測できない場合は defaultSessionGroup に落ちる。
+        let calendarTitle = settings.calendarNaming ? await CalendarNamer.currentEventTitle() : nil
+        let initialGroup = autoInferredFolder(calendarTitle: calendarTitle)
+        guard let result = HotkeyGroupPicker.choose(defaultGroup: initialGroup) else {
             return
         }
         if result.skipNextTime {
             settings.hotkeyGroupPicker = false
         }
         settings.defaultSessionGroup = result.folder
-        await startSession(record: record, transcribe: transcribe, folder: result.folder)
+        await startSession(record: record, transcribe: transcribe, folder: .explicit(result.folder))
     }
 
     // MARK: - ウィンドウ表示
@@ -531,7 +783,11 @@ final class AppModel {
         _ session: SessionInfo, _ operation: (SessionInfo) throws -> SessionInfo
     ) -> String? {
         // 進行中のセッションはファイルを開いたまま書いているため動かせない。
-        guard session.directory.lastPathComponent != status.sessionID else {
+        // status.sessionID は SessionStore.relativeID を通した「グループ/ディレクトリ名」形式なので、
+        // session.id(SessionStore.list() が同じ規則で作る)と比較する。
+        // 以前は directory.lastPathComponent を比べていたが、グループ配下では両者が食い違い、
+        // 「進行中」判定が素通りしてリネーム/移動が走ってしまう不具合があった。
+        guard session.id != status.sessionID else {
             lastError = "進行中のセッションは変更できません"
             return nil
         }

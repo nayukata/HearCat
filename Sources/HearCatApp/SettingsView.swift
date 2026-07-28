@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import HearCatKit
+import HearCatSummarize
 import SwiftUI
 
 /// マイクの入力デバイス選択肢。nil(システム標準)を含めて Picker で扱えるようにする。
@@ -10,7 +11,129 @@ private struct MicDeviceOption: Identifiable, Hashable {
     var id: String { uid ?? "" }
 }
 
-/// 設定ウィンドウ。ホットキー・録音音量・agent skill の導入をここに集約する。
+private struct AgentModelOption: Equatable {
+    let value: String
+    let label: String
+}
+
+private struct CodexModelsCache: Decodable {
+    let models: [CodexModelEntry]
+}
+
+private struct CodexModelEntry: Decodable {
+    let slug: String
+    let displayName: String
+    let visibility: String
+
+    enum CodingKeys: String, CodingKey {
+        case slug
+        case displayName = "display_name"
+        case visibility
+    }
+}
+
+/// 候補から選べる一方、将来追加された完全なモデル名も直接入力できる欄。
+/// SwiftUI の TextField は grouped Form 内でフォーカスを取得できない環境があるため、
+/// 編集可能な AppKit 標準の NSComboBox を使う。
+private struct AgentModelComboBox: NSViewRepresentable {
+    @Binding var value: String
+    let suggestions: [AgentModelOption]
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(value: $value)
+    }
+
+    func makeNSView(context: Context) -> NSComboBox {
+        let comboBox = NSComboBox()
+        context.coordinator.suggestions = suggestions
+        comboBox.addItems(withObjectValues: suggestions.map(\.label))
+        comboBox.stringValue = displayValue(for: value)
+        comboBox.placeholderString = "CLI の設定を使用"
+        comboBox.isEditable = true
+        comboBox.completes = true
+        comboBox.delegate = context.coordinator
+        comboBox.target = context.coordinator
+        comboBox.action = #selector(Coordinator.selectionChanged(_:))
+        return comboBox
+    }
+
+    func updateNSView(_ comboBox: NSComboBox, context: Context) {
+        context.coordinator.value = $value
+        context.coordinator.suggestions = suggestions
+
+        let labels = suggestions.map(\.label)
+        let currentLabels = comboBox.objectValues.compactMap { $0 as? String }
+        if currentLabels != labels {
+            comboBox.removeAllItems()
+            comboBox.addItems(withObjectValues: labels)
+        }
+
+        let displayValue = displayValue(for: value)
+        if comboBox.currentEditor() == nil, comboBox.stringValue != displayValue {
+            comboBox.stringValue = displayValue
+        }
+    }
+
+    private func displayValue(for value: String) -> String {
+        suggestions.first(where: { $0.value == value })?.label ?? value
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSComboBoxDelegate {
+        var value: Binding<String>
+        var suggestions: [AgentModelOption] = []
+        /// キーストロークごとに UserDefaults を書き換えないよう、最終入力から少し
+        /// 待って 1 回だけ書き込むための遅延タスク。
+        private var debounceTask: Task<Void, Never>?
+
+        init(value: Binding<String>) {
+            self.value = value
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let comboBox = notification.object as? NSComboBox else { return }
+            scheduleWrite(from: comboBox.stringValue)
+        }
+
+        /// フォーカスを外した瞬間は、debounce の途中でも直ちに書き込む
+        /// (「値を入れて Tab で抜けた直後」に反映されないと不自然なため)。
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guard let comboBox = notification.object as? NSComboBox else { return }
+            debounceTask?.cancel()
+            writeValue(from: comboBox.stringValue)
+        }
+
+        @objc func selectionChanged(_ comboBox: NSComboBox) {
+            debounceTask?.cancel()
+            let selectedIndex = comboBox.indexOfSelectedItem
+            guard suggestions.indices.contains(selectedIndex) else {
+                writeValue(from: comboBox.stringValue)
+                return
+            }
+            let selected = suggestions[selectedIndex].value
+            if value.wrappedValue != selected { value.wrappedValue = selected }
+        }
+
+        private func scheduleWrite(from input: String) {
+            let resolved = suggestions.first(where: { $0.label == input })?.value ?? input
+            if value.wrappedValue == resolved { return }
+            debounceTask?.cancel()
+            let binding = value
+            debounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                if Task.isCancelled { return }
+                if binding.wrappedValue != resolved { binding.wrappedValue = resolved }
+            }
+        }
+
+        private func writeValue(from input: String) {
+            let resolved = suggestions.first(where: { $0.label == input })?.value ?? input
+            if value.wrappedValue != resolved { value.wrappedValue = resolved }
+        }
+    }
+}
+
+/// 設定ウィンドウ。用途別のタブに分け、関連する設定を同じ場所へ集約する。
 struct SettingsView: View {
     let model: AppModel
     @Bindable var settings: AppSettings
@@ -22,6 +145,10 @@ struct SettingsView: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginMessage: String?
     @State private var autoUpdateCheck = SparkleUpdater.shared.automaticallyChecksForUpdates
+    @State private var codexModelOptions: [AgentModelOption] = []
+    /// Claude/Codex を自動要約に選ぶ際の外部送信同意確認。ダイアログでキャンセルされたら
+    /// pending の選択に戻さず、元の選択を保つためにここへ待避する。
+    @State private var pendingAutoSummaryEngine: SummaryEngine?
 
     var body: some View {
         // 1本の長いスクロールだと下のセクションが見落とされるため、macOS の
@@ -29,11 +156,18 @@ struct SettingsView: View {
         TabView {
             Tab("一般", systemImage: "gearshape") { generalTab }
             Tab("音声", systemImage: "mic") { audioTab }
+            Tab("AI", systemImage: "sparkles") { aiTab }
             Tab("ホットキー", systemImage: "keyboard") { hotkeyTab }
         }
         .frame(width: 520, height: 480)
+        // Toggle の switch トラック(on 側の色)は Window レベルの tint だけでは
+        // system accent が優先されて青のまま残ることがある。SwitchToggleStyle に
+        // 直接 tint を渡すことで、切替スイッチのトラック色を確実にシナモン茶へ。
+        .tint(HCColor.cinnamon)
+        .toggleStyle(SwitchToggleStyle(tint: HCColor.cinnamon))
         .onAppear {
             refreshInputDevices()
+            refreshCodexModelOptions()
             // システム設定や CLI 側で変えられていても、開いた時点の実状態に合わせる。
             launchAtLogin = LoginItem.isEnabled
         }
@@ -112,36 +246,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section {
-                installEntry(
-                    title: "Skill", path: "~/.agents/skills/",
-                    installed: skillInstalled)
-                installEntry(
-                    title: "CLI", path: "~/.local/bin/hearcat",
-                    installed: cliInstalled)
-                if !(skillInstalled && cliInstalled) {
-                    Button("導入する") {
-                        installSkill()
-                    }
-                }
-                if let skillMessage {
-                    Text(skillMessage)
-                        .font(HCFont.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("AI エージェント連携")
-                    Text("AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。")
-                        .font(HCFont.footnote)
-                        .foregroundStyle(.secondary)
-                        .textCase(nil)
-                }
-            } footer: {
-                Text("各エージェント配下 (~/.claude/skills/ など) には実体へのリンクを張ります。アプリを起動するたびに自動で最新に更新します。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
     }
@@ -193,6 +297,80 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    private var aiTab: some View {
+        Form {
+            Section {
+                autoSummaryEnginePicker
+                // 選択中のエンジンが Claude/Codex の時だけ、そのモデル入力欄を出す
+                // (Apple Intelligence を選んでいるユーザーに無関係な行を見せない)。
+                if let cli = selectedAutoSummaryCLI {
+                    agentModelField(
+                        for: cli,
+                        binding: Binding(
+                            get: { settings.summaryAgentModels[cli] ?? "" },
+                            set: { settings.summaryAgentModels[cli] = $0 }))
+                }
+            } header: {
+                Text("自動要約")
+            } footer: {
+                Text("セッション停止直後に自動で走る要約に使います。Apple Intelligence はオンデバイスで完結します。Claude / Codex は文字起こしを外部の AI サービスへ送信するため、初回だけ確認します。空欄なら各 CLI の設定を使います。")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("使う AI", selection: $settings.codeImpactAgent) {
+                    ForEach(AgentCLI.allCases, id: \.self) { cli in
+                        Text(cli.displayName).tag(cli)
+                    }
+                }
+                agentModelField(
+                    for: settings.codeImpactAgent,
+                    binding: Binding(
+                        get: { settings.codeImpactAgentModels[settings.codeImpactAgent] ?? "" },
+                        set: { settings.codeImpactAgentModels[settings.codeImpactAgent] = $0 }))
+            } header: {
+                Text("関連資料との照合")
+            } footer: {
+                Text("会議中にホットキーを押すと、文字起こしを紐付けた資料フォルダと照合します。処理は読み取り専用で、明示的に押した時だけ実行されます。空欄なら各 CLI の設定を使います。")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                installEntry(
+                    title: "Skill", path: "~/.agents/skills/",
+                    installed: skillInstalled)
+                installEntry(
+                    title: "CLI", path: "~/.local/bin/hearcat",
+                    installed: cliInstalled)
+                if !(skillInstalled && cliInstalled) {
+                    Button("導入する") {
+                        installSkill()
+                    }
+                }
+                if let skillMessage {
+                    Text(skillMessage)
+                        .font(HCFont.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("AI エージェント連携")
+                    Text("AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。")
+                        .font(HCFont.footnote)
+                        .foregroundStyle(.secondary)
+                        .textCase(nil)
+                }
+            } footer: {
+                Text("各エージェント配下 (~/.claude/skills/ など) には実体へのリンクを張ります。アプリを起動するたびに自動で最新に更新します。")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
     private var hotkeyTab: some View {
         Form {
             Section {
@@ -218,6 +396,121 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// 自動要約に使うエンジンを選ぶピッカー。
+    /// Apple Intelligence が使えない Mac、検出できていない CLI は選択肢自体から外す
+    /// (選べる=動くという期待を裏切らないため)。
+    /// Claude/Codex を初めて選ぶ時は、外部送信の同意を確認するダイアログを挟み、
+    /// キャンセルなら選択を戻す。
+    private var autoSummaryEnginePicker: some View {
+        // Optional<SummaryEngine> をそのままタグにすると SwiftUI の Picker で
+        // タグの型合わせがめんどうなので、String rawValue に寄せる("off" = nil)。
+        let binding = Binding<String>(
+            get: { settings.autoSummaryEngine?.rawValue ?? "off" },
+            set: { raw in
+                let next: SummaryEngine? = raw == "off" ? nil : SummaryEngine(rawValue: raw)
+                if let next, next != .appleIntelligence, !settings.agentSummaryConsented {
+                    // 同意ダイアログが出るまでは選択を反映しない(バインディングも更新しない)。
+                    pendingAutoSummaryEngine = next
+                } else {
+                    settings.autoSummaryEngine = next
+                }
+            })
+        let onDeviceAvailable = OnDeviceModel.unavailableReason() == nil
+        let detectedCLIs = AgentCLIDetector.shared.availableCLIs
+        return Picker("自動要約に使う AI", selection: binding) {
+            Text("使わない").tag("off")
+            if onDeviceAvailable {
+                Text(SummaryEngine.appleIntelligence.displayName)
+                    .tag(SummaryEngine.appleIntelligence.rawValue)
+            }
+            ForEach(detectedCLIs, id: \.self) { cli in
+                Text(cli.displayName).tag(cli.summaryEngine.rawValue)
+            }
+        }
+        .onAppear {
+            // 前回選んだエンジンが今の環境で使えない(Apple Intelligence が無効化された、
+            // CLI をアンインストールした)なら、選ばれっぱなしにせず「使わない」に戻す。
+            //
+            // ただし CLI 検出は起動直後に zsh -lc を回すため 200〜500ms 遅れる。
+            // 検出前に「detectedCLIs が空 = 未検出」と早合点して選択を消すと、
+            // ユーザーが Claude/Codex を選んでいるだけで起動直後に設定画面を開いた瞬間、
+            // 保存済みの選択が黙って消えてしまう。検出が終わっていない間は判定しない。
+            if let current = settings.autoSummaryEngine {
+                switch current {
+                case .appleIntelligence where !onDeviceAvailable:
+                    settings.autoSummaryEngine = nil
+                case .claude, .codex:
+                    guard !detectedCLIs.isEmpty else { break }
+                    if let cli = AgentCLI(summaryEngine: current), !detectedCLIs.contains(cli) {
+                        settings.autoSummaryEngine = nil
+                    }
+                default:
+                    break
+                }
+            }
+        }
+        .confirmationDialog(
+            "自動要約で文字起こしを外部の AI サービスへ送信します。続けますか？",
+            isPresented: Binding(
+                get: { pendingAutoSummaryEngine != nil },
+                set: { if !$0 { pendingAutoSummaryEngine = nil } }),
+            presenting: pendingAutoSummaryEngine
+        ) { engine in
+            Button("続ける") {
+                settings.agentSummaryConsented = true
+                settings.autoSummaryEngine = engine
+                pendingAutoSummaryEngine = nil
+            }
+            Button("キャンセル", role: .cancel) {
+                pendingAutoSummaryEngine = nil
+            }
+        }
+    }
+
+    /// 自動要約に Claude/Codex を選んでいる時だけ、そのエンジンを返す。
+    /// Apple Intelligence や「使わない」を選んでいる時は nil。
+    private var selectedAutoSummaryCLI: AgentCLI? {
+        guard let engine = settings.autoSummaryEngine else { return nil }
+        return AgentCLI(summaryEngine: engine)
+    }
+
+    /// モデル入力欄。用途ごとに保存先が違う(要約用と照合用)ため、
+    /// ラベルと保存先の Binding を呼び出し側で決める。
+    private func agentModelField(for cli: AgentCLI, binding: Binding<String>) -> some View {
+        LabeledContent("\(cli.displayName) のモデル") {
+            AgentModelComboBox(value: binding, suggestions: modelOptions(for: cli))
+                .frame(width: 260)
+        }
+    }
+
+    private func modelOptions(for cli: AgentCLI) -> [AgentModelOption] {
+        switch cli {
+        case .claude:
+            [
+                AgentModelOption(value: "sonnet", label: "Sonnet 5"),
+                AgentModelOption(value: "opus", label: "Opus 4.8"),
+                AgentModelOption(value: "fable", label: "Fable 5"),
+            ]
+        case .codex:
+            codexModelOptions
+        }
+    }
+
+    private func refreshCodexModelOptions() {
+        let cacheURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/models_cache.json")
+        guard let data = try? Data(contentsOf: cacheURL),
+              let cache = try? JSONDecoder().decode(CodexModelsCache.self, from: data)
+        else {
+            codexModelOptions = []
+            return
+        }
+
+        codexModelOptions = cache.models
+            .filter { $0.visibility == "list" }
+            .map { AgentModelOption(value: $0.slug, label: $0.displayName) }
     }
 
     /// 入力デバイスの一覧を取得し直す。動的な抜き差し監視はスコープ外なので、
@@ -358,14 +651,21 @@ struct HotkeyRecorderField: View {
     @State private var monitor: Any?
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 10) {
             Button {
                 recording ? endRecording() : beginRecording()
             } label: {
-                Text(buttonTitle)
-                    .font(HCFont.monospaced(size: 13))
-                    .frame(minWidth: 96)
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    labelContent
+                        .frame(minWidth: 96, alignment: .trailing)
+                }
             }
+            // Button の外側で pill を組まず、label 側で各キーを独立したキーキャップに
+            // 分ける(macOS システム設定 / Discord / Raycast の同種 UI と同じ形)。
+            // これで「⌥ + Q」の各キーが独立した箱で読める。ButtonStyle は透明 wrapper で、
+            // focus ring と click ハンドリングだけ system に任せる。
+            .buttonStyle(HCKeyCapButtonStyle())
             // 割り当て済みのキーだけ消せるように、xmark は別ボタンで出す。
             // 場所は常に確保し、未設定時は透明にする(行ごとにボタンの位置がずれないように)。
             Button {
@@ -380,6 +680,85 @@ struct HotkeyRecorderField: View {
             .disabled(!clearable)
         }
         .onDisappear { endRecording() }
+    }
+
+    /// 状態に応じた label 中身。
+    /// - 録画中: cinnamon 実線の pill(入力待ちのアクティブ状態)
+    /// - 割り当て済み: 各キーを個別のキーキャップに分けて並べる
+    /// - 未設定: 灰系の破線 pill(空スロット)
+    /// 3 状態とも同じ pill 幅にすることで、行の右端が揃って落ち着いて見える。
+    @ViewBuilder
+    private var labelContent: some View {
+        if recording {
+            recordingSlot
+        } else if let hotkey = settings.hotkeys[action] {
+            HStack(spacing: 4) {
+                ForEach(Array(hotkey.display.enumerated()), id: \.offset) { _, char in
+                    keyCap(String(char))
+                }
+            }
+        } else {
+            emptySlot
+        }
+    }
+
+    /// 録画中(キー入力待ち)のプレースホルダー。emptySlot と同じ形状で、
+    /// 縁を cinnamon の実線にしてアクティブ状態を示す。テキストも cinnamon で
+    /// 「今この pill が入力を受け付けている」ことを明示する。
+    private var recordingSlot: some View {
+        Text("キーを入力…")
+            .font(HCFont.monospaced(size: 12))
+            .foregroundStyle(HCColor.cinnamon)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .frame(minWidth: 96)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(HCColor.mistDarkSurface.opacity(0.4)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(HCColor.cinnamon.opacity(0.65), lineWidth: 1.2))
+    }
+
+    /// 未設定時のクリック可能なプレースホルダー。破線の枠で「押して割り当てる空きスロット」
+    /// であることを暗示する(macOS の空スロット UI の慣用表現)。
+    /// 枠が無い薄いテキストだけだと、そもそも押せる要素に見えず設定できるアフォーダンスを失う。
+    /// 割り当て済みのキーキャップ 1〜3 個より少し横長にして、「まだ何も入っていない」余白の
+    /// 印象を出す。
+    private var emptySlot: some View {
+        Text("未設定")
+            .font(HCFont.monospaced(size: 12))
+            .foregroundStyle(HCColor.mistWhiteDim)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .frame(minWidth: 96)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(HCColor.mistDarkSurface.opacity(0.4)))
+            .overlay(
+                // 破線は「空スロット」の中立的表現。cinnamon で描くと「割り当てるべき箇所」
+                // というアクションを催促する印象が強すぎて違和感が出る。灰系で目立たせつつ
+                // 意味を持たせない: white opacity 0.3 で mistDark 上でもちゃんと視認できる。
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(
+                        Color.white.opacity(0.3),
+                        style: StrokeStyle(lineWidth: 1.2, dash: [4, 4])))
+    }
+
+    /// 1 個ぶんのキーキャップ。⌥/⌘/⌃/⇧/英字ともに同じ大きさの箱で表示する。
+    /// 記号と英字で描画幅が違っても、box の minWidth が均等なので並びが崩れない。
+    private func keyCap(_ text: String) -> some View {
+        Text(text)
+            .font(HCFont.monospaced(size: 12))
+            .foregroundStyle(HCColor.mistWhite)
+            .frame(minWidth: 22, minHeight: 22)
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(HCColor.mistDarkSurface))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(HCColor.mistDarkStroke, lineWidth: 1))
     }
 
     private var clearable: Bool {
@@ -426,5 +805,16 @@ struct HotkeyRecorderField: View {
         recording = false
         // suspend で外したホットキーを現在の設定で登録し直す。
         HotkeyCenter.shared.apply(settings.hotkeys)
+    }
+}
+
+/// HotkeyRecorderField 専用の透明 ButtonStyle。
+/// label 側で各キーキャップを既に描いているので、ここでは背景・縁を持たず、
+/// click(pressed 時にわずかに opacity を落とす)と focus ring(system 提供)だけ扱う。
+private struct HCKeyCapButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .contentShape(Rectangle())
     }
 }
