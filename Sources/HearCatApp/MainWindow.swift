@@ -40,12 +40,15 @@ struct MainWindow: View {
             } else if selection.count == 1, let id = selection.first,
                 let session = model.sessions.first(where: { $0.id == id })
             {
+                // ここで .id(session.id) を付けてビューごと作り直さない。作り直すと
+                // 選択のたびにビュー階層とアクセシビリティのノードまで全部再構築になり、
+                // 文字を差し替えるだけの切り替えが目に見えて遅くなる(実測でレイアウトが
+                // 主要因)。セッション固有の状態は SessionDetailView 側が
+                // .task(id: session.id) で畳み直す。
                 SessionDetailView(
                     model: model, session: session,
                     onDelete: { selection = [] },
                     onMove: { select($0) })
-                // 選択が変わったらプレーヤー等の内部状態を作り直す。
-                .id(session.id)
             } else if selection.count > 1 {
                 ContentUnavailableView(
                     "\(selection.count) 件のセッションを選択中",

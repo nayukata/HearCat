@@ -86,7 +86,10 @@ struct SessionDetailView: View {
             }
             content
         }
-        .task(id: session.id) { load(forceNewPlayer: true) }
+        .task(id: session.id) {
+            resetForNewSession()
+            load(forceNewPlayer: true)
+        }
         // 成功の合図は用が済んだら消す。失敗は理由が読めるよう残す。
         // 画面を離れた時と次の合図が来た時に、この待機は自動でキャンセルされる。
         .task(id: shareNotice) {
@@ -156,7 +159,21 @@ struct SessionDetailView: View {
         .controlSize(.regular)
     }
 
+    /// 本文の先頭を指すスクロール目標。切り替え時に頭出しするためだけの固定 ID。
+    private static let contentTop = "content-top"
+
     private var content: some View {
+        ScrollViewReader { proxy in
+            scrollBody
+                // ビューを使い回すため、スクロール位置は前のセッションのまま残る。
+                // 新しいセッションは先頭から読めるように頭出しする。
+                .onChange(of: session.id) {
+                    proxy.scrollTo(Self.contentTop, anchor: .top)
+                }
+        }
+    }
+
+    private var scrollBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let message = summaryError ?? autoSummaryFailureMessage {
@@ -217,6 +234,7 @@ struct SessionDetailView: View {
                 }
             }
             .padding()
+            .id(Self.contentTop)
         }
     }
 
@@ -249,6 +267,21 @@ struct SessionDetailView: View {
         }
     }
 
+    /// セッションが切り替わった時に、前のセッションの一時的な表示を持ち越さないようにする。
+    /// 以前はビュー自体を .id(session.id) で作り直すことでこれを済ませていたが、
+    /// 切り替えのたびにビュー階層ごと再構築になり表示が遅かった(MainWindow のコメント参照)。
+    /// 書き出し中(exporting)は畳まない。処理自体は裏で続いているため、ここで false に
+    /// 戻すと二重に走らせられてしまう。
+    private func resetForNewSession() {
+        summaryError = nil
+        shareNotice = nil
+        confirmingDelete = false
+        confirmingAgentCLI = nil
+        // 実行中のエージェント要約は止めない(生成は AppModel 側で走り続ける)。
+        // この画面から離れた以上キャンセル UI は出せないので、参照だけ外す。
+        agentSummarizeTask = nil
+    }
+
     /// forceNewPlayer が false の再読込(sessionsVersion 変化時)では、再生中に
     /// 途切れさせないよう、既に音声を持っているプレーヤーは作り直さない。
     private func load(forceNewPlayer: Bool) {
@@ -260,6 +293,9 @@ struct SessionDetailView: View {
         let audioURL = session.audioURL
         hasAudio = audioURL != nil
         if forceNewPlayer || player?.hasAudio != true {
+            // 前のセッションの再生と読み込みを止めてから差し替える。ビューを使い回すように
+            // なったため、ここで畳まないと切り替え後も前の録音が鳴り続ける。
+            player?.teardown()
             player = SessionPlayer(audioURL: audioURL)
         }
     }
@@ -585,6 +621,9 @@ struct PlayerView: View {
                         scrubTime = nil
                     }
                 })
+                // 録音を開き終えるまでは長さが分からない。掴めてしまうと、意味のない
+                // 位置へ飛ばせる見た目になるため、その間だけ触れなくする。
+                .disabled(!player.isReady)
 
             Text(formatPlaybackTime(player.duration))
                 .font(HCFont.monospacedDigit(.caption1))
