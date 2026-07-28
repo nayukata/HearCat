@@ -13,8 +13,7 @@ enum ReferenceFolderPicker {
     @MainActor
     static func pick(forGroup folder: String) {
         let panel = makePanel(
-            message: "「\(folder)」に資料やコードのフォルダを紐付けます。"
-                + "次回以降、Claude / Codex による要約が用語・固有名詞や参加者の前提を踏まえた内容になり、精度が上がります。")
+            message: "「\(folder)」に紐付ける資料やコードのフォルダを選んでください。")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         AppSettings.shared.referenceFolders[folder] = url.path
     }
@@ -28,9 +27,7 @@ enum ReferenceFolderPicker {
     @MainActor
     static func pickForNewGroup(onCreate: @escaping (String) -> Void) {
         let panel = makePanel(
-            message: "資料やコードのフォルダを選ぶと、そのフォルダ名で新しいグループが作られ、"
-                + "以後の録音がそこに入ります。次回以降、Claude / Codex による要約が用語・固有名詞や"
-                + "参加者の前提を踏まえた内容になり、精度が上がります。")
+            message: "資料やコードのフォルダを選んでください。選んだ名前でグループを作成します。")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let settings = AppSettings.shared
         let existingFolders = SessionStore.listFolders()
