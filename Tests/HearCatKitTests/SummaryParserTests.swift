@@ -73,7 +73,44 @@ struct SummaryParserTests {
         #expect(summary?.todos[0].assignee == nil)
     }
 
-    /// 空セクションのプレースホルダ「なし」は項目として扱わない(空表示に落とす)。
+    /// エージェント要約は担当の表記が揺れる(実測: 句点付きの「(担当: 奥田さん)。」で
+    /// 末尾一致に失敗し、担当バッジが出なかった)。揺れても担当を分離できること。
+    @Test func 担当の表記が揺れても分離する() {
+        let text = """
+            ## 概要
+            テスト。
+            ## TODO・宿題
+            - 見積もりの再提出 (担当: 奥田さん)。
+            - 契約書のたたきを共有（担当　中山さん）
+            - 検証環境の払い出し (担当者: 上村さん)
+            - 議事録の展開 (担当: 前田さん) 。
+            """
+        let summary = SummaryParser.parse(text)
+
+        #expect(summary?.todos.map(\.text) == [
+            "見積もりの再提出", "契約書のたたきを共有", "検証環境の払い出し", "議事録の展開",
+        ])
+        #expect(summary?.todos.map(\.assignee) == [
+            "奥田さん", "中山さん", "上村さん", "前田さん",
+        ])
+    }
+
+    /// 担当を特定できていない印はバッジにする価値がないため、括弧ごと落とす。
+    @Test func 担当が不明の印はバッジにしない() {
+        let text = """
+            ## 概要
+            テスト。
+            ## TODO・宿題
+            - 次回の日程調整 (担当: 不明)
+            """
+        let summary = SummaryParser.parse(text)
+
+        #expect(summary?.todos[0].text == "次回の日程調整")
+        #expect(summary?.todos[0].assignee == nil)
+    }
+
+    /// 空セクションのプレースホルダは項目として扱わない(空表示に落とす)。
+    /// オンデバイス要約は「なし」、エージェント要約は「(なし)」を出すことがある。
     @Test func なしだけのセクションは空になる() {
         let text = """
             ## 概要
@@ -82,6 +119,21 @@ struct SummaryParserTests {
             - なし
             ## TODO・宿題
             - なし
+            """
+        let summary = SummaryParser.parse(text)
+
+        #expect(summary?.decisions.isEmpty == true)
+        #expect(summary?.todos.isEmpty == true)
+    }
+
+    @Test func 括弧付きのなしも空になる() {
+        let text = """
+            ## 概要
+            雑談のみの通話。
+            ## 決定事項
+            - (なし)
+            ## TODO・宿題
+            - （特になし）
             """
         let summary = SummaryParser.parse(text)
 

@@ -120,9 +120,12 @@ public enum SummaryParser {
         }
         flushTopic()
 
-        // 空セクションのプレースホルダ「なし」は項目ではないため落とす。
-        if decisions == ["なし"] { decisions = [] }
-        if todos.count == 1, todos[0].text == "なし", todos[0].assignee == nil { todos = [] }
+        // 空セクションのプレースホルダは項目ではないため落とす。オンデバイス要約は「なし」、
+        // エージェント要約は括弧付きの「(なし)」を出すことがあり、表記が揺れる。
+        if decisions.count == 1, isEmptyPlaceholder(decisions[0]) { decisions = [] }
+        if todos.count == 1, todos[0].assignee == nil, isEmptyPlaceholder(todos[0].text) {
+            todos = []
+        }
 
         // 全セクションが空(見出しすら無い、または中身が空)の文書は構造化する意味がない。
         if overview.isEmpty && topics.isEmpty && decisions.isEmpty && todos.isEmpty {
@@ -147,19 +150,38 @@ public enum SummaryParser {
         return line
     }
 
-    /// 末尾の「(担当: 名前)」を分離する。半角・全角の括弧とコロンの揺れを許容する。
+    /// 中身が空であることを表すだけのプレースホルダか。
+    private static func isEmptyPlaceholder(_ text: String) -> Bool {
+        let stripped = text.trimmingCharacters(in: CharacterSet(charactersIn: "()（） 　"))
+        return ["なし", "特になし", "無し"].contains(stripped)
+    }
+
+    /// 末尾の「(担当: 名前)」を分離する。生成側の表記が揺れても担当を拾えるよう、
+    /// 括弧とコロンの半角・全角、「担当者」表記、コロンの省略、括弧の後ろに付いた
+    /// 句読点まで許容する(実測: エージェント要約が「(担当: 奥田さん)。」と句点付きで
+    /// 出し、末尾一致に失敗して担当バッジが出ないことがあった)。
     /// Regex は Sendable でないため static に置けず(Swift 6 の並行性チェック)、
     /// 呼び出しごとにリテラルから作る。要約は高々数十行なのでコストは無視できる。
     private static func todo(from text: String, id: Int) -> ParsedSummary.Todo {
-        let assigneePattern = /[（(]担当[:：]\s*(?<name>[^）)]+)[)）]$/
+        // 「担当」の後ろはコロンか空白のどちらかを必ず要求する。省略まで許すと
+        // 「(担当なので後回し)」のような普通の括弧書きを担当として誤検出する。
+        let assigneePattern =
+            /[（(]\s*担当者?(?:\s*[:：]\s*|\s+)(?<name>[^）)]+?)\s*[)）][\s。．.、,]*$/
         if let match = text.firstMatch(of: assigneePattern) {
             let body = text[..<match.range.lowerBound]
                 .trimmingCharacters(in: .whitespaces)
             let name = String(match.output.name).trimmingCharacters(in: .whitespaces)
             if !body.isEmpty && !name.isEmpty {
-                return .init(id: id, text: body, assignee: name)
+                // 担当を特定できなかった印(「不明」など)はバッジにする価値がないので、
+                // 括弧ごと落として本文だけを残す。
+                return .init(id: id, text: body, assignee: isUnknownAssignee(name) ? nil : name)
             }
         }
         return .init(id: id, text: text, assignee: nil)
+    }
+
+    /// 担当が特定できていないことを表すだけの名前か。
+    private static func isUnknownAssignee(_ name: String) -> Bool {
+        ["不明", "未定", "なし", "-", "—", "―"].contains(name)
     }
 }
