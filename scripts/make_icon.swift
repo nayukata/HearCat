@@ -1,44 +1,28 @@
-// HearCat のアプリアイコン(.icns)を生成する。デザインは LP (docs/index.html) と同じ
-// ネイビー地 + 青のグロー + 白い猫。実行: make icon
+// HearCat のアプリアイコン(.icns)を生成する。地は LP (web/) と同じネイビー +
+// 右上の青いグロー。絵柄は design/brand/hearcat-logo.png(白 + アルファ)を
+// ブランド色に着色して重ねる。実行: make icon
 import AppKit
 import Foundation
 
 let tokens = (
     navy: NSColor(red: 12 / 255, green: 18 / 255, blue: 38 / 255, alpha: 1),
     navy2: NSColor(red: 19 / 255, green: 27 / 255, blue: 56 / 255, alpha: 1),
-    blue: NSColor(red: 61 / 255, green: 123 / 255, blue: 255 / 255, alpha: 1)
+    blue: NSColor(red: 61 / 255, green: 123 / 255, blue: 255 / 255, alpha: 1),
+    // ブランドのアクセント色。ネイビー地の上で猫を浮かせる。
+    mark: NSColor(red: 222 / 255, green: 230 / 255, blue: 238 / 255, alpha: 1)
 )
 
-/// 猫の頭(viewBox 26x26 の SVG パスと同じ形)を CGPath にする。
-func catPath(in rect: CGRect) -> (head: CGPath, eyes: CGPath) {
-    let s = min(rect.width, rect.height) / 26
-    let ox = rect.minX + (rect.width - 26 * s) / 2
-    let oy = rect.minY + (rect.height - 26 * s) / 2
-    func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: ox + x * s, y: oy + y * s) }
-
-    let head = CGMutablePath()
-    head.move(to: pt(3, 10))
-    head.addLine(to: pt(6, 3))
-    head.addLine(to: pt(10, 8))
-    head.addLine(to: pt(16, 8))
-    head.addLine(to: pt(20, 3))
-    head.addLine(to: pt(23, 10))
-    head.addLine(to: pt(23, 16))
-    let center = pt(13, 16)
-    let transform = CGAffineTransform(translationX: center.x, y: center.y)
-        .scaledBy(x: 10 * s, y: 7.5 * s)
-    head.addArc(
-        center: .zero, radius: 1, startAngle: 0, endAngle: .pi, clockwise: false,
-        transform: transform)
-    head.closeSubpath()
-
-    let eyes = CGMutablePath()
-    for x in [9.5, 16.5] {
-        let r = 1.6 * s
-        eyes.addEllipse(in: CGRect(x: ox + x * s - r, y: oy + 14 * s - r, width: r * 2, height: r * 2))
-    }
-    return (head, eyes)
-}
+/// ロゴ画像。スクリプトの位置から辿る(実行時の作業ディレクトリに依存させない)。
+let logo: CGImage = {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // scripts/
+        .deletingLastPathComponent()   // リポジトリ直下
+    let url = repoRoot.appendingPathComponent("design/brand/hearcat-logo.png")
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+        let image = CGImageSourceCreateImageAtIndex(src, 0, nil)
+    else { fatalError("ロゴが読めない: \(url.path)") }
+    return image
+}()
 
 /// 指定サイズのアイコン1枚を描く(y 下向き座標)。
 func drawIcon(side: CGFloat, ctx: CGContext) {
@@ -72,17 +56,32 @@ func drawIcon(side: CGFloat, ctx: CGContext) {
             endRadius: plate.width * 0.75, options: [])
     }
 
-    // 猫: 白の輪郭 + 目。
-    let catRect = plate.insetBy(dx: plate.width * 0.21, dy: plate.height * 0.21)
-    let (head, eyes) = catPath(in: catRect)
-    ctx.setStrokeColor(NSColor.white.cgColor)
-    ctx.setLineWidth(max(1, catRect.width / 26 * 2))
-    ctx.setLineJoin(.round)
-    ctx.addPath(head)
-    ctx.strokePath()
-    ctx.setFillColor(NSColor.white.cgColor)
-    ctx.addPath(eyes)
-    ctx.fillPath()
+    // 猫: 縦長のロゴを板の内側に収め、縦横比を保って中央に置く。
+    let inset = plate.width * 0.15
+    let box = plate.insetBy(dx: inset, dy: inset)
+    let scale = min(box.width / CGFloat(logo.width), box.height / CGFloat(logo.height))
+    let art = CGRect(
+        x: box.midX - CGFloat(logo.width) * scale / 2,
+        y: box.midY - CGFloat(logo.height) * scale / 2,
+        width: CGFloat(logo.width) * scale,
+        height: CGFloat(logo.height) * scale)
+    // このコンテキストは呼び出し元で y 下向きに反転してある。パスはその前提で
+    // 書いてあるが、CGImage は反転の影響をそのまま受けて上下が逆に出る。
+    // 画像を描くあいだだけ反転を打ち消す。
+    ctx.saveGState()
+    ctx.translateBy(x: art.minX, y: art.maxY)
+    ctx.scaleBy(x: 1, y: -1)
+    let local = CGRect(x: 0, y: 0, width: art.width, height: art.height)
+    // ロゴは白 + アルファ。透明レイヤ内で sourceIn 合成し、アルファを保ったまま着色する。
+    ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+    ctx.draw(logo, in: local)
+    ctx.setBlendMode(.sourceIn)
+    ctx.setFillColor(tokens.mark.cgColor)
+    ctx.fill(local)
+    ctx.setBlendMode(.normal)
+    ctx.endTransparencyLayer()
+    ctx.restoreGState()
+
     ctx.restoreGState()
 }
 
@@ -92,6 +91,7 @@ func renderPNG(side: Int, to url: URL) throws {
         space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
     else { fatalError("CGContext 作成失敗") }
+    ctx.interpolationQuality = .high
     // CGContext は y 上向きなので、描画コードの y 下向き座標に合わせて反転する。
     ctx.translateBy(x: 0, y: CGFloat(side))
     ctx.scaleBy(x: 1, y: -1)
