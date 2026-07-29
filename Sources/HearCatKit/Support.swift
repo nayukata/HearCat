@@ -75,9 +75,12 @@ private final class DebugLogFile: @unchecked Sendable {
 
 private let debugLogFile = DebugLogFile()
 
-public func debugLog(_ message: String) {
+/// 診断ログ。HEARCAT_DEBUG 未設定なら何もしない。
+/// メッセージを @autoclosure で受けるのは、無効時に文字列の組み立て自体を起こさせないため
+/// (音声バッファごと・秒単位で回るループからも呼ばれる)。
+public func debugLog(_ message: @autoclosure () -> String) {
     guard hearcatDebug else { return }
-    debugLogFile.write(message)
+    debugLogFile.write(message())
 }
 
 /// エラーの報告。常に stderr へ出し、HEARCAT_DEBUG 時は診断ファイルにも残す。

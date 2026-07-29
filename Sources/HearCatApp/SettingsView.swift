@@ -212,11 +212,21 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("無音が5分続いたら自動で終了", isOn: $settings.autoStopOnSilence)
+                Toggle("会議の時間になったら自動で録音を開始", isOn: $settings.meetingAutoStart)
             } header: {
-                Text("自動停止")
+                Text("自動開始")
             } footer: {
-                Text("マイクとシステム音声の両方が5分間無音のとき、セッションを自動で終了します。会議のあとに停止し忘れても、録音と文字起こしが伸び続けません。")
+                Text("会議 URL があるか、自分以外の参加者がいる予定だけが対象です。開始 30 秒前に画面右上へ予告が出るので、録りたくない回はそこで取り消せます。終日の予定と、辞退した予定は対象外です。")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("無音が5分続いたら停止するか確認", isOn: $settings.confirmStopOnSilence)
+            } header: {
+                Text("無音の確認")
+            } footer: {
+                Text("マイクとシステム音声の両方が5分間無音のとき、画面右上で停止するかを尋ねます。返事があるまで録音は続くので、会議が再開しても記録は途切れません。")
                     .font(HCFont.caption)
                     .foregroundStyle(.secondary)
             }

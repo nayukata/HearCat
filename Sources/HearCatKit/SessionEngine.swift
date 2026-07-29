@@ -218,10 +218,14 @@ public final class SessionEngine {
     /// 確定/暫定の文字起こしイベント。UI のライブ表示用。MainActor 上で呼ばれる。
     public var onEvent: ((TranscriberEvent) -> Void)?
     public var onStatusChange: ((Status) -> Void)?
-    /// 全チャンネル(マイクとシステム音声)の無音が autoStopSilence 続いた時の通知。
-    /// MainActor 上で呼ばれる。エンジンが自分で stop() を呼ばないのは、停止後の
-    /// 後処理(自動要約・履歴更新など)がアプリ側の停止経路に乗っているため。
-    public var onAutoStop: (() -> Void)?
+    /// 全チャンネル(マイクとシステム音声)の無音が prolongedSilence 続いた時の通知。
+    /// MainActor 上で呼ばれる。エンジンは停止を判断しない(ここで自動停止すると、
+    /// 判定を1つ外しただけで会議の記録が途中で切れるため)。止めるかどうかは
+    /// アプリ側がユーザーに確かめる。
+    public var onProlongedSilence: (() -> Void)?
+    /// onProlongedSilence を通知したあと、また発話が戻ってきた時の通知。
+    /// 会議が再開したなら停止の確認は用済みなので、UI から引っ込めるために使う。
+    public var onSilenceEnded: (() -> Void)?
     /// 入力レベル(RMS)の通知。UI のメーター表示用。
     /// pump(音声転送タスク)から MainActor の外で呼ばれるため Sendable であること。
     public var onLevel: (@Sendable (_ speaker: String, _ level: Float) -> Void)?
@@ -250,17 +254,28 @@ public final class SessionEngine {
     /// 使う入力デバイスの UID(nil はシステム標準)。セッション中の切り替えはスコープ外で、
     /// 次にセッションを開始した時に反映される。
     private var micDeviceUID: String?
-    /// 無音自動停止のオン/オフ。セッション外からも変更でき、セッション中も即座に効く
+    /// 無音監視のオン/オフ。セッション外からも変更でき、セッション中も即座に効く
     /// (watchdog が毎回読むため)。watchdog は MainActor 上で回るのでロック不要。
-    private var autoStopEnabled = true
-    /// 無音がこの秒数続いたらセッションを自動停止する。SilenceGate.hangover(発話の
-    /// 区切り検出)とは目的が別で、こちらは「もう誰も話していない=セッション終了」の判定。
-    private static let autoStopSilence: TimeInterval = 5 * 60
+    private var silenceWatchEnabled = true
+    /// 無音がこの秒数続いたら「もう誰も話していない」とみなして通知する。
+    /// SilenceGate.hangover(発話の区切り検出)とは目的が別。
+    private static let prolongedSilence: TimeInterval = 5 * 60
+    /// 「誰かが話している」とみなす音量の下限。
+    ///
+    /// SilenceGate.defaultThreshold(0.001)を流用してはいけない。あちらは文字起こしを
+    /// 削らないための控えめな値で、暗騒音やスピーカーからの回り込み(実測 ≈0.002)も
+    /// 素通しする。無音判定に使うと、誰も話していなくても環境音が毎秒 lastVoiceAt を
+    /// 更新してしまい、5分の無音が溜まらない(実測: 既定オンのまま、最後の発話から
+    /// 6分以上経っても終了しなかったセッションがある)。通常の発話は 0.01 前後あるため、
+    /// 回り込みより十分高く、発話より十分低いこの値で切る。
+    /// この値なら静かな部屋で無音を検知できることは実機で確認済み。
+    /// (pump は MainActor の外で回るため nonisolated)
+    private nonisolated static let speechLevel: Float = 0.006
     /// 無音の監視タスク。teardown で必ず止める。
-    private var autoStopTask: Task<Void, Never>?
-    /// 最後に発話(または実音声)を検知した時刻。pump が更新し watchdog が読む。
-    /// setAutoStop での「オフ→オン」切替時に、無効化中に溜まった無音を新しい起点として
-    /// リセットするためインスタンスからも触れるように保持する。
+    private var silenceWatchTask: Task<Void, Never>?
+    /// 最後に発話を検知した時刻。pump と確定文の消費が更新し watchdog が読む。
+    /// setSilenceWatch での「オフ→オン」切替時に、無効化中に溜まった無音を新しい
+    /// 起点としてリセットするためインスタンスからも触れるように保持する。
     private var lastVoiceAt: OSAllocatedUnfairLock<Date>?
 
     public init(locale: Locale = Locale(identifier: "ja-JP")) {
@@ -315,6 +330,12 @@ public final class SessionEngine {
         let toggles = Toggles(recording: record, transcribing: transcribe)
         self.toggles = toggles
 
+        // 無音監視の判定材料。音量(pump)と確定文(eventTask)の両方が更新し、
+        // watchdog が読む。音量だけに頼らないのは、環境音は音量で誤魔化せても
+        // 「認識器が文を確定させた」は人が話した証拠として強いため。
+        let lastVoiceAt = OSAllocatedUnfairLock(initialState: Date())
+        self.lastVoiceAt = lastVoiceAt
+
         let (events, eventSink) = AsyncStream<TranscriberEvent>.makeStream()
         self.eventSink = eventSink
 
@@ -326,6 +347,8 @@ public final class SessionEngine {
         eventTask = Task { [weak self] in
             var echoTextFilter = EchoTextFilter()
             for await event in events {
+                // 確定文が出た = 誰かが実際に話した。無音監視の起点を更新する。
+                if case .final = event { lastVoiceAt.withLock { $0 = Date() } }
                 switch event {
                 case .final(let segment) where segment.speaker == "相手":
                     // 記録時刻は「今」を使う(segment.timestamp は発話開始時刻で、確定が
@@ -393,11 +416,8 @@ public final class SessionEngine {
         self.recorder = recorder
 
         // --- pump: 音源 → 文字起こし/録音への分岐 ---
-        // 無音自動停止の判定材料。どちらかのチャンネルで音が鳴るたびに pump が更新し、
-        // watchdog(MainActor)が読む。録音/文字起こしのトグルとは独立に更新する
-        // (録音だけのセッションでも自動停止は効かせたいため)。
-        let lastVoiceAt = OSAllocatedUnfairLock(initialState: Date())
-        self.lastVoiceAt = lastVoiceAt
+        // 無音監視の音量側の更新はここで行う。録音/文字起こしのトグルとは独立に
+        // 更新する(録音だけのセッションでも無音の確認は効かせたいため)。
         let onLevel = self.onLevel
         let micBuffers = mic.buffers
         let micGateSettings = self.micGateSettings
@@ -410,7 +430,10 @@ public final class SessionEngine {
                 // エコー除去のためにここでしきい値を動かすことはしない
                 // (理由は EchoTextFilter のコメントを参照)。
                 let threshold = micGateSettings.snapshot().micThreshold ?? SilenceGate.defaultThreshold
-                if level >= threshold { lastVoiceAt.withLock { $0 = Date() } }
+                // 無音判定は発話レベルで切る(理由は speechLevel を参照)。ただし騒がしい
+                // 部屋で入力感度をそれより高く設定している場合は、そちらを下限にする。
+                // 感度より下は文字起こしにも渡らない音なので、発話として数える理由がない。
+                if level >= max(threshold, Self.speechLevel) { lastVoiceAt.withLock { $0 = Date() } }
                 // ゲートは文字起こしにだけ効かせる。録音は無音も含めて忠実に残す。
                 if toggles.transcribing.withLock({ $0 }) {
                     switch gate.action(for: item.buffer, level: level, threshold: threshold) {
@@ -437,7 +460,7 @@ public final class SessionEngine {
                 for await item in systemBuffers {
                     let level = rmsLevel(item.buffer)
                     onLevel?("相手", level)
-                    if level >= SilenceGate.defaultThreshold { lastVoiceAt.withLock { $0 = Date() } }
+                    if level >= Self.speechLevel { lastVoiceAt.withLock { $0 = Date() } }
                     if toggles.transcribing.withLock({ $0 }) {
                         switch gate.action(for: item.buffer, level: level) {
                         case .open:
@@ -455,19 +478,31 @@ public final class SessionEngine {
             })
         }
 
-        // --- 無音自動停止の watchdog ---
+        // --- 無音監視の watchdog ---
         // MainActor のタスクとして回す(sleep 中はスレッドを塞がない)。判定の粒度は
-        // 15秒(最悪 5分15秒で停止)で十分なので、バッファごとの判定はしない。
-        autoStopTask = Task { [weak self] in
+        // 15秒(最悪 5分15秒で通知)で十分なので、バッファごとの判定はしない。
+        //
+        // 通知は「無音に入った1回だけ」。毎 tick 呼ぶと同じ確認を延々と出し直すことになる。
+        // 発話が戻ったら onSilenceEnded を出して、次の無音でまた通知できる状態に戻す。
+        silenceWatchTask = Task { [weak self] in
+            var notified = false
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled, let self else { return }
-                guard self.autoStopEnabled else { continue }
                 let silentFor = Date().timeIntervalSince(lastVoiceAt.withLock { $0 })
-                if silentFor >= Self.autoStopSilence {
-                    debugLog("autoStop: 無音が \(Int(silentFor)) 秒続いたためセッションを自動停止")
-                    self.onAutoStop?()
-                    return
+                // 発火しない不具合(しきい値が環境ノイズに埋もれていた)を、次からは
+                // ログだけで切り分けられるようにする。
+                debugLog("無音監視: 直近の発話から \(Int(silentFor)) 秒")
+                let isSilent = self.silenceWatchEnabled && silentFor >= Self.prolongedSilence
+                if isSilent, !notified {
+                    notified = true
+                    debugLog("無音監視: 無音が \(Int(silentFor)) 秒続いたため停止を確認する")
+                    self.onProlongedSilence?()
+                } else if !isSilent, notified {
+                    // 発話が戻った場合も、監視自体がオフにされた場合もここへ来る。
+                    // どちらも「確認を出したままにしておく理由が消えた」状態。
+                    notified = false
+                    self.onSilenceEnded?()
                 }
             }
         }
@@ -508,9 +543,9 @@ public final class SessionEngine {
     }
 
     private func teardown() async {
-        // 0. 無音監視を止める(自動停止起点の teardown 中に再発火させない)。
-        autoStopTask?.cancel()
-        autoStopTask = nil
+        // 0. 無音監視を止める(停止処理の最中に確認を出し直さない)。
+        silenceWatchTask?.cancel()
+        silenceWatchTask = nil
         lastVoiceAt = nil
 
         // 1. 音源を止めてバッファストリームを finish させ、pump が末尾まで流し切るのを待つ。
@@ -579,15 +614,15 @@ public final class SessionEngine {
         micDeviceUID = uid
     }
 
-    /// 無音自動停止のオン/オフを変える。セッション中でも即座に効く
+    /// 無音監視のオン/オフを変える。セッション中でも即座に効く
     /// (次のセッションにも引き継がれる。setGains と同じ方針)。
     ///
     /// オフ→オンへ切り替える瞬間は、無効化中に溜まった無音を「これ以前」として扱う。
     /// リセットしないと、無音のまま長時間作業したセッションでオンに戻した直後の watchdog
-    /// tick が「5分以上の無音」と判定して即停止してしまう。
-    public func setAutoStop(enabled: Bool) {
-        let wasEnabled = autoStopEnabled
-        autoStopEnabled = enabled
+    /// tick が「5分以上の無音」と判定して、いきなり確認を出してしまう。
+    public func setSilenceWatch(enabled: Bool) {
+        let wasEnabled = silenceWatchEnabled
+        silenceWatchEnabled = enabled
         if enabled, !wasEnabled {
             lastVoiceAt?.withLock { $0 = Date() }
         }

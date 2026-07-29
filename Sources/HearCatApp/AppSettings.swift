@@ -147,27 +147,26 @@ final class AppSettings {
         }
     }
 
-    /// 新規セッションを入れるグループ。nil は未分類。
-    var defaultSessionGroup: String? {
-        didSet {
-            if let defaultSessionGroup {
-                UserDefaults.standard.set(defaultSessionGroup, forKey: Self.defaultSessionGroupKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: Self.defaultSessionGroupKey)
-            }
-        }
-    }
-
     /// ホットキーでセッションを開始する際、グループ選択画面を挟むか。
     var hotkeyGroupPicker: Bool {
         didSet { UserDefaults.standard.set(hotkeyGroupPicker, forKey: Self.hotkeyGroupPickerKey) }
     }
 
-    /// 無音(マイクとシステム音声の両方)が5分続いたらセッションを自動で終了するか。
-    var autoStopOnSilence: Bool {
+    /// 無音(マイクとシステム音声の両方)が5分続いたら、セッションを止めるか確認するか。
+    /// 保存キーは自動終了だった頃のまま(既存ユーザーのオン/オフを引き継ぐため)。
+    var confirmStopOnSilence: Bool {
         didSet {
-            UserDefaults.standard.set(autoStopOnSilence, forKey: Self.autoStopOnSilenceKey)
-            autoStopChanged?()
+            UserDefaults.standard.set(confirmStopOnSilence, forKey: Self.confirmStopOnSilenceKey)
+            silenceWatchChanged?()
+        }
+    }
+
+    /// カレンダーの会議が始まる時刻に、録音を自動で開始するか。
+    /// 既定はオフ。勝手に録音が始まる機能は、ユーザーが自分で入れる形にする。
+    var meetingAutoStart: Bool {
+        didSet {
+            UserDefaults.standard.set(meetingAutoStart, forKey: Self.meetingAutoStartKey)
+            meetingAutoStartChanged?()
         }
     }
 
@@ -175,7 +174,8 @@ final class AppSettings {
     @ObservationIgnored var hotkeysChanged: (() -> Void)?
     @ObservationIgnored var micGateChanged: (() -> Void)?
     @ObservationIgnored var micDeviceChanged: (() -> Void)?
-    @ObservationIgnored var autoStopChanged: (() -> Void)?
+    @ObservationIgnored var silenceWatchChanged: (() -> Void)?
+    @ObservationIgnored var meetingAutoStartChanged: (() -> Void)?
 
     private static let micGainKey = "micGain"
     private static let systemGainKey = "systemGain"
@@ -196,9 +196,11 @@ final class AppSettings {
     private static let legacyAgentModelsKey = "agentModels"
     private static let legacyCodeImpactModelsKey = "codeImpactModels"
     private static let autoSummaryEngineKey = "autoSummaryEngine"
-    private static let defaultSessionGroupKey = "defaultSessionGroup"
     private static let hotkeyGroupPickerKey = "hotkeyGroupPicker"
-    private static let autoStopOnSilenceKey = "autoStopOnSilence"
+    /// 「無音が5分続いたら自動で終了」だった頃からのキー。挙動は確認ダイアログに
+    /// 変わったが、ユーザーが選んだオン/オフは引き継ぐためキー名は変えない。
+    private static let confirmStopOnSilenceKey = "autoStopOnSilence"
+    private static let meetingAutoStartKey = "meetingAutoStart"
 
     private init() {
         let defaults = UserDefaults.standard
@@ -257,9 +259,12 @@ final class AppSettings {
         } else {
             autoSummaryEngine = defaultAutoSummaryEngine
         }
-        defaultSessionGroup = defaults.string(forKey: Self.defaultSessionGroupKey)
+        // 「既定グループ」は廃止した。残しておくと、ユーザーが選んでいないグループへ
+        // セッションが溜まり続ける原因になるため、保存値ごと掃除する。
+        defaults.removeObject(forKey: "defaultSessionGroup")
         hotkeyGroupPicker = defaults.object(forKey: Self.hotkeyGroupPickerKey) as? Bool ?? true
-        autoStopOnSilence = defaults.object(forKey: Self.autoStopOnSilenceKey) as? Bool ?? true
+        confirmStopOnSilence = defaults.object(forKey: Self.confirmStopOnSilenceKey) as? Bool ?? true
+        meetingAutoStart = defaults.object(forKey: Self.meetingAutoStartKey) as? Bool ?? false
         if let data = defaults.data(forKey: Self.referenceFoldersKey),
             let decoded = try? JSONDecoder().decode([String: String].self, from: data)
         {

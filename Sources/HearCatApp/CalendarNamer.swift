@@ -10,15 +10,7 @@ enum CalendarNamer {
     /// 今の時刻に重なる(またはまもなく始まる)予定のタイトル。
     /// 許可が下りない・予定が無い場合は nil(セッションは日時のみの名前になる)。
     static func currentEventTitle() async -> String? {
-        let store = EKEventStore()
-        switch EKEventStore.authorizationStatus(for: .event) {
-        case .fullAccess:
-            break
-        case .notDetermined:
-            guard (try? await store.requestFullAccessToEvents()) == true else { return nil }
-        default:
-            return nil
-        }
+        guard let store = await CalendarAccess.authorizedStore() else { return nil }
 
         let now = Date()
         let predicate = store.predicateForEvents(

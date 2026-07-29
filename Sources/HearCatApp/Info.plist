@@ -32,7 +32,7 @@
     <key>NSAudioCaptureUsageDescription</key>
     <string>HearCat は通話相手など、Mac から出る音声を文字起こし・録音するためにシステム音声を録音します。</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>HearCat はセッション開始時に今の予定名をセッション名として自動で付けるためにカレンダーを読み取ります。</string>
+    <string>HearCat は今の予定名をセッション名として自動で付けたり、会議の時間になったら録音を自動で開始したりするためにカレンダーを読み取ります。</string>
     <!-- セッションの受け渡しファイル(.hearcat)。ダブルクリックで HearCat が開き、
          中身を確認してから取り込める(SessionPackage.swift 参照)。
          中身は zip だが com.pkware.zip-archive には conform させない。

@@ -17,36 +17,15 @@ final class CodeImpactOverlayController {
     private static let entryOffsetY: CGFloat = 6
 
     init(model: AppModel) {
-        // .closable は付けない。付けると Cmd+W が NSPanel の close() を直接呼び、
-        // SwiftUI 側の onExitCommand → dismissCodeImpactOverlay を経由しないため、
-        // codeImpactTask(claude/codex サブプロセス)がキャンセルされないまま裏で走り続け、
-        // 状態が固定される。閉じる導線は、ヘッダー右上の × ボタンと onExitCommand(Esc)、
-        // フッターの ⌘W 相当のショートカットに集約する。
-        panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
-            styleMask: [.titled, .fullSizeContentView, .utilityWindow, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false)
-        panel.title = "関連資料との照合"
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.isFloatingPanel = true
-        panel.level = .floating
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        // 表面色はアプリ側の HCColor.mistDark に合わせる(背景をここで塗ると
-        // タイトルバー領域と content の色が食い違うため、透過にして SwiftUI 側に任せる)。
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.contentViewController = NSHostingController(
-            rootView: CodeImpactOverlayView(model: model)
-                .environment(\.colorScheme, .dark))
+        // 閉じるボタンを持たないのは FloatingPanel の方針どおり。このパネルでは特に、
+        // Cmd+W や × が NSPanel の close() を直接呼ぶと SwiftUI 側の onExitCommand →
+        // dismissCodeImpactOverlay を経由せず、codeImpactTask(claude/codex サブプロセス)が
+        // キャンセルされないまま裏で走り続ける。閉じる導線は、ヘッダー右上の × ボタンと
+        // onExitCommand(Esc)、フッターの ⌘W 相当のショートカットに集約する。
+        panel = FloatingPanel.make(
+            size: NSSize(width: 520, height: 480),
+            title: "関連資料との照合",
+            content: CodeImpactOverlayView(model: model))
     }
 
     func show() {
@@ -107,15 +86,14 @@ final class CodeImpactOverlayController {
         return visibleFrame.intersects(panel.frame)
     }
 
+    /// このパネルはユーザーがホットキーで自分から呼ぶため、マウスのある画面に出す
+    /// (呼んだ瞬間の注意はカーソルの近くにある)。
     private func positionNearTopRight() {
         let mouseLocation = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main
-        guard let visibleFrame = screen?.visibleFrame else { return }
-        let margin: CGFloat = 24
-        let origin = NSPoint(
-            x: visibleFrame.maxX - panel.frame.width - margin,
-            y: visibleFrame.maxY - panel.frame.height - margin)
-        panel.setFrameOrigin(origin)
+        guard let screen else { return }
+        panel.setFrameOrigin(
+            FloatingPanel.topRightOrigin(of: panel, in: screen, margin: 24))
     }
 }
 

@@ -186,6 +186,26 @@ struct HCSecondaryButtonStyle: ButtonStyle {
     }
 }
 
+/// 主要な操作に使う primary button のスタイル。secondary と対で使い、
+/// 1つの画面に1つだけ置く(押してほしい先が2つあると、どちらも押されなくなる)。
+struct HCPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(HCFont.style(.callout, weight: .semibold))
+            .foregroundStyle(HCColor.mistDark)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(configuration.isPressed ? HCColor.cinnamonStroke : HCColor.cinnamon))
+    }
+}
+
+extension ButtonStyle where Self == HCPrimaryButtonStyle {
+    /// cinnamon 塗りの primary スタイル。
+    static var hcPrimary: HCPrimaryButtonStyle { HCPrimaryButtonStyle() }
+}
+
 extension ButtonStyle where Self == HCSecondaryButtonStyle {
     /// 落ち着いた secondary スタイル。ヘッダー右端のアクションボタン等に使う。
     static var hcSecondary: HCSecondaryButtonStyle { HCSecondaryButtonStyle() }

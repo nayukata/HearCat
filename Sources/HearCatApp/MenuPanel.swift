@@ -118,9 +118,9 @@ struct MenuPanel: View {
         .disabled(model.busy)
     }
 
-    /// 開始するセッションを入れるグループの選択。選択は即座に defaultSessionGroup へ
-    /// 保存し、次回の既定にする(ここで選んだ内容が、次にホットキーで開始する時の
-    /// 既定グループにもなる)。
+    /// 開始するセッションを入れるグループの選択。表示は「次のセッションが入る先」で、
+    /// 今の予定から推測した結果もここに出る。手で選び直すと、その予定の間はその選択が
+    /// 優先され、同時に「予定が無いときの既定」としても覚える(AppModel.selectFolder)。
     private var groupPicker: some View {
         Picker("グループ", selection: groupBinding) {
             Text("未分類").tag(String?.none)
@@ -133,8 +133,8 @@ struct MenuPanel: View {
 
     private var groupBinding: Binding<String?> {
         Binding(
-            get: { model.settings.defaultSessionGroup },
-            set: { model.settings.defaultSessionGroup = $0 })
+            get: { model.plannedFolder },
+            set: { model.selectFolder($0) })
     }
 
     /// 資料フォルダ紐付けの誘導を押した時の遷移先。既にグループを選んでいれば
@@ -150,7 +150,7 @@ struct MenuPanel: View {
     /// 意味の無い項目を出さない(MainWindow.swift の同種の判定と同じ扱い)。
     private var referenceFolderLinkTarget: ReferenceFolderLinkTarget? {
         guard !AgentCLIDetector.shared.availableCLIs.isEmpty else { return nil }
-        guard let folder = model.settings.defaultSessionGroup else {
+        guard let folder = model.plannedFolder else {
             return .newGroupFromUnclassified
         }
         return model.settings.referenceFolders[folder] == nil ? .existingGroup(folder) : nil
@@ -172,7 +172,7 @@ struct MenuPanel: View {
                 Task {
                     guard let folder = await ReferenceFolderPicker.pickForNewGroup(from: nil)
                     else { return }
-                    model.settings.defaultSessionGroup = folder
+                    model.selectFolder(folder)
                     model.refreshSessions()
                 }
             }

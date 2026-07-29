@@ -14,7 +14,7 @@ enum CodeImpactAnalysisState {
 }
 
 /// セッション開始時にどのグループへ入れるかの指示。
-/// - auto: カレンダーの予定名と履歴から推測し、外れたら defaultSessionGroup に落とす。
+/// - auto: カレンダーの予定名と履歴から推測し、推測できなければ未分類にする。
 /// - explicit: 呼び出し側(ホットキーのグループ選択画面など)が確定した値。nil は未分類。
 enum SessionFolder: Sendable {
     case auto
@@ -134,9 +134,34 @@ final class AppModel {
     /// 完了直前まで遅れるため、SessionDetailView が読み直すきっかけに使う。
     private(set) var sessionsVersion = 0
 
-    /// グループ選択をどの予定名に合わせたか。同じ予定の間に手で選び直した
-    /// グループを、パネルを開き直すたびに上書きしないための記憶。
+    /// 次のセッションが入るグループ(未分類なら nil)。パネルのグループ表示と、
+    /// 実際の保存先はこれ1本で決める。
+    ///
+    /// この値は保存しない。以前は「既定グループ」として設定に残していたが、
+    /// 一度どこかへ入れると以後のセッションが黙って同じグループへ吸い込まれ、
+    /// ユーザーが選んでいない場所へ会議の記録が溜まっていた。グループを覚えるのは
+    /// 予定名ごと(inferSessionFolder が履歴から引く)に限り、それ以外は未分類にする。
+    private(set) var plannedFolder: String?
+    /// plannedFolder をどの予定に合わせたか(予定が無ければ nil)。
     @ObservationIgnored private var appliedGroupCalendarTitle: String?
+    /// その予定の間に、ユーザーが手でグループを選び直したか。
+    /// 選び直した分は、パネルを開き直しても推測で上書きしない。
+    @ObservationIgnored private var folderChosenManually = false
+
+    /// カレンダーの会議に合わせて録音を始める見張り役。設定がオフの間は止めておく。
+    @ObservationIgnored private var meetingAutoStartScheduler: MeetingAutoStartScheduler?
+    /// 予告を出したあと、開始時刻まで待っているタスク。「今回はやめる」で取り消す。
+    @ObservationIgnored private var pendingMeetingStart: Task<Void, Never>?
+    /// いま浮遊パネルに出している確認の種類。別の用件の確認を、あとから来た
+    /// 無関係な合図で消してしまわないために持つ。
+    @ObservationIgnored private var activeNudge: NudgeKind?
+
+    private enum NudgeKind {
+        /// 会議が始まるので録音を開始する、という予告。
+        case meetingStart
+        /// 無音が続いたので止めるか、という確認。
+        case silence
+    }
 
     /// 直前の自動要約の失敗。詳細画面で理由を出し、手動で作り直せるようにする
     /// (握りつぶすと「要約が出ない」以上のことがユーザーに何も伝わらない)。
@@ -188,15 +213,30 @@ final class AppModel {
         settings.micDeviceChanged = { [weak self] in
             self?.applyMicDevice()
         }
-        engine.setAutoStop(enabled: settings.autoStopOnSilence)
-        settings.autoStopChanged = { [weak self] in
+        engine.setSilenceWatch(enabled: settings.confirmStopOnSilence)
+        settings.silenceWatchChanged = { [weak self] in
             guard let self else { return }
-            engine.setAutoStop(enabled: settings.autoStopOnSilence)
+            engine.setSilenceWatch(enabled: settings.confirmStopOnSilence)
         }
-        // 無音自動停止も手動停止と同じ経路(stopSession)を通し、自動要約などの
-        // 後処理を素通りさせない。
-        engine.onAutoStop = { [weak self] in
-            Task { await self?.stopSession() }
+        // 無音が続いても勝手には止めない。止めるかどうかを画面で確かめ、
+        // 止める場合は手動停止と同じ経路(stopSession)を通す
+        // (自動要約などの後処理を素通りさせないため)。
+        engine.onProlongedSilence = { [weak self] in
+            self?.presentSilenceNudge()
+        }
+        engine.onSilenceEnded = { [weak self] in
+            self?.dismissNudge(.silence)
+        }
+        let meetingScheduler = MeetingAutoStartScheduler()
+        meetingScheduler.onDue = { [weak self] meeting in
+            self?.presentMeetingStartNudge(for: meeting)
+        }
+        meetingAutoStartScheduler = meetingScheduler
+        meetingScheduler.setEnabled(settings.meetingAutoStart)
+        settings.meetingAutoStartChanged = { [weak self] in
+            guard let self else { return }
+            meetingScheduler.setEnabled(settings.meetingAutoStart)
+            if !settings.meetingAutoStart { cancelPendingMeetingStart() }
         }
         settings.hotkeysChanged = { [weak self] in
             guard let self else { return }
@@ -280,8 +320,8 @@ final class AppModel {
 
     // MARK: - セッション操作
 
-    /// folder 省略時(.auto)は、カレンダーの今の予定名と履歴からグループを推測し、
-    /// 同名の履歴が無ければ defaultSessionGroup にフォールバックする。
+    /// folder 省略時(.auto)は、カレンダーの今の予定名と履歴からグループを推測する。
+    /// 同名の履歴が無ければ未分類に入れる(autoFolder 参照)。
     /// IPC(hearcat start)経由・メニューの録音ボタン・ホットキー(選択画面オフ)も
     /// folder を渡さずに呼ぶことで、同じ推測経路を通る。
     /// ホットキーの選択画面で確定した値は .explicit で渡す。
@@ -292,6 +332,8 @@ final class AppModel {
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        // 録音が始まる以上、会議の予告は役目を終える(手動で先に始めた場合も同じ)。
+        cancelPendingMeetingStart()
         // 過去の無関係なエラーを引きずって「開始失敗」と誤報告しないようにする。
         lastError = nil
         // プローブ稼働中(設定画面のメーターが動いている)にセッションを始めると、
@@ -307,55 +349,65 @@ final class AppModel {
             case .explicit(let f):
                 resolvedFolder = f
             case .auto:
-                resolvedFolder = autoInferredFolder(calendarTitle: calendarTitle)
+                resolvedFolder = autoFolder(forCalendarTitle: calendarTitle)
             }
             try await engine.start(
                 record: record, transcribe: transcribe,
                 name: calendarTitle ?? "", folder: resolvedFolder)
-            // 実際の保存先をパネルのグループ選択にも反映する。ここを揃えないと、
+            // 実際の保存先をパネルの表示にも反映する。ここを揃えないと、
             // 会議名から推測して別グループへ保存したのに、パネルは前回のグループを
             // 出したままになり「切り替わっていない」ように見える。
-            applyGroupSelection(resolvedFolder, forCalendarTitle: calendarTitle)
+            plannedFolder = resolvedFolder
+            appliedGroupCalendarTitle = Self.eventKey(calendarTitle)
+            folderChosenManually = false
             refreshSessions()
         } catch {
             lastError = error.localizedDescription
         }
     }
 
-    /// カレンダーの予定名から履歴を辿って推測したグループ。
-    /// 予定名が取れない・同名の履歴が無ければ defaultSessionGroup を返す。
-    /// ホットキーの選択画面の初期選択も同じ規則で決めるため、public にはしない
-    /// (呼び出し元は同じファイル内に限定)。
-    private func autoInferredFolder(calendarTitle: String?) -> String? {
-        guard let title = calendarTitle, !title.isEmpty else {
-            return settings.defaultSessionGroup
-        }
-        return Self.inferSessionFolder(
-            forCalendarTitle: title, in: sessions,
-            fallback: settings.defaultSessionGroup)
+    /// 予定名の有無を1つの値にそろえる。空文字と nil はどちらも「予定なし」。
+    private static func eventKey(_ title: String?) -> String? {
+        guard let title, !title.isEmpty else { return nil }
+        return title
     }
 
-    /// 待機中に、今の(またはまもなく始まる)予定に紐づくグループへ選択を寄せる。
-    /// メニューバーのパネルを開くたびに呼ばれるため、次の2点を守る。
-    /// - 同じ予定の間に手で選び直したグループは尊重する(適用済みの予定名を覚えておく)。
-    /// - 同名の履歴が無い予定では何もしない(推測できないのに選択を書き換えない)。
+    /// この予定のときの保存先。
+    /// - その予定の間に手で選び直していれば、その選択を尊重する
+    /// - 予定があれば、同じ名前の過去セッションが入っているグループ。無ければ未分類
+    /// - 予定が無ければ未分類
+    ///
+    /// 推測できないものを既定のグループへ落とさないのは、無関係なグループの資料フォルダを
+    /// 要約が読みにいってしまうため。分類できないものは分類しないでおく。
+    private func autoFolder(forCalendarTitle rawTitle: String?) -> String? {
+        let title = Self.eventKey(rawTitle)
+        if folderChosenManually, title == appliedGroupCalendarTitle { return plannedFolder }
+        guard let title else { return nil }
+        return Self.inferSessionFolder(forCalendarTitle: title, in: sessions)
+    }
+
+    /// 待機中に、今の(またはまもなく始まる)予定に紐づくグループへ表示を寄せる。
+    /// メニューバーのパネルを開くたびに呼ばれる。予定が変わったタイミングで、
+    /// 手で選び直した分の記憶も一緒に捨てる(前の会議の選択を次の会議へ持ち越さない)。
     func syncGroupSelectionWithCurrentEvent() async {
-        guard !status.active, settings.calendarNaming else { return }
-        guard let title = await CalendarNamer.currentEventTitle(), !title.isEmpty else { return }
-        guard title != appliedGroupCalendarTitle else { return }
-        // 同名の履歴が無い予定では、fallback として渡した今の選択がそのまま返り、
-        // 選択は動かない(推測できないのに書き換えない)。履歴が「未分類」を指す
-        // 予定では nil が返り、未分類へ戻る。
-        let inferred = Self.inferSessionFolder(
-            forCalendarTitle: title, in: sessions, fallback: settings.defaultSessionGroup)
-        applyGroupSelection(inferred, forCalendarTitle: title)
+        guard !status.active else { return }
+        let rawTitle = settings.calendarNaming ? await CalendarNamer.currentEventTitle() : nil
+        let title = Self.eventKey(rawTitle)
+        if title != appliedGroupCalendarTitle {
+            appliedGroupCalendarTitle = title
+            folderChosenManually = false
+        }
+        plannedFolder = autoFolder(forCalendarTitle: title)
     }
 
-    /// グループ選択(パネルの表示 = 次回の既定)を更新し、その根拠になった予定名を控える。
-    private func applyGroupSelection(_ folder: String?, forCalendarTitle title: String?) {
-        appliedGroupCalendarTitle = title
-        guard settings.defaultSessionGroup != folder else { return }
-        settings.defaultSessionGroup = folder
+    /// パネルでユーザーがグループを選び直した。この選択が効くのは、次に始める
+    /// 1セッションだけ(正確には、今の予定が変わるかセッションが始まるまで)。
+    /// 選択を既定として持ち越さないのは、覚えた先が「自分で選んでいないのに
+    /// 会議の記録が溜まる場所」になるため。次からも同じグループに入れたい会議は、
+    /// 予定名ごとの履歴(inferSessionFolder)が自動で拾う。
+    func selectFolder(_ folder: String?) {
+        plannedFolder = folder
+        folderChosenManually = true
     }
 
     /// 進行中セッションの保存先グループ(未分類なら nil)。パネルに出して、
@@ -368,18 +420,17 @@ final class AppModel {
 
     /// カレンダーの予定名と同じ名前で過去に保存されたセッションから、最も多く入っているグループを返す。
     /// 同数なら直近のセッションのグループ(=最近の運用に寄せる)。
-    /// 同名の履歴が無ければ fallback を返す。
+    /// 同名の履歴が無ければ未分類(nil)。
     /// 判定は lowercased + 前後空白トリムで揃える(半角/全角の細かい正規化まではしない。
     /// カレンダーの予定名は毎回同じ表記で入っている前提)。
     static func inferSessionFolder(
         forCalendarTitle title: String,
-        in sessions: [SessionInfo],
-        fallback: String?
+        in sessions: [SessionInfo]
     ) -> String? {
         let key = normalizeSessionTitle(title)
-        guard !key.isEmpty else { return fallback }
+        guard !key.isEmpty else { return nil }
         let matched = sessions.filter { normalizeSessionTitle($0.name) == key }
-        guard !matched.isEmpty else { return fallback }
+        guard !matched.isEmpty else { return nil }
         // 未分類(nil)も「その名前でよく使われている置き場所」の1つとして数える。
         var counts: [String?: Int] = [:]
         var latest: [String?: Date] = [:]
@@ -392,22 +443,106 @@ final class AppModel {
         guard let best = counts.max(by: { a, b in
             if a.value != b.value { return a.value < b.value }
             return (latest[a.key] ?? .distantPast) < (latest[b.key] ?? .distantPast)
-        }) else { return fallback }
+        }) else { return nil }
         return best.key
     }
 
     /// 突き合わせは「保存されるときの名前」に揃える。セッション名は保存時に
     /// 「/」「:」が「-」へ置換されるため、生の予定名のまま比べると、それらを含む
-    /// 予定(「A / B 定例」など)が履歴と一致せず、常に既定グループへ落ちてしまう。
+    /// 予定(「A / B 定例」など)が履歴と一致せず、常に未分類へ落ちてしまう。
     /// storedName が既に前後の空白を落としているため、ここでは小文字化だけでよい。
     private static func normalizeSessionTitle(_ s: String) -> String {
         SessionStore.storedName(for: s).lowercased()
+    }
+
+    // MARK: - 確認パネル(会議の予告 / 無音の確認)
+
+    /// 会議が始まるので録音を始める、という予告を出す。開始時刻になるまで待ってから
+    /// 始めるので、この間に「今回はやめる」を押せば録音は始まらない。
+    private func presentMeetingStartNudge(for meeting: CalendarMeeting) {
+        // 既に録音中なら、その会議の分はもう録れている。何も言わない。
+        guard !status.active else { return }
+        // 予定の開始時刻ちょうどに始める。既に始まっている会議を拾った場合でも、
+        // 押す間もなく始まらないよう最低5秒は猶予を置く。
+        let deadline = max(meeting.startDate, Date().addingTimeInterval(5))
+        pendingMeetingStart?.cancel()
+        pendingMeetingStart = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(deadline.timeIntervalSinceNow))
+            guard !Task.isCancelled, let self, !self.status.active else { return }
+            // 自分の待ち合わせは役目を終えた。ここで手放しておかないと、この先の
+            // startSession が「待機中の予告を取り消す」処理で自分自身を止めてしまう。
+            self.pendingMeetingStart = nil
+            await self.startSession()
+        }
+        let name = meeting.title.isEmpty ? "会議" : meeting.title
+        presentNudge(
+            .meetingStart,
+            prompt: NudgePrompt(
+                icon: "calendar.badge.clock",
+                title: "まもなく「\(name)」が始まります",
+                detail: "この時間になったら、録音と文字起こしを自動で始めます。",
+                deadline: deadline,
+                actions: [
+                    NudgeAction(title: "今回はやめる") { [weak self] in
+                        self?.cancelPendingMeetingStart()
+                    },
+                    NudgeAction(title: "今すぐ始める", isPrimary: true) { [weak self] in
+                        guard let self else { return }
+                        self.pendingMeetingStart?.cancel()
+                        self.pendingMeetingStart = nil
+                        self.dismissNudge(.meetingStart)
+                        Task { await self.startSession() }
+                    },
+                ]))
+    }
+
+    /// 予告を取り消して、この会議では録音を始めない。
+    private func cancelPendingMeetingStart() {
+        pendingMeetingStart?.cancel()
+        pendingMeetingStart = nil
+        dismissNudge(.meetingStart)
+    }
+
+    /// 無音が続いたので止めるか確認する。返事があるまで録音は続く。
+    private func presentSilenceNudge() {
+        guard status.active else { return }
+        presentNudge(
+            .silence,
+            prompt: NudgePrompt(
+                icon: "moon.zzz",
+                title: "5分ほど声が聞こえていません",
+                detail: "録音は続いています。会議が終わっているなら、ここで止めて要約まで進めます。",
+                deadline: nil,
+                actions: [
+                    NudgeAction(title: "録音を続ける") { [weak self] in
+                        self?.dismissNudge(.silence)
+                    },
+                    NudgeAction(title: "停止して要約", isPrimary: true) { [weak self] in
+                        guard let self else { return }
+                        self.dismissNudge(.silence)
+                        Task { await self.stopSession() }
+                    },
+                ]))
+    }
+
+    private func presentNudge(_ kind: NudgeKind, prompt: NudgePrompt) {
+        activeNudge = kind
+        NudgeOverlayController.shared.present(prompt)
+    }
+
+    /// 指定した用件の確認だけを引っ込める。別の用件が出ている場合は触らない。
+    private func dismissNudge(_ kind: NudgeKind) {
+        guard activeNudge == kind else { return }
+        activeNudge = nil
+        NudgeOverlayController.shared.dismiss()
     }
 
     func stopSession() async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        // 止めた以上、無音の確認は用済み。
+        dismissNudge(.silence)
         // 停止完了後は status.sessionID が消えるため、遷移先として使えるよう先に控える。
         lastEndedSessionID = status.sessionID
         await engine.stop()
@@ -745,16 +880,17 @@ final class AppModel {
         }
         // 選択画面の初期選択も、カレンダーの予定名+履歴からの推測に合わせる
         // (同じ会議名を初期表示する = ユーザーはそのまま「開始」を押すだけで済む)。
-        // 推測できない場合は defaultSessionGroup に落ちる。
+        // 推測できない予定は未分類が初期選択になる。
         let calendarTitle = settings.calendarNaming ? await CalendarNamer.currentEventTitle() : nil
-        let initialGroup = autoInferredFolder(calendarTitle: calendarTitle)
+        let initialGroup = autoFolder(forCalendarTitle: calendarTitle)
         guard let result = HotkeyGroupPicker.choose(defaultGroup: initialGroup) else {
             return
         }
         if result.skipNextTime {
             settings.hotkeyGroupPicker = false
         }
-        settings.defaultSessionGroup = result.folder
+        // 選択画面で確定した値は、ユーザーが手で選んだ既定として扱う。
+        selectFolder(result.folder)
         await startSession(record: record, transcribe: transcribe, folder: .explicit(result.folder))
     }
 
@@ -844,19 +980,24 @@ final class AppModel {
         }
     }
 
+    /// グループ名を覚えている場所すべてを、新しい名前へ差し替える(削除なら nil)。
+    /// 名前を覚える場所が増えたときに追従漏れが起きないよう、更新はここ1箇所に集める。
+    private func retargetFolderReferences(from folder: String, to newName: String?) {
+        if let path = settings.referenceFolders.removeValue(forKey: folder), let newName {
+            settings.referenceFolders[newName] = path
+        }
+        if plannedFolder == folder {
+            plannedFolder = newName
+        }
+    }
+
     /// フォルダ名を変更し、新しい名前を返す。失敗時は nil。
-    /// referenceFolders のキーと defaultSessionGroup も新しい名前へ追従させる
-    /// (古い名前のまま残ると、関連フォルダ設定や既定グループが宙に浮くため)。
+    /// 古い名前を覚えている設定も一緒に追従させる(残すと宙に浮くため)。
     func renameFolder(_ folder: String, to newName: String) -> String? {
         defer { refreshSessions() }
         do {
             let renamed = try SessionStore.renameFolder(folder, to: newName)
-            if let path = settings.referenceFolders.removeValue(forKey: folder) {
-                settings.referenceFolders[renamed] = path
-            }
-            if settings.defaultSessionGroup == folder {
-                settings.defaultSessionGroup = renamed
-            }
+            retargetFolderReferences(from: folder, to: renamed)
             return renamed
         } catch {
             lastError = error.localizedDescription
@@ -865,17 +1006,13 @@ final class AppModel {
     }
 
     /// フォルダを削除する(中のセッションは未分類へ戻る)。
-    /// referenceFolders のキーは削除し、defaultSessionGroup がそのフォルダを
-    /// 指していれば未分類(nil)へ戻す。
+    /// そのフォルダを指していた設定は未分類(nil)へ戻す。
     @discardableResult
     func deleteFolder(_ folder: String) -> Bool {
         defer { refreshSessions() }
         do {
             try SessionStore.deleteFolder(folder)
-            settings.referenceFolders.removeValue(forKey: folder)
-            if settings.defaultSessionGroup == folder {
-                settings.defaultSessionGroup = nil
-            }
+            retargetFolderReferences(from: folder, to: nil)
             return true
         } catch {
             lastError = error.localizedDescription
