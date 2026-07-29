@@ -40,10 +40,12 @@ enum CalendarMeetings {
         return meetingHosts.contains { text.localizedCaseInsensitiveContains($0) }
     }
 
+    // discord.gg は招待リンクで、会議の待ち合わせ場所として貼られるとは限らないため
+    // 入れない(説明欄にサーバーの招待を貼っただけの予定で録音が始まる)。
     private static let meetingHosts = [
         "zoom.us", "meet.google.com", "teams.microsoft.com", "teams.live.com",
         "webex.com", "whereby.com", "meet.jit.si", "chime.aws", "bluejeans.com",
-        "gather.town", "around.co", "discord.gg", "slack.com",
+        "gather.town", "around.co", "slack.com",
     ]
 
     /// 今から horizon 秒後までに始まる直近の会議。grace 秒前までに始まったものも拾う
