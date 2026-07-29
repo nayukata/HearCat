@@ -7,7 +7,7 @@ CONFIG ?= debug
 BUILD_DIR := .build/$(CONFIG)
 APP := $(BUILD_DIR)/HearCat.app
 
-.PHONY: build app run cli dist check-dist-identity check-notary-profile appcast icon clean
+.PHONY: build app run cli dist check-dist-identity check-notary-profile appcast icon ogp clean
 
 build:
 ifeq ($(CONFIG),release)
@@ -164,6 +164,10 @@ appcast: dist $(SPARKLE_TOOLS_DIR)/generate_appcast
 # アプリアイコンを生成し直す(デザイン変更時のみ。生成物はリポジトリに入っている)。
 icon:
 	swift scripts/make_icon.swift Sources/HearCatApp/AppIcon.icns
+
+# OGP 画像を生成し直す(同上)。
+ogp:
+	swift scripts/make_ogp.swift web/public/ogp.png
 
 clean:
 	swift package clean
