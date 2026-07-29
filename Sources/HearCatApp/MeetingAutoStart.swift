@@ -1,5 +1,6 @@
 import EventKit
 import Foundation
+import HearCatKit
 
 /// 自動で録音を始める対象になった会議1回分。
 struct CalendarMeeting: Equatable, Sendable {
@@ -25,28 +26,12 @@ enum CalendarMeetings {
             me.participantStatus == .declined {
             return false
         }
-        return hasMeetingURL(event)
+        // 判定そのものは HearCatKit の MeetingRule に置く。EventKit を持ち込まずに
+        // テストできるようにするため(この条件の緩さが自動録音の誤発火の原因だった)。
+        return MeetingRule.mentionsMeetingHost([
+            event.url?.absoluteString, event.location, event.notes,
+        ])
     }
-
-    /// 会議サービスの URL を持つか。カレンダーの種類によって URL の入り先が違う
-    /// (Google は URL 欄、手貼りは場所や説明欄)ため、3箇所とも同じ基準で見る。
-    /// URL 欄だけをホスト名の確認なしに通すと、資料やチケットのリンクを入れた
-    /// だけの予定が会議になる。
-    private static func hasMeetingURL(_ event: EKEvent) -> Bool {
-        let text = [event.url?.absoluteString, event.location, event.notes]
-            .compactMap { $0 }
-            .joined(separator: "\n")
-        guard !text.isEmpty else { return false }
-        return meetingHosts.contains { text.localizedCaseInsensitiveContains($0) }
-    }
-
-    // discord.gg は招待リンクで、会議の待ち合わせ場所として貼られるとは限らないため
-    // 入れない(説明欄にサーバーの招待を貼っただけの予定で録音が始まる)。
-    private static let meetingHosts = [
-        "zoom.us", "meet.google.com", "teams.microsoft.com", "teams.live.com",
-        "webex.com", "whereby.com", "meet.jit.si", "chime.aws", "bluejeans.com",
-        "gather.town", "around.co", "slack.com",
-    ]
 
     /// 今から horizon 秒後までに始まる直近の会議。grace 秒前までに始まったものも拾う
     /// (会議の開始直後に Mac を開いた場合にも間に合わせるため)。
