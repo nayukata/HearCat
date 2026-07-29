@@ -107,16 +107,20 @@ struct SessionDetailView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(
-                    session.name.isEmpty
-                        ? session.startDate.formatted(date: .complete, time: .shortened)
-                        : session.name)
-                    .font(HCFont.headline)
-                if !session.name.isEmpty {
-                    Text(session.startDate.formatted(date: .complete, time: .shortened))
-                        .font(HCFont.caption)
-                        .foregroundStyle(.secondary)
+                // 一覧と同じ役割分担。開始日時は名前の有無に関わらず必ず下の行に出す
+                // (名前を付けても日時は消えないことを、画面上で保証する)。
+                Group {
+                    if session.name.isEmpty {
+                        Text(SessionRow.untitledPlaceholder)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Text(session.name)
+                    }
                 }
+                .font(HCFont.headline)
+                Text(session.startDate.formatted(date: .complete, time: .shortened))
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
             summarizeButton

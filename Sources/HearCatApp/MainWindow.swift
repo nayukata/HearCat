@@ -481,19 +481,25 @@ struct WindowAccessor: NSViewRepresentable {
 }
 
 struct SessionRow: View {
+    /// 名前が付いていないセッションのタイトル欄に出す文言。詳細画面と揃える。
+    static let untitledPlaceholder = "名称未設定"
+
     let session: SessionInfo
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 名前があれば名前を主役に、日時は下の行へ。名前がなければ従来どおり日時だけ。
-            Text(
-                session.name.isEmpty
-                    ? session.startDate.formatted(date: .abbreviated, time: .shortened)
-                    : session.name)
+            // 名前は「付けるもの」、開始日時は「常に残るもの」として、上下の役割を固定する。
+            // 名前が無いときだけ日時をタイトル欄に出す作りは、日時がタイトルそのものに
+            // 見えるため「名前を付けたら日時が分からなくなる」という誤解を生んでいた。
+            // 未設定はプレースホルダの薄字にして、空欄であることを見せる。
+            if session.name.isEmpty {
+                Text(SessionRow.untitledPlaceholder)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text(session.name)
+            }
             HStack(spacing: 6) {
-                if !session.name.isEmpty {
-                    Text(session.startDate.formatted(date: .numeric, time: .shortened))
-                }
+                Text(session.startDate.formatted(date: .numeric, time: .shortened))
                 if session.transcriptURL != nil {
                     Image(systemName: "text.quote")
                 }
