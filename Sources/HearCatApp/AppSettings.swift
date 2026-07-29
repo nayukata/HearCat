@@ -170,12 +170,22 @@ final class AppSettings {
         }
     }
 
+    /// 1日1回、新しいバージョンが出ていないかを確認するか。
+    /// 既定はオン。確認するのは公開されているバージョン番号だけで、こちらからは何も送らない。
+    var autoUpdateCheck: Bool {
+        didSet {
+            UserDefaults.standard.set(autoUpdateCheck, forKey: Self.autoUpdateCheckKey)
+            autoUpdateCheckChanged?()
+        }
+    }
+
     @ObservationIgnored var gainsChanged: (() -> Void)?
     @ObservationIgnored var hotkeysChanged: (() -> Void)?
     @ObservationIgnored var micGateChanged: (() -> Void)?
     @ObservationIgnored var micDeviceChanged: (() -> Void)?
     @ObservationIgnored var silenceWatchChanged: (() -> Void)?
     @ObservationIgnored var meetingAutoStartChanged: (() -> Void)?
+    @ObservationIgnored var autoUpdateCheckChanged: (() -> Void)?
 
     private static let micGainKey = "micGain"
     private static let systemGainKey = "systemGain"
@@ -201,6 +211,7 @@ final class AppSettings {
     /// 変わったが、ユーザーが選んだオン/オフは引き継ぐためキー名は変えない。
     private static let confirmStopOnSilenceKey = "autoStopOnSilence"
     private static let meetingAutoStartKey = "meetingAutoStart"
+    private static let autoUpdateCheckKey = "autoUpdateCheck"
 
     private init() {
         let defaults = UserDefaults.standard
@@ -265,6 +276,7 @@ final class AppSettings {
         hotkeyGroupPicker = defaults.object(forKey: Self.hotkeyGroupPickerKey) as? Bool ?? true
         confirmStopOnSilence = defaults.object(forKey: Self.confirmStopOnSilenceKey) as? Bool ?? true
         meetingAutoStart = defaults.object(forKey: Self.meetingAutoStartKey) as? Bool ?? false
+        autoUpdateCheck = defaults.object(forKey: Self.autoUpdateCheckKey) as? Bool ?? true
         if let data = defaults.data(forKey: Self.referenceFoldersKey),
             let decoded = try? JSONDecoder().decode([String: String].self, from: data)
         {

@@ -16,10 +16,13 @@
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- 更新の有無は、このバージョンと main の同ファイルのバージョンを比べて判定する
+         (UpdateCheck.swift)。main に変更を入れたら必ず上げる。README「バージョンの付け方」参照。
+         PlistBuddy で書き換えるとこのコメントごと消えるため、編集は手で行う。 -->
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>0.3.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
     <!-- メニューバー常駐アプリ。Dock には出さない。 -->
@@ -73,15 +76,5 @@
             </array>
         </dict>
     </array>
-    <!-- Sparkle 自動更新。SparkleUpdater.swift が debug ビルドでは起動しないため、
-         このキーが存在してもチェックが暴発することはない。 -->
-    <key>SUFeedURL</key>
-    <string>https://hearcat.natume.workers.dev/appcast.xml</string>
-    <key>SUPublicEDKey</key>
-    <string>jj0lmH8m7zJhHVgITy9RIKAY6be8+m8oWbm/neoJh5o=</string>
-    <key>SUEnableAutomaticChecks</key>
-    <true/>
-    <key>SUScheduledCheckInterval</key>
-    <integer>86400</integer>
 </dict>
 </plist>

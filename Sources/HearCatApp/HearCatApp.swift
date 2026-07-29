@@ -57,12 +57,6 @@ private struct MenuBarLabel: View {
 /// 終了時にセッションを保存し切るためのフック。
 /// 録音ファイル(m4a)は途中で殺されるとヘッダが確定せず壊れるため、必ず stop を通す。
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // SPUStandardUpdaterController を起動する(スケジュールされた自動チェックのため)。
-        // debug ビルドや SUFeedURL 未設定時は SparkleUpdater 側で静かに無効化される。
-        _ = SparkleUpdater.shared
-    }
-
     /// Finder で .hearcat をダブルクリックした時などに呼ばれる。
     /// ここでは取り込まず、中身を確認する画面まで持っていく(他人の会話の録音が入り得るため、
     /// 何が入っているかを見せずに保存先へ書き込むことはしない)。

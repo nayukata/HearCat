@@ -156,11 +156,16 @@ final class AppModel {
     /// 無関係な合図で消してしまわないために持つ。
     @ObservationIgnored private var activeNudge: NudgeKind?
 
+    /// 1日1回、新しいバージョンが出ていないかを見に行く見張り役。設定がオフの間は止めておく。
+    @ObservationIgnored private var updateCheckScheduler: UpdateCheckScheduler?
+
     private enum NudgeKind {
         /// 会議が始まるので録音を開始する、という予告。
         case meetingStart
         /// 無音が続いたので止めるか、という確認。
         case silence
+        /// 新しいバージョンが出ている、という知らせ。
+        case updateAvailable
     }
 
     /// 直前の自動要約の失敗。詳細画面で理由を出し、手動で作り直せるようにする
@@ -237,6 +242,17 @@ final class AppModel {
             guard let self else { return }
             meetingScheduler.setEnabled(settings.meetingAutoStart)
             if !settings.meetingAutoStart { cancelPendingMeetingStart() }
+        }
+        let updateScheduler = UpdateCheckScheduler()
+        updateScheduler.onUpdateFound = { [weak self] latest in
+            self?.presentUpdateNudge(latest: latest)
+        }
+        updateCheckScheduler = updateScheduler
+        updateScheduler.setEnabled(settings.autoUpdateCheck)
+        settings.autoUpdateCheckChanged = { [weak self] in
+            guard let self else { return }
+            updateScheduler.setEnabled(settings.autoUpdateCheck)
+            if !settings.autoUpdateCheck { dismissNudge(.updateAvailable) }
         }
         settings.hotkeysChanged = { [weak self] in
             guard let self else { return }
@@ -521,6 +537,30 @@ final class AppModel {
                         guard let self else { return }
                         self.dismissNudge(.silence)
                         Task { await self.stopSession() }
+                    },
+                ]))
+    }
+
+    /// 新しいバージョンが出ていることを知らせる。更新はコマンドの再実行で行うため、
+    /// ここではその場でコマンドを渡すところまでを引き受ける。
+    private func presentUpdateNudge(latest: String) {
+        // 録音中に割り込まない。更新には HearCat の終了が要るので、いま伝えても押せない。
+        guard !status.active else { return }
+        presentNudge(
+            .updateAvailable,
+            prompt: NudgePrompt(
+                icon: "arrow.down.circle",
+                title: "新しい \(latest) があります",
+                detail: "「コマンドをコピー」を押すと、更新用のコマンドをクリップボードに入れます。ターミナルに貼り付けて実行してください。",
+                deadline: nil,
+                actions: [
+                    NudgeAction(title: "あとで") { [weak self] in
+                        self?.dismissNudge(.updateAvailable)
+                    },
+                    NudgeAction(title: "コマンドをコピー", isPrimary: true) { [weak self] in
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(UpdateCheck.command, forType: .string)
+                        self?.dismissNudge(.updateAvailable)
                     },
                 ]))
     }

@@ -144,7 +144,7 @@ struct SettingsView: View {
     @State private var inputDevices: [MicDeviceOption] = [MicDeviceOption(uid: nil, name: "システム標準")]
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginMessage: String?
-    @State private var autoUpdateCheck = SparkleUpdater.shared.automaticallyChecksForUpdates
+    @State private var updateCheck: UpdateCheckResult = .checking
     @State private var codexModelOptions: [AgentModelOption] = []
     /// Claude/Codex を自動要約に選ぶ際の外部送信同意確認。ダイアログでキャンセルされたら
     /// pending の選択に戻さず、元の選択を保つためにここへ待避する。
@@ -231,30 +231,33 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if SparkleUpdater.shared.isEnabled {
-                Section {
-                    Toggle("自動で更新を確認", isOn: $autoUpdateCheck)
-                        .onChange(of: autoUpdateCheck) { _, newValue in
-                            SparkleUpdater.shared.automaticallyChecksForUpdates = newValue
-                        }
-                    LabeledContent("バージョン") {
-                        HStack(spacing: 8) {
-                            Text(appVersion)
-                                .foregroundStyle(.secondary)
-                            Button("更新を確認") {
-                                SparkleUpdater.shared.checkForUpdates()
-                            }
-                            .disabled(!SparkleUpdater.shared.canCheckForUpdates)
-                        }
+            Section {
+                LabeledContent("バージョン") {
+                    HStack(spacing: 8) {
+                        Text(appVersion)
+                            .foregroundStyle(.secondary)
+                        updateStatus
                     }
-                } header: {
-                    Text("アップデート")
-                } footer: {
-                    Text("新しいバージョンが見つかると通知します。オフでも「更新を確認」からいつでも手動で確認できます。")
-                        .font(HCFont.caption)
-                        .foregroundStyle(.secondary)
                 }
+                HStack(spacing: 8) {
+                    Text(UpdateCheck.command)
+                        .font(HCFont.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 0)
+                    CopyButton { UpdateCheck.command }
+                }
+                Toggle("毎日 11 時に確認", isOn: $settings.autoUpdateCheck)
+            } header: {
+                Text("アップデート")
+            } footer: {
+                Text("このコマンドをターミナルで実行すると、最新版に入れ替わります。実行中は HearCat がいったん終了するので、録音していないときに行ってください。確認するのは公開されているバージョン番号だけで、こちらからは何も送りません。")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
             }
+            .onAppear { checkForUpdate() }
 
         }
         .formStyle(.grouped)
@@ -634,6 +637,38 @@ struct SettingsView: View {
                     .textSelection(.enabled)
             }
         }
+    }
+
+    /// バージョンの右に出す更新の有無。取得に失敗したときだけ、その場でやり直せるようにする。
+    @ViewBuilder
+    private var updateStatus: some View {
+        switch updateCheck {
+        case .checking:
+            ProgressView()
+                .controlSize(.small)
+        case .upToDate:
+            Text("最新です")
+                .font(HCFont.caption)
+                .foregroundStyle(.secondary)
+        case .available(let latest):
+            Text("新しい \(latest) があります")
+                .font(HCFont.caption)
+                .foregroundStyle(HCColor.cinnamonDim)
+        case .failed:
+            HStack(spacing: 6) {
+                Text("確認できませんでした")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
+                Button("再確認") { checkForUpdate() }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func checkForUpdate() {
+        updateCheck = .checking
+        let current = appVersion
+        Task { updateCheck = await UpdateCheck.run(currentVersion: current) }
     }
 
     private var appVersion: String {

@@ -7,7 +7,7 @@ CONFIG ?= debug
 BUILD_DIR := .build/$(CONFIG)
 APP := $(BUILD_DIR)/HearCat.app
 
-.PHONY: build app run cli dist check-dist-identity check-notary-profile appcast icon ogp clean
+.PHONY: build app run cli dist check-dist-identity check-notary-profile icon ogp clean
 
 build:
 ifeq ($(CONFIG),release)
@@ -33,21 +33,7 @@ app: build
 	# Bundle.module はビルド時の絶対パスに依存し配布後は必ず見つからず fatalError するため)。
 	cp -R $(BUILD_DIR)/hearcat_HearCatApp.bundle $(APP)/Contents/Resources/
 	cp $(BUILD_DIR)/hearcat $(APP)/Contents/MacOS/hearcat-cli
-	# Sparkle(自動更新)。SwiftPM は実行ファイルに @loader_path 相対の rpath を埋め込む
-	# (= 実行ファイルと同じ階層で探す)ため、Contents/Frameworks/ に置いた上で
-	# rpath を標準的な @executable_path/../Frameworks に書き換える。
-	mkdir -p $(APP)/Contents/Frameworks
-	rm -rf $(APP)/Contents/Frameworks/Sparkle.framework
-	ditto $(BUILD_DIR)/Sparkle.framework $(APP)/Contents/Frameworks/Sparkle.framework
-	install_name_tool -rpath @loader_path @executable_path/../Frameworks $(APP)/Contents/MacOS/HearCat
 	# 同梱する実行ファイルは、バンドル本体より先に個別署名しないと署名検証が壊れる。
-	# Sparkle.framework 同梱物(SPM 配布物内では ad-hoc 署名のまま)は、
-	# 内側から外側へ: XPC サービス → Autoupdate → Updater.app → framework 本体 の順。
-	codesign --force --sign $(IDENTITY) $(APP)/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc
-	codesign --force --sign $(IDENTITY) $(APP)/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc
-	codesign --force --sign $(IDENTITY) $(APP)/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate
-	codesign --force --sign $(IDENTITY) $(APP)/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app
-	codesign --force --sign $(IDENTITY) $(APP)/Contents/Frameworks/Sparkle.framework
 	codesign --force --sign $(IDENTITY) $(APP)/Contents/MacOS/hearcat-cli
 	codesign --force --sign $(IDENTITY) $(APP)
 
@@ -75,11 +61,6 @@ dist: check-dist-identity check-notary-profile
 	$(MAKE) app CONFIG=release
 	# make app が Apple Development 証明書で仮署名した分を、公証に通る
 	# Developer ID + hardened runtime で内側から外側へ改めて署名し直す。
-	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc
-	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc
-	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate
-	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app
-	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app/Contents/Frameworks/Sparkle.framework
 	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app/Contents/MacOS/hearcat-cli
 	codesign --force --options runtime --sign $(DIST_IDENTITY) .build/release/HearCat.app
 	rm -rf .build/dmg-root $(DMG)
@@ -112,54 +93,6 @@ check-notary-profile:
 		echo "  (プロファイル名を変える場合は NOTARY_PROFILE=<名前> make dist)" >&2; \
 		exit 1; \
 	}
-
-# Sparkle(自動更新)の appcast.xml を dmg から生成する。
-# generate_appcast / generate_keys などの CLI ツールは、SwiftPM が取得するバイナリ配布物
-# (xcframework のみ)には含まれないため、GitHub Releases の tar.xz から別途取得する。
-# Package.swift の Sparkle バージョンとズレないよう、上げたら両方直す。
-SPARKLE_VERSION := 2.9.4
-SPARKLE_TOOLS_DIR := .build/sparkle-tools
-
-$(SPARKLE_TOOLS_DIR)/generate_appcast:
-	mkdir -p $(SPARKLE_TOOLS_DIR)
-	curl -fsSL -o $(SPARKLE_TOOLS_DIR)/Sparkle-$(SPARKLE_VERSION).tar.xz \
-		https://github.com/sparkle-project/Sparkle/releases/download/$(SPARKLE_VERSION)/Sparkle-$(SPARKLE_VERSION).tar.xz
-	tar -xf $(SPARKLE_TOOLS_DIR)/Sparkle-$(SPARKLE_VERSION).tar.xz -C $(SPARKLE_TOOLS_DIR) bin/generate_appcast bin/generate_keys bin/sign_update
-	mv $(SPARKLE_TOOLS_DIR)/bin/* $(SPARKLE_TOOLS_DIR)/
-	rm -rf $(SPARKLE_TOOLS_DIR)/bin $(SPARKLE_TOOLS_DIR)/Sparkle-$(SPARKLE_VERSION).tar.xz
-
-APP_VERSION := $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Sources/HearCatApp/Info.plist)
-
-# dmg 一式を蓄積する場所。generate_appcast は「このディレクトリに残っている dmg」を元に
-# 複数バージョン分の appcast を作る(既定で直近3件を保持)ため、.build 配下ではなく
-# `make clean` (swift package clean) の影響を受けないここに置く。gitignore 済み。
-SPARKLE_ARCHIVE_DIR := dist-archive
-
-# ダウンロード URL は GitHub Releases (タグ v<バージョン>) に dmg を置く前提
-# (README に記載の配布方針に合わせた)。その Release 作成 / dmg アップロード自体は
-# 手動(このターゲットの範囲外)。
-GITHUB_REPO := nayukata/HearCat
-
-# `make dist` の dmg から appcast.xml を作り、LP (web/public/) に配置する。
-# 秘密鍵は generate_keys が Keychain に保存したものを自動で使う。
-#
-# --maximum-versions 1: appcast には現在バージョンだけを載せる。generate_appcast の
-# --download-url-prefix は一括で全 dmg に同じ prefix を付けるため、これを指定せず
-# 過去バージョンも appcast に含めると、たとえば旧 0.1.0 のエントリまで最新タグ
-# v<APP_VERSION> の URL を指してしまい、Sparkle のロールバック提示や履歴表示から
-# ダウンロードすると 404 になる。過去版のロールバックが必要になったら、その時に
-# 個別バージョンの appcast を生成して静的にホストする方針。
-appcast: dist $(SPARKLE_TOOLS_DIR)/generate_appcast
-	mkdir -p $(SPARKLE_ARCHIVE_DIR)
-	cp $(DMG) $(SPARKLE_ARCHIVE_DIR)/HearCat-$(APP_VERSION).dmg
-	$(SPARKLE_TOOLS_DIR)/generate_appcast \
-		--download-url-prefix https://github.com/$(GITHUB_REPO)/releases/download/v$(APP_VERSION)/ \
-		--maximum-versions 1 \
-		$(SPARKLE_ARCHIVE_DIR)
-	cp $(SPARKLE_ARCHIVE_DIR)/appcast.xml web/public/appcast.xml
-	@echo "appcast.xml を web/public/ に配置しました。"
-	@echo "GitHub Releases の v$(APP_VERSION) タグに $(SPARKLE_ARCHIVE_DIR)/HearCat-$(APP_VERSION).dmg をアップロードしてから、"
-	@echo "web/ をデプロイ(pnpm run deploy)してください。"
 
 # アプリアイコンを生成し直す(デザイン変更時のみ。生成物はリポジトリに入っている)。
 icon:
