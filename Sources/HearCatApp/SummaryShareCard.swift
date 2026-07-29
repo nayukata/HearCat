@@ -69,13 +69,9 @@ struct SummaryShareCard: View {
     }
 
     private var catMark: some View {
-        ZStack {
-            CatHeadShape()
-                .stroke(HCColor.cinnamon, style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
-            CatHeadShape.Eyes()
-                .fill(HCColor.cinnamon)
-        }
-        .frame(width: 26, height: 26)
+        HCLogoShape()
+            .fill(HCColor.mistWhite, style: FillStyle(eoFill: true))
+            .frame(width: 26, height: 26)
     }
 
     /// 受け取った人がこれが何なのかを辿れるようにする一行。

@@ -52,19 +52,12 @@ struct MenuPanel: View {
 
     private var header: some View {
         HStack(spacing: 9) {
-            Group {
-                if model.status.active {
-                    CatHeadShape(includesEyes: true)
-                        .fill(HCColor.cinnamon, style: FillStyle(eoFill: true))
-                } else {
-                    CatHeadShape()
-                        .stroke(
-                            HCColor.mistWhiteDim,
-                            style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
-                        .overlay(CatHeadShape.Eyes().fill(HCColor.mistWhiteDim))
-                }
-            }
-            .frame(width: 17, height: 17)
+            // マークが塗り1枚になったので、稼働中と待機の差は明度で付ける。
+            HCLogoShape()
+                .fill(
+                    model.status.active ? HCColor.mistWhite : HCColor.mistWhiteDim,
+                    style: FillStyle(eoFill: true))
+                .frame(width: 17, height: 17)
             Text("HearCat")
                 .font(HCFont.system(size: 14, weight: .black))
                 .foregroundStyle(.white)

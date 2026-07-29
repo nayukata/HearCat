@@ -19,9 +19,8 @@ struct LiveSessionView: View {
 
     private var bar: some View {
         HStack(spacing: 12) {
-            CatHeadShape()
-                .stroke(.white.opacity(0.6), style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
-                .overlay(CatHeadShape.Eyes().fill(.white.opacity(0.6)))
+            HCLogoShape()
+                .fill(.white.opacity(0.6), style: FillStyle(eoFill: true))
                 .frame(width: 15, height: 15)
             Text("HearCat — ライブ")
                 .font(HCFont.system(size: 12))
