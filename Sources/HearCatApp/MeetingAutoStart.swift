@@ -13,29 +13,29 @@ struct CalendarMeeting: Equatable, Sendable {
 
 /// カレンダーの予定のうち、どれを「会議」とみなすか。
 ///
-/// 対象は「会議 URL を持つ」か「自分以外の参加者がいる」時間指定の予定に限る。
-/// 時間指定の予定をすべて対象にすると、作業ブロックや個人の用事でも録音が始まり、
-/// 同席者の音声を意図せず録ってしまう。逆に参加者だけを条件にすると、参加者を
-/// 入れずに URL だけ貼るオンライン会議を取りこぼす。
+/// 根拠は会議サービスの URL があることだけに限る。参加者の有無は根拠にしない。
+/// 参加者が並んでいても、もくもく会や勉強会のように録る必要のない集まりがあり、
+/// 人数からは会議かどうかを判別できないため。
 enum CalendarMeetings {
     static func isMeeting(_ event: EKEvent) -> Bool {
         guard !event.isAllDay, event.status != .canceled else { return false }
         // 自分が辞退した予定は録らない(出ない会議の音は録りようがない)。
+        // 参加者を見るのはここだけで、会議かどうかの判定には使わない。
         if let me = event.attendees?.first(where: \.isCurrentUser),
             me.participantStatus == .declined {
             return false
         }
-        if hasMeetingURL(event) { return true }
-        return event.attendees?.contains { !$0.isCurrentUser } ?? false
+        return hasMeetingURL(event)
     }
 
-    /// 会議 URL を持つか。カレンダーの種類によって URL の入り先が違う
-    /// (Google は URL 欄、手貼りは場所や説明欄)ため、3箇所とも見る。
+    /// 会議サービスの URL を持つか。カレンダーの種類によって URL の入り先が違う
+    /// (Google は URL 欄、手貼りは場所や説明欄)ため、3箇所とも同じ基準で見る。
+    /// URL 欄だけをホスト名の確認なしに通すと、資料やチケットのリンクを入れた
+    /// だけの予定が会議になる。
     private static func hasMeetingURL(_ event: EKEvent) -> Bool {
-        if let scheme = event.url?.scheme?.lowercased(), scheme == "http" || scheme == "https" {
-            return true
-        }
-        let text = [event.location, event.notes].compactMap { $0 }.joined(separator: "\n")
+        let text = [event.url?.absoluteString, event.location, event.notes]
+            .compactMap { $0 }
+            .joined(separator: "\n")
         guard !text.isEmpty else { return false }
         return meetingHosts.contains { text.localizedCaseInsensitiveContains($0) }
     }
