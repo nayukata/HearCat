@@ -170,6 +170,26 @@ final class AppSettings {
         }
     }
 
+    /// 自動録音の対象から外した予定。予定の ID をキー、表示用の予定名を値にする。
+    /// 繰り返しの予定は全回で同じ ID になるため、一度外せば以後ずっと効く。
+    /// 名前を持つのは設定画面で「何を外したか」を読めるようにするためで、
+    /// 判定には使わない。
+    var excludedMeetings: [String: String] {
+        didSet {
+            if let data = try? JSONEncoder().encode(excludedMeetings) {
+                UserDefaults.standard.set(data, forKey: Self.excludedMeetingsKey)
+            }
+        }
+    }
+
+    /// 予定名にこの言葉を含むものは自動録音の対象にしない。
+    /// 予定単位の除外は予告を見たときにしか押せないため、後から止める手段として持つ。
+    var excludedMeetingKeywords: [String] {
+        didSet {
+            UserDefaults.standard.set(excludedMeetingKeywords, forKey: Self.excludedMeetingKeywordsKey)
+        }
+    }
+
     /// 1日1回、新しいバージョンが出ていないかを確認するか。
     /// 既定はオン。確認するのは公開されているバージョン番号だけで、こちらからは何も送らない。
     var autoUpdateCheck: Bool {
@@ -211,6 +231,8 @@ final class AppSettings {
     /// 変わったが、ユーザーが選んだオン/オフは引き継ぐためキー名は変えない。
     private static let confirmStopOnSilenceKey = "autoStopOnSilence"
     private static let meetingAutoStartKey = "meetingAutoStart"
+    private static let excludedMeetingsKey = "excludedMeetings"
+    private static let excludedMeetingKeywordsKey = "excludedMeetingKeywords"
     private static let autoUpdateCheckKey = "autoUpdateCheck"
 
     private init() {
@@ -277,6 +299,14 @@ final class AppSettings {
         confirmStopOnSilence = defaults.object(forKey: Self.confirmStopOnSilenceKey) as? Bool ?? true
         meetingAutoStart = defaults.object(forKey: Self.meetingAutoStartKey) as? Bool ?? false
         autoUpdateCheck = defaults.object(forKey: Self.autoUpdateCheckKey) as? Bool ?? true
+        excludedMeetingKeywords = defaults.stringArray(forKey: Self.excludedMeetingKeywordsKey) ?? []
+        if let data = defaults.data(forKey: Self.excludedMeetingsKey),
+            let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        {
+            excludedMeetings = decoded
+        } else {
+            excludedMeetings = [:]
+        }
         if let data = defaults.data(forKey: Self.referenceFoldersKey),
             let decoded = try? JSONDecoder().decode([String: String].self, from: data)
         {

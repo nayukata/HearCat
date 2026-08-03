@@ -36,4 +36,40 @@ struct MeetingRuleTests {
     @Test func ホスト名の大文字小文字は区別しない() {
         #expect(MeetingRule.mentionsMeetingHost([nil, "HTTPS://ZOOM.US/J/123456", nil]))
     }
+
+    /// カレンダーの設定で全予定に会議リンクが付く場合、個人的なリマインダーまで
+    /// 会議に見えてしまう。本人が除外したものは録らない。
+    @Test func 除外した予定は会議とみなさない() {
+        #expect(
+            MeetingRule.isExcluded(
+                eventIDs: ["abc@google.com"], title: "リマインダー", excludedIDs: ["abc@google.com"],
+                keywords: []))
+        // 繰り返しの予定は毎回同じ ID になるため、一度除外すれば以後ずっと効く。
+        #expect(
+            !MeetingRule.isExcluded(
+                eventIDs: ["other@google.com"], title: "定例", excludedIDs: ["abc@google.com"],
+                keywords: []))
+    }
+
+    @Test func 除外キーワードを含む予定名は会議とみなさない() {
+        #expect(
+            MeetingRule.isExcluded(
+                eventIDs: ["abc"], title: "朝のリマインダー", excludedIDs: [], keywords: ["リマインダー"]))
+        #expect(
+            MeetingRule.isExcluded(
+                eventIDs: ["abc"], title: "Daily Standup", excludedIDs: [], keywords: ["standup"]))
+        #expect(
+            !MeetingRule.isExcluded(
+                eventIDs: ["abc"], title: "定例会議", excludedIDs: [], keywords: ["リマインダー"]))
+    }
+
+    /// 空のキーワードで全予定が除外されると、自動録音が黙って止まる。
+    @Test func 空のキーワードでは何も除外しない() {
+        #expect(
+            !MeetingRule.isExcluded(
+                eventIDs: ["abc"], title: "定例", excludedIDs: [], keywords: ["", "   "]))
+        #expect(
+            !MeetingRule.isExcluded(
+                eventIDs: ["abc"], title: "", excludedIDs: [], keywords: ["リマインダー"]))
+    }
 }

@@ -24,4 +24,33 @@ public enum MeetingRule {
         guard !text.isEmpty else { return false }
         return hosts.contains { text.localizedCaseInsensitiveContains($0) }
     }
+
+    /// ユーザーが「この予定は録らない」と決めたものか。
+    ///
+    /// 会議サービスの URL があるかどうかだけでは、録る必要のない予定を弾けない。
+    /// 例えば Google カレンダーの「すべての予定に会議を追加」を有効にしていると、
+    /// 個人的なリマインダーにも会議リンクが付く。ここは「ルールでは会議に見えるが、
+    /// 本人は録りたくない」を受け止める場所。
+    ///
+    /// 除外の根拠は2つ。予定を指す ID と、予定名に含まれる言葉(予告を見逃した後でも
+    /// 設定画面から止められる)。
+    ///
+    /// ID を複数受けるのは、繰り返しの予定を1つの ID で表せないカレンダーがあるため。
+    /// Google の繰り返しは回ごとに `..._R20260617T020000@google.com` のような別々の
+    /// eventIdentifier を持つので、それを鍵に外しても次の回にはまた予告が出て、
+    /// 押すたびに「録らない予定」が増えていく。回をまたいで共通の ID
+    /// (calendarItemExternalIdentifier)を第一の鍵にしつつ、以前のバージョンが
+    /// eventIdentifier で保存した分も外れたままになるよう、どれか1つでも一致したら除外する。
+    public static func isExcluded(
+        eventIDs: [String], title: String, excludedIDs: Set<String>, keywords: [String]
+    ) -> Bool {
+        if eventIDs.contains(where: excludedIDs.contains) { return true }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return false }
+        return keywords.contains { keyword in
+            let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            return trimmedTitle.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
 }

@@ -8,6 +8,15 @@ struct CalendarMeeting: Equatable, Sendable {
     /// 「今日のこの回」を指す ID にする(これを分けないと、週次定例が初回の1度きりで
     /// 処理済みになり、翌週から自動で始まらない)。
     let id: String
+    /// 予定そのものの ID(開始時刻を含まない)。
+    let eventID: String
+    /// 繰り返しをまたいで共通の ID。「この予定は今後録らない」の記録にはこちらを使う。
+    ///
+    /// eventID(eventIdentifier)は、Google の繰り返しだと回ごとに
+    /// `..._R20260617T020000@google.com` のように変わる。それを鍵にすると
+    /// 一度外しても次の回にまた予告が出て、押すたびに「録らない予定」が増える。
+    /// calendarItemExternalIdentifier は繰り返しの全回で同じ値になるので、こちらを使う。
+    let seriesID: String
     let title: String
     let startDate: Date
 }
@@ -35,7 +44,10 @@ enum CalendarMeetings {
 
     /// 今から horizon 秒後までに始まる直近の会議。grace 秒前までに始まったものも拾う
     /// (会議の開始直後に Mac を開いた場合にも間に合わせるため)。
-    static func upcoming(within horizon: TimeInterval, grace: TimeInterval) async -> CalendarMeeting? {
+    static func upcoming(
+        within horizon: TimeInterval, grace: TimeInterval,
+        excludedIDs: Set<String> = [], keywords: [String] = []
+    ) async -> CalendarMeeting? {
         guard let store = await CalendarAccess.authorizedStore() else { return nil }
         let now = Date()
         let windowStart = now.addingTimeInterval(-grace)
@@ -46,12 +58,60 @@ enum CalendarMeetings {
             withStart: windowStart, end: windowEnd, calendars: nil)
         let candidates = store.events(matching: predicate)
             .filter { isMeeting($0) && $0.startDate >= windowStart && $0.startDate <= windowEnd }
+            // 本人が「録らない」と決めたものはここで落とす。予告も出さない。
+            .filter { event in
+                !MeetingRule.isExcluded(
+                    eventIDs: exclusionIDs(of: event), title: event.title ?? "",
+                    excludedIDs: excludedIDs, keywords: keywords)
+            }
         guard let next = candidates.min(by: { $0.startDate < $1.startDate }) else { return nil }
-        let identifier = next.eventIdentifier ?? next.calendarItemIdentifier
+        return meeting(from: next)
+    }
+
+    /// これから horizon 秒のあいだに始まる、会議とみなされる予定。
+    /// 設定画面で「録らない予定」を選ばせるための一覧に使う。
+    ///
+    /// 繰り返しの予定は最初の回だけを返す。除外は予定そのものに対して効くため、
+    /// 同じ予定が日付違いで並んでも選ぶ意味がないため。
+    static func upcomingMeetings(within horizon: TimeInterval) async -> [CalendarMeeting] {
+        guard let store = await CalendarAccess.authorizedStore() else { return [] }
+        let now = Date()
+        let predicate = store.predicateForEvents(
+            withStart: now, end: now.addingTimeInterval(horizon), calendars: nil)
+        var seen = Set<String>()
+        return store.events(matching: predicate)
+            .filter { isMeeting($0) && $0.startDate >= now }
+            .sorted { $0.startDate < $1.startDate }
+            .compactMap { event in
+                let identifier = event.eventIdentifier ?? event.calendarItemIdentifier
+                guard seen.insert(identifier).inserted else { return nil }
+                return meeting(from: event)
+            }
+    }
+
+    private static func meeting(from event: EKEvent) -> CalendarMeeting {
+        let identifier = event.eventIdentifier ?? event.calendarItemIdentifier
         return CalendarMeeting(
-            id: "\(identifier)@\(Int(next.startDate.timeIntervalSince1970))",
-            title: next.title ?? "",
-            startDate: next.startDate)
+            id: "\(identifier)@\(Int(event.startDate.timeIntervalSince1970))",
+            eventID: identifier,
+            seriesID: seriesID(of: event),
+            title: event.title ?? "",
+            startDate: event.startDate)
+    }
+
+    /// 繰り返しをまたいで共通の ID。取れなければ eventIdentifier に落ちる。
+    private static func seriesID(of event: EKEvent) -> String {
+        event.calendarItemExternalIdentifier
+            ?? event.eventIdentifier
+            ?? event.calendarItemIdentifier
+    }
+
+    /// 除外の判定に使う ID。新しく保存する分は seriesID だが、以前のバージョンが
+    /// eventIdentifier で保存した分も外れたままになるよう両方を渡す。
+    private static func exclusionIDs(of event: EKEvent) -> [String] {
+        let identifier = event.eventIdentifier ?? event.calendarItemIdentifier
+        let series = seriesID(of: event)
+        return series == identifier ? [identifier] : [series, identifier]
     }
 }
 
@@ -71,6 +131,9 @@ final class MeetingAutoStartScheduler {
 
     /// 予告を出すべき会議が来た。同じ会議で二度は呼ばれない。
     var onDue: ((CalendarMeeting) -> Void)?
+    /// 自動録音の対象から外す指定を読む。設定はいつでも変わるため、値ではなく
+    /// 読み口を持って毎回引く(除外した直後の予定にも効かせるため)。
+    var exclusions: (() -> (ids: Set<String>, keywords: [String]))?
 
     private var timer: Timer?
     private var enabled = false
@@ -98,8 +161,10 @@ final class MeetingAutoStartScheduler {
 
     private func tick() async {
         guard enabled else { return }
+        let excluded = exclusions?() ?? (ids: [], keywords: [])
         guard let meeting = await CalendarMeetings.upcoming(
-            within: Self.leadTime, grace: Self.grace)
+            within: Self.leadTime, grace: Self.grace,
+            excludedIDs: excluded.ids, keywords: excluded.keywords)
         else { return }
         guard !handledIDs.contains(meeting.id) else { return }
         markHandled(meeting.id)
