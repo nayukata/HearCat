@@ -2,6 +2,12 @@ import Foundation
 
 /// 複数チャンネルの確定セグメントを1ファイルへ直列に追記する。
 /// actor にすることで、自分/相手の2系統が同時に届いても行が壊れない(書き込み競合の防止)。
+/// 文字起こしに現れる話者。行の分解と表示の色分けで同じ知識を使う。
+public enum Speaker: String, Sendable, CaseIterable {
+    case me = "自分"
+    case other = "相手"
+}
+
 /// 文字起こしファイルの1行。行頭の時刻から録音内の再生位置を割り出すために使う。
 public struct TranscriptLine: Identifiable, Sendable {
     /// 行番号(表示順の安定 ID)。
@@ -10,6 +16,10 @@ public struct TranscriptLine: Identifiable, Sendable {
     public let stamp: String?
     /// 時刻を除いた本文(「話者: 発言」)。時刻の無い行は行全体。
     public let body: String
+    /// 行頭の話者。話者ラベルの付かない行は nil。
+    public let speaker: Speaker?
+    /// 話者ラベルを除いた発言。話者の無い行は body と同じ。
+    public let text: String
     /// セッション開始からの経過秒。時刻の無い行は nil。
     public let offset: TimeInterval?
 }
@@ -23,20 +33,49 @@ public enum TranscriptParser {
         let startSec = (comps.hour ?? 0) * 3600 + (comps.minute ?? 0) * 60 + (comps.second ?? 0)
         return bodyLines(from: text).enumerated().map { index, line in
             guard let (stamp, body) = split(line) else {
-                return TranscriptLine(id: index, stamp: nil, body: line, offset: nil)
+                return TranscriptLine(
+                    id: index, stamp: nil, body: line, speaker: nil, text: line, offset: nil)
             }
+            let (speaker, spoken) = splitSpeaker(body)
             let parts = stamp.split(separator: ":").compactMap { Int($0) }
             var offset = parts[0] * 3600 + parts[1] * 60 + parts[2] - startSec
             // 行の時刻は時分秒だけなので、日をまたいだセッションでは開始より小さく見える。
             if offset < 0 { offset += 24 * 3600 }
             return TranscriptLine(
-                id: index, stamp: stamp, body: body, offset: TimeInterval(offset))
+                id: index, stamp: stamp, body: body, speaker: speaker, text: spoken,
+                offset: TimeInterval(offset))
         }
+    }
+
+    /// 「話者: 発言」を話者と発言に分ける。既知の話者ラベルで始まる行だけを対象にする
+    /// (発言の中のコロンを話者の区切りと取り違えないため)。
+    private static func splitSpeaker(_ body: String) -> (Speaker?, String) {
+        for speaker in Speaker.allCases {
+            let prefix = speaker.rawValue + ":"
+            guard body.hasPrefix(prefix) else { continue }
+            let spoken = body.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            return (speaker, spoken)
+        }
+        return (nil, body)
     }
 
     /// コピー機能など、TranscriptLine への変換を経ずに整形済みの本文だけが必要な場面向け。
     public static func bodyText(from text: String) -> String {
         bodyLines(from: text).joined(separator: "\n")
+    }
+
+    /// 最初の発言。履歴一覧の行に「何の話だったか」の手がかりを1行添えるために使う。
+    /// 時刻は落とし、「話者: 発言」の形だけを返す(一覧では再生位置に対応づかないため)。
+    /// 発言が1つも無ければ nil。
+    public static func firstUtterance(from text: String) -> String? {
+        for line in bodyLines(from: text) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let body = split(trimmed).map(\.body) ?? trimmed
+            guard !body.isEmpty else { continue }
+            return body
+        }
+        return nil
     }
 
     /// 旧バージョンが書いていたヘッダー行(廃止済み)と、それに続く空行を取り除く。

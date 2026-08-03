@@ -49,6 +49,39 @@ struct TranscriptParserTests {
         #expect(lines[0].offset == 20)
     }
 
+    @Test func 発話行から話者と発言を取り出す() {
+        let text = """
+            [10:00:05] 自分: おはようございます
+            [10:00:10] 相手: こんにちは
+            """
+        let lines = TranscriptParser.lines(from: text, sessionStart: date(hour: 10, minute: 0, second: 0))
+
+        #expect(lines[0].speaker == .me)
+        #expect(lines[0].text == "おはようございます")
+        #expect(lines[1].speaker == .other)
+        #expect(lines[1].text == "こんにちは")
+        // コピーや要約が使う body は、話者ラベルを含んだ元の形のまま。
+        #expect(lines[1].body == "相手: こんにちは")
+    }
+
+    /// 発言の中のコロンを話者の区切りと取り違えないことの確認。
+    /// 誤って分けると、発言の頭が話者チップとして表示されてしまう。
+    @Test func 既知の話者で始まらない行は話者なしとして扱う() {
+        let text = """
+            [10:00:05] 自分: 開始時刻は 10:00 です
+            [10:00:10] 田中: こんにちは
+            [10:00:15] メモ: あとで確認
+            """
+        let lines = TranscriptParser.lines(from: text, sessionStart: date(hour: 10, minute: 0, second: 0))
+
+        #expect(lines[0].speaker == .me)
+        #expect(lines[0].text == "開始時刻は 10:00 です")
+        #expect(lines[1].speaker == nil)
+        #expect(lines[1].text == "田中: こんにちは")
+        #expect(lines[2].speaker == nil)
+        #expect(lines[2].text == "メモ: あとで確認")
+    }
+
     @Test func 時刻に見えない行は本文のまま返す() {
         for line in ["[ab:cd:ef] x", "[10:00] 短い", "ただの本文", "[10:00:05]"] {
             let parsed = TranscriptParser.lines(
@@ -56,5 +89,31 @@ struct TranscriptParserTests {
             #expect(parsed[0].stamp == nil, "\(line)")
             #expect(parsed[0].body == line, "\(line)")
         }
+    }
+
+    /// 履歴一覧の行に添える1行。時刻は落とし、話者付きの発言だけを返す。
+    @Test func 最初の発話を時刻抜きで取り出す() {
+        let text = """
+            [10:00:05] 自分: おはようございます
+            [10:01:30] 相手: こんにちは
+            """
+        #expect(TranscriptParser.firstUtterance(from: text) == "自分: おはようございます")
+    }
+
+    /// 旧ヘッダーと空行しか無いファイル、まだ1行も書かれていないファイルでは、
+    /// プレビューを出さない(空文字を返して一覧に空行を作らない)。
+    @Test func 発話が無ければプレビューは作らない() {
+        #expect(TranscriptParser.firstUtterance(from: "") == nil)
+        #expect(TranscriptParser.firstUtterance(from: "# 文字起こし 2026-07-05 10:00:00\n\n") == nil)
+    }
+
+    /// 旧ヘッダー付きの過去のファイルでも、ヘッダーではなく最初の発話を返す。
+    @Test func 旧ヘッダーはプレビューにしない() {
+        let text = """
+            # 文字起こし 2026-07-05 10:00:00
+
+            [10:00:05] 自分: おはようございます
+            """
+        #expect(TranscriptParser.firstUtterance(from: text) == "自分: おはようございます")
     }
 }

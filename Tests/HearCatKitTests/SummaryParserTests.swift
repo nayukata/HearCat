@@ -223,4 +223,34 @@ struct SummaryParserTests {
         #expect(blocks?.map(\.isBullet) == [false, true, true])
         #expect(blocks?.map(\.text) == ["全体方針を確認した。", "承認フローを作る", "停滞タスクはクローズする"])
     }
+
+    /// 履歴一覧の行に添える1行は、概要の先頭行を使う。
+    @Test func プレビューは概要の先頭行を使う() {
+        let text = """
+            ## 概要
+
+            週次の進捗共有ミーティング。
+            同意画面の実装状況を確認した。
+
+            ## 決定事項
+            - 承認フローを作る
+            """
+        #expect(SummaryParser.previewLine(text) == "週次の進捗共有ミーティング。")
+    }
+
+    /// 想定の4セクション構成から外れた要約(parse が nil を返すもの)でも、
+    /// 見出しと箇条書き記号を落とした最初の行でプレビューを作る。
+    @Test func 想定外の形式でも最初の本文行を返す() {
+        let text = """
+            # 会議メモ
+
+            - 承認フローを作る
+            """
+        #expect(SummaryParser.previewLine(text) == "承認フローを作る")
+    }
+
+    @Test func 中身が無ければプレビューを作らない() {
+        #expect(SummaryParser.previewLine("") == nil)
+        #expect(SummaryParser.previewLine("# 見出しだけ\n\n") == nil)
+    }
 }

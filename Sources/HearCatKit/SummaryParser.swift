@@ -136,6 +136,30 @@ public enum SummaryParser {
             topics: topics, decisions: decisions, todos: todos)
     }
 
+    /// 履歴一覧の行に添える1行。概要の先頭行を使う。想定の4セクション構成から外れた
+    /// 要約(parse が nil を返すもの)は、見出しと箇条書き記号だけ剥がした最初の行で代替する。
+    /// 中身が無ければ nil。
+    public static func previewLine(_ markdown: String) -> String? {
+        if let overview = parse(markdown)?.overview,
+            let line = firstNonEmptyLine(overview) {
+            return line
+        }
+        for rawLine in markdown.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+            let stripped = stripBullet(line)
+            guard !stripped.isEmpty else { continue }
+            return stripped
+        }
+        return nil
+    }
+
+    private static func firstNonEmptyLine(_ text: String) -> String? {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty }
+    }
+
     /// 行が指定レベルの見出しなら、そのタイトルを返す。
     private static func heading(_ line: String, prefix: String) -> String? {
         guard line.hasPrefix(prefix) else { return nil }
