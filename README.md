@@ -41,13 +41,15 @@ curl -fsSL https://raw.githubusercontent.com/nayukata/HearCat/main/bootstrap.sh 
 
 新しいバージョンが出ていないかは、毎日 11 時に自動で確認する。11 時を過ぎてから Mac を開いた日は、その時点で確認する。見つかると画面右上にお知らせが出て、そこから更新用のコマンドをコピーできる（録音中は割り込まない）。確認するのは公開されている `Info.plist` のバージョン番号だけで、こちらからは何も送らない。設定のトグルで止められる。
 
+何が変わったかは [CHANGELOG.md](CHANGELOG.md) に残している。
+
 ## バージョンの付け方
 
 `Sources/HearCatApp/Info.plist` の `CFBundleShortVersionString` を正本とする。アプリは起動中の設定画面から main にある同じファイルを読み、手元のバージョンより新しければ「新しい 0.4.0 があります」と表示する。
 
 そのため、**main に変更を入れるときは必ずバージョンを上げる**。上げ忘れると、実際には古いのに利用者の画面には「最新です」と出てしまう。
 
-- `CFBundleShortVersionString`（利用者に見える番号）を上げる
+- `CFBundleShortVersionString`（利用者に見える番号）を上げる。同じコミットで [CHANGELOG.md](CHANGELOG.md) にその版の項目を足す（更新を促しておいて中身が分からない状態にしない）
 - `CFBundleVersion`（内部の通し番号）も 1 ずつ増やす
 - `1.0.0` は、配布方式を「各自でビルド」から「署名済みバイナリの配布」へ切り替えたときに使う。それまでは `0.x.y` の範囲で上げる
 
