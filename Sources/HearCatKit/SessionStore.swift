@@ -19,6 +19,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     public enum Artifact: CaseIterable, Sendable {
         case transcript
         case audio
+        case audioOther
         case summary
         case summaryEngine
         case cleaned
@@ -29,9 +30,19 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
             switch self {
             case .transcript: return "\(directoryName).md"
             case .audio: return "\(directoryName).m4a"
+            case .audioOther: return "\(directoryName)-相手.m4a"
             case .summary: return "summary.md"
             case .summaryEngine: return "summary.engine"
             case .cleaned: return "cleaned.md"
+            }
+        }
+
+        /// 録音か。録音を含めるかどうかの判断は、混ぜたものと相手だけのものを
+        /// まとめて扱う(片方だけ残ると、再生の選択肢が中途半端に欠ける)。
+        public var isAudio: Bool {
+            switch self {
+            case .audio, .audioOther: return true
+            case .transcript, .summary, .summaryEngine, .cleaned: return false
             }
         }
 
@@ -42,6 +53,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
             switch self {
             case .transcript: return "transcript.md"
             case .audio: return "audio.m4a"
+            case .audioOther: return "audio-other.m4a"
             case .summary, .summaryEngine, .cleaned:
                 // ディレクトリ名を使わない成果物は、保存時の名前がそのまま固定名。
                 return fileName(inDirectoryNamed: "")
@@ -64,6 +76,14 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     public var transcriptURL: URL? { url(of: .transcript) }
     /// 録音(モノラル、自分と相手のミックス)。録音オフのセッションには無い。
     public var audioURL: URL? { url(of: .audio) }
+    /// 相手の声だけの録音。会議アプリでマイクを切っていた場面でも自分の声が
+    /// 混ざってしまうため、相手の声だけを聞き直せるようにしている。
+    /// 相手の音を録らないセッションと、この機能より前のセッションには無い
+    /// (再生の選択肢を出すかどうかは、この有無で決める)。
+    ///
+    /// 自分の声だけの録音は作らない。聞き直す場面が無いわりに、環境ノイズへ自動ゲインが
+    /// 掛かるぶん最も容量を食う(実測で混ぜたものとほぼ同じ 1時間 44MB)。
+    public var audioOtherURL: URL? { url(of: .audioOther) }
     /// 要約はアプリ内で表示する用途のため固定名。
     public var summaryURL: URL? { url(of: .summary) }
     /// エージェント CLI で清書した文字起こし(hearcat-clean スキル由来)。無ければ nil。
@@ -263,11 +283,62 @@ public enum SessionStore {
     }
 
     /// プロジェクトフォルダの一覧(空のフォルダも含む)。
+    /// 並び順はユーザーが並べ替えた順(folder-order.json)を先に置き、まだ並び順に
+    /// 載っていないフォルダ(新規作成・順序ファイル自体が無い場合)はアルファベット順で
+    /// 末尾に続ける。順序ファイルに残ったまま実体が消えた名前は読み飛ばす。
     public static func listFolders() -> [String] {
-        subdirectories(of: sessionsDirectory)
+        let onDisk = subdirectories(of: sessionsDirectory)
             .map(\.lastPathComponent)
             .filter { parse(directoryName: $0) == nil }
-            .sorted()
+        let onDiskSet = Set(onDisk)
+        let ordered = readFolderOrder().filter { onDiskSet.contains($0) }
+        let orderedSet = Set(ordered)
+        let rest = onDisk.filter { !orderedSet.contains($0) }.sorted()
+        return ordered + rest
+    }
+
+    /// フォルダの並び順をユーザーの指定通りに固定する。listFolders() を使う全箇所
+    /// (履歴・メニューパネルのグループ選択・CLI)で並びを一致させるため、
+    /// UserDefaults ではなくここに永続化する。
+    public static func setFolderOrder(_ order: [String]) {
+        writeFolderOrder(order)
+    }
+
+    private static var folderOrderFileURL: URL {
+        sessionsDirectory.appendingPathComponent("folder-order.json")
+    }
+
+    /// 保存された並び順。ファイルが無い・壊れている場合は空を返す
+    /// (呼び出し側はアルファベット順へフォールバックする)。
+    private static func readFolderOrder() -> [String] {
+        guard let data = try? Data(contentsOf: folderOrderFileURL),
+            let order = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return order
+    }
+
+    /// 並び順をそのまま書く。並び順はあくまで表示上の希望でしかないため、
+    /// 書き込みに失敗しても呼び出し側に例外を投げない。
+    private static func writeFolderOrder(_ order: [String]) {
+        guard let data = try? JSONEncoder().encode(order) else { return }
+        try? data.write(to: folderOrderFileURL, options: .atomic)
+    }
+
+    /// フォルダの改名を並び順に反映する。並び順にまだ載っていない名前
+    /// (順序ファイルが無い、または一度も並べ替えていない)なら何もしない。
+    private static func renameInFolderOrder(from name: String, to newName: String) {
+        var order = readFolderOrder()
+        guard let index = order.firstIndex(of: name) else { return }
+        order[index] = newName
+        writeFolderOrder(order)
+    }
+
+    /// フォルダの削除を並び順に反映する。並び順に載っていない名前なら何もしない。
+    private static func removeFromFolderOrder(_ name: String) {
+        var order = readFolderOrder()
+        guard let index = order.firstIndex(of: name) else { return }
+        order.remove(at: index)
+        writeFolderOrder(order)
     }
 
     private static func subdirectories(of url: URL) -> [URL] {
@@ -286,6 +357,97 @@ public enum SessionStore {
 
     public static func delete(_ session: SessionInfo) throws {
         try FileManager.default.removeItem(at: session.directory)
+    }
+
+    // MARK: - 容量管理
+
+    /// sessions ディレクトリの合計使用量。録音ファイル(.m4a)とそれ以外(文字起こし・要約など)に
+    /// 分けて返す。ファイル種別ではなく拡張子で判定するので、SessionInfo.Artifact に無い
+    /// 未知のファイルが混じっていてもディスク使用量の実態から漏れない。
+    public struct StorageUsage: Sendable, Equatable {
+        public let audioBytes: Int64
+        public let otherBytes: Int64
+        public var totalBytes: Int64 { audioBytes + otherBytes }
+    }
+
+    public static func storageUsage() -> StorageUsage {
+        var audioBytes: Int64 = 0
+        var otherBytes: Int64 = 0
+        for url in regularFiles(under: sessionsDirectory) {
+            let size = fileSize(at: url)
+            if url.pathExtension == "m4a" {
+                audioBytes += size
+            } else {
+                otherBytes += size
+            }
+        }
+        return StorageUsage(audioBytes: audioBytes, otherBytes: otherBytes)
+    }
+
+    /// 指定日数より古いセッションのうち、録音ファイルを持つものの件数と合計サイズ。
+    /// 実際に削除する前に、確認画面へ見せる用途。
+    public struct OldRecordingsSummary: Sendable, Equatable {
+        public let sessionCount: Int
+        public let bytes: Int64
+    }
+
+    public static func oldRecordingsSummary(olderThanDays days: Int) -> OldRecordingsSummary {
+        let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
+        var count = 0
+        var bytes: Int64 = 0
+        for session in list() where session.startDate < cutoff {
+            let sessionBytes = audioBytes(of: session)
+            guard sessionBytes > 0 else { continue }
+            count += 1
+            bytes += sessionBytes
+        }
+        return OldRecordingsSummary(sessionCount: count, bytes: bytes)
+    }
+
+    /// 指定日数より古いセッションの録音ファイルだけを削除する。文字起こし・要約は残す
+    /// (容量管理の目的は「聞き直しはもう要らないが記録は残したい」ため)。
+    /// 個々のファイル削除が失敗しても他のセッションの削除は続け、実際に空いたバイト数を返す。
+    @discardableResult
+    public static func deleteOldRecordings(olderThanDays days: Int) -> Int64 {
+        let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
+        var freed: Int64 = 0
+        for session in list() where session.startDate < cutoff {
+            for artifact in SessionInfo.Artifact.allCases where artifact.isAudio {
+                guard let url = session.url(of: artifact) else { continue }
+                let size = fileSize(at: url)
+                guard (try? FileManager.default.removeItem(at: url)) != nil else { continue }
+                freed += size
+            }
+        }
+        return freed
+    }
+
+    private static func audioBytes(of session: SessionInfo) -> Int64 {
+        SessionInfo.Artifact.allCases
+            .filter(\.isAudio)
+            .compactMap(session.url(of:))
+            .reduce(0) { $0 + fileSize(at: $1) }
+    }
+
+    /// ディレクトリ配下の通常ファイル(シンボリックリンク・ディレクトリを除く)を再帰的に列挙する。
+    private static func regularFiles(under directory: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles])
+        else { return [] }
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+            if values?.isRegularFile == true {
+                files.append(url)
+            }
+        }
+        return files
+    }
+
+    private static func fileSize(at url: URL) -> Int64 {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attrs?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
     /// 要約を生成したエンジンを記録する。要約生成の直後、summary.md の保存とセットで呼ぶこと。
@@ -418,6 +580,7 @@ public enum SessionStore {
         }
         try fm.moveItem(
             at: sessionsDirectory.appendingPathComponent(name, isDirectory: true), to: newDir)
+        renameInFolderOrder(from: name, to: newName)
         return newName
     }
 
@@ -435,6 +598,7 @@ public enum SessionStore {
             try fm.moveItem(at: child, to: dest)
         }
         try fm.removeItem(at: dir)
+        removeFromFolderOrder(name)
     }
 
     private static func validFolderName(_ rawName: String) throws -> String {
