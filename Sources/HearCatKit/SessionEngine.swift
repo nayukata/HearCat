@@ -15,6 +15,22 @@ public enum EngineError: LocalizedError {
     }
 }
 
+/// セッションの健全性に関わるイベント。録音・文字起こしが黙って欠けるのを防ぐため、
+/// errorLog に残すだけでなく UI 側へ伝える。文言は UI 側(呼び出し元)で組み立てる想定で、
+/// ここでは判断材料になる最小限の情報だけを持つ。
+public enum SessionHealthEvent: Sendable {
+    /// マイクの使用が許可されていない(自分の声が録音・文字起こしされない)。
+    case micPermissionDenied
+    /// 音声認識の使用が許可されていない(文字起こしが行われない)。
+    case speechPermissionDenied
+    /// システム音声(相手)の取得開始に失敗した。reason は診断用の文字列(status.systemAudioError と同じ内容)。
+    case systemAudioUnavailable(reason: String)
+    /// 録音の書き込みが失敗し、以後の録音が止まった。
+    case recordingWriteFailed
+    /// 録音の最終ファイル(.m4a)への変換が停止時に失敗した。生データ(.aac)は消さずに残している。
+    case recordingConversionFailed
+}
+
 /// item.buffer と同じフォーマット・フレーム長の無音バッファを作る(SilenceGate.Action.silence 用)。
 /// 実バッファは録音側にも渡る共有オブジェクトのため書き換えず、都度新しく確保する。
 /// 新規確保したメモリの内容は未定義(ゼロ初期化される保証はない)なため、明示的にゼロ埋めする。
@@ -211,6 +227,64 @@ public final class SessionEngine {
         }
     }
 
+    // MARK: - テスト用の注入口
+    //
+    // MicSource/SystemAudioSource/ChannelTranscriber は実機のマイク・システム音声・音声認識
+    // (Core Audio プロセスタップ、Speech フレームワーク)に直結し、OS の許可ダイアログや
+    // 署名の有無に成否が左右される。テストから実機に触れずに start/stop の状態遷移だけを
+    // 固定できるよう、生成と権限問い合わせを差し替え可能なクロージャの背後に置く。
+    // 既定値は本番と全く同じ実装で、公開 API の挙動・型は変えない(internal のみテストが使う)。
+
+    /// MicSource/SystemAudioSource が実装する最小限のインターフェース。
+    /// 両クラスはすでにこの形を満たしているため、元ファイルを変更せず extension で適合させる。
+    internal protocol AudioBufferSource: AnyObject {
+        var buffers: AsyncStream<SendableBuffer> { get }
+        func start() throws
+        func stop()
+        /// 開始したあとに取得が止まった時の通知先。開始時の失敗は start() が throw するため、
+        /// こちらは開始後の失敗だけを運ぶ。持たない音源のために既定実装を置く。
+        func setOnFailure(_ handler: @escaping @Sendable (String) -> Void)
+    }
+
+    /// ChannelTranscriber が実装する最小限のインターフェース。actor なので Actor を継承し、
+    /// 越境呼び出しに await を要求する既存の分離を保つ。
+    internal protocol ChannelTranscribing: Actor {
+        func start() async throws
+        func feed(_ buffer: AVAudioPCMBuffer)
+        func stop() async
+    }
+
+    /// マイク音源を作る。既定は実機の MicSource。テストではフェイクに差し替える。
+    internal var micSourceFactory: (String?) -> any AudioBufferSource = { MicSource(deviceUID: $0) }
+    /// システム音声(相手)の音源を作る。既定は実機の SystemAudioSource。
+    internal var systemAudioSourceFactory: () -> any AudioBufferSource = { SystemAudioSource() }
+    /// 自分の文字起こしを作る。既定は実機の ChannelTranscriber(Speech フレームワーク)。
+    internal var selfTranscriberFactory:
+        (Locale, AsyncStream<TranscriberEvent>.Continuation) -> any ChannelTranscribing = {
+            ChannelTranscriber(speaker: "自分", locale: $0, sink: $1)
+        }
+    /// 相手の文字起こしを作る。既定は実機の ChannelTranscriber。
+    internal var otherTranscriberFactory:
+        (Locale, AsyncStream<TranscriberEvent>.Continuation) -> any ChannelTranscribing = {
+            ChannelTranscriber(speaker: "相手", locale: $0, sink: $1)
+        }
+    /// 音声認識の使用許可を問い合わせる。既定は実際の TCC 問い合わせ(初回は OS の
+    /// 許可ダイアログを伴う)。テストではダイアログを避けるため固定値に差し替える。
+    internal var requestSpeechAuthorization: () async -> SFSpeechRecognizerAuthorizationStatus = {
+        await SessionEngine.requestSpeechAuthorizationFromSystem()
+    }
+    /// マイクの使用許可を問い合わせる。既定は実際の TCC 問い合わせ。
+    internal var requestMicAccess: () async -> Bool = {
+        await AVCaptureDevice.requestAccess(for: .audio)
+    }
+    /// セッションの保存先ディレクトリを作る。既定は SessionStore(本番の
+    /// Application Support 配下)。テストでは一時ディレクトリを返す差し替えを使い、
+    /// SessionStore.rootDirectory 自体には触れない。
+    internal var sessionDirectoryFactory: (Date, String, String?) throws -> URL = {
+        startDate, name, folder in
+        try SessionStore.createSessionDirectory(startDate: startDate, name: name, folder: folder)
+    }
+
     public private(set) var status = Status() {
         didSet { onStatusChange?(status) }
     }
@@ -226,16 +300,25 @@ public final class SessionEngine {
     /// onProlongedSilence を通知したあと、また発話が戻ってきた時の通知。
     /// 会議が再開したなら停止の確認は用済みなので、UI から引っ込めるために使う。
     public var onSilenceEnded: (() -> Void)?
+    /// 自分の声は届いているのに、相手のチャンネルだけが長く無音のままになっている。
+    /// タップは音を止めずに枝分かれさせて取るため、取得が死んでいても相手の声は普通に
+    /// 聞こえ続ける。耳では気づけない片側だけの欠落を拾う最後の網。MainActor 上で呼ばれる。
+    public var onSystemAudioSilent: (() -> Void)?
+    /// 相手の声が戻ってきた。片側だけの欠落の知らせを引っ込めるために使う。
+    public var onSystemAudioResumed: (() -> Void)?
     /// 入力レベル(RMS)の通知。UI のメーター表示用。
     /// pump(音声転送タスク)から MainActor の外で呼ばれるため Sendable であること。
     public var onLevel: (@Sendable (_ speaker: String, _ level: Float) -> Void)?
+    /// セッションの健全性イベント。マイク/音声認識の権限拒否・システム音声の取得失敗・
+    /// 録音の書き込み/変換失敗を、errorLog だけでなく UI へ伝える出口。MainActor 上で呼ばれる。
+    public var onHealthEvent: ((SessionHealthEvent) -> Void)?
 
     private let locale: Locale
     private var toggles: Toggles?
-    private var mic: MicSource?
-    private var system: SystemAudioSource?
-    private var mine: ChannelTranscriber?
-    private var theirs: ChannelTranscriber?
+    private var mic: (any AudioBufferSource)?
+    private var system: (any AudioBufferSource)?
+    private var mine: (any ChannelTranscribing)?
+    private var theirs: (any ChannelTranscribing)?
     private var recorder: SessionRecorder?
     private var writer: TranscriptWriter?
     private var pumps: [Task<Void, Never>] = []
@@ -260,6 +343,24 @@ public final class SessionEngine {
     /// 無音がこの秒数続いたら「もう誰も話していない」とみなして通知する。
     /// SilenceGate.hangover(発話の区切り検出)とは目的が別。
     private static let prolongedSilence: TimeInterval = 5 * 60
+    /// 相手のチャンネルだけが無音のまま続いた時に知らせるまでの時間。
+    /// prolongedSilence より長くしているのは、自分が説明し続けている間は相手が本当に
+    /// 黙っていることが普通にあるため(短くすると、正常な場面で警告が出る)。
+    private static let systemChannelSilence: TimeInterval = 10 * 60
+    /// 「自分は今も話している」とみなす直近の幅。相手だけの欠落かどうかの判定に使う。
+    private static let recentVoice: TimeInterval = 60
+
+    /// 相手のチャンネルだけが欠けているとみなすか。
+    ///
+    /// 自分の声は今も届いているのに、相手だけが長く来ていない、という形でだけ拾う。
+    /// 両方止まっているのは、ただ会議が途切れているだけかもしれず、そちらは
+    /// 無音監視(onProlongedSilence)の領分。
+    /// (時間の経過に左右されず固定できるよう、判定だけを切り出している)
+    internal static func isSystemChannelOneSided(
+        systemSilentFor: TimeInterval, micSilentFor: TimeInterval
+    ) -> Bool {
+        systemSilentFor >= systemChannelSilence && micSilentFor <= recentVoice
+    }
     /// 「誰かが話している」とみなす音量の下限。
     ///
     /// SilenceGate.defaultThreshold(0.001)を流用してはいけない。あちらは文字起こしを
@@ -293,17 +394,19 @@ public final class SessionEngine {
 
         // 許可が下りなくても止めない(マイクだけ・システム音声だけでも価値があるため)。
         // 失敗はその経路が無音になる形で現れるので、stderr に手がかりを残す。
-        let speechAuth = await Self.requestSpeechAuthorization()
+        let speechAuth = await requestSpeechAuthorization()
         if speechAuth != .authorized {
             errorLog("音声認識が許可されていません (status: \(speechAuth.rawValue))")
+            onHealthEvent?(.speechPermissionDenied)
         }
-        let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
+        let micGranted = await requestMicAccess()
         if !micGranted {
             errorLog("マイクが許可されていません")
+            onHealthEvent?(.micPermissionDenied)
         }
 
         let startedAt = Date()
-        let sessionDir = try SessionStore.createSessionDirectory(startDate: startedAt, name: name, folder: folder)
+        let sessionDir = try sessionDirectoryFactory(startedAt, name, folder)
         do {
             try await startResources(
                 sessionDir: sessionDir, startedAt: startedAt,
@@ -335,6 +438,10 @@ public final class SessionEngine {
         // 「認識器が文を確定させた」は人が話した証拠として強いため。
         let lastVoiceAt = OSAllocatedUnfairLock(initialState: Date())
         self.lastVoiceAt = lastVoiceAt
+        // 片側だけの欠落を見るための、チャンネルごとの起点。合算の lastVoiceAt では
+        // 自分が話している限り更新され続けるため、相手の欠落が永久に見えない。
+        let lastMicVoiceAt = OSAllocatedUnfairLock(initialState: Date())
+        let lastSystemVoiceAt = OSAllocatedUnfairLock(initialState: Date())
 
         let (events, eventSink) = AsyncStream<TranscriberEvent>.makeStream()
         self.eventSink = eventSink
@@ -384,20 +491,28 @@ public final class SessionEngine {
         var systemAudioError: String?
 
         // --- 音源と文字起こしの用意 ---
-        let mine = ChannelTranscriber(speaker: "自分", locale: locale, sink: eventSink)
+        let mine = selfTranscriberFactory(locale, eventSink)
         try await mine.start()
         self.mine = mine
-        let mic = MicSource(deviceUID: micDeviceUID)
+        let mic = micSourceFactory(micDeviceUID)
         try mic.start()
         self.mic = mic
 
         // 相手(システム音声)は署名なしビルドなどで失敗しても、自分のマイクだけで継続する。
-        var theirs: ChannelTranscriber?
-        var system: SystemAudioSource?
+        var theirs: (any ChannelTranscribing)?
+        var system: (any AudioBufferSource)?
         do {
-            let transcriber = ChannelTranscriber(speaker: "相手", locale: locale, sink: eventSink)
+            let transcriber = otherTranscriberFactory(locale, eventSink)
             try await transcriber.start()
-            let source = SystemAudioSource()
+            let source = systemAudioSourceFactory()
+            // 開始後に取得が止まった場合(出力先の載せ替えに失敗した等)も、開始時の
+            // 失敗と同じ扱いで伝える。ユーザーから見れば「相手の声が入っていない」
+            // という同じ状態なので、知らせ方を分ける理由がない。
+            source.setOnFailure { [weak self] reason in
+                Task { @MainActor in
+                    self?.onHealthEvent?(.systemAudioUnavailable(reason: reason))
+                }
+            }
             try source.start()
             theirs = transcriber
             system = source
@@ -406,13 +521,28 @@ public final class SessionEngine {
         } catch {
             systemAudioError = "システム音声を取得できません: \(error)"
             errorLog(systemAudioError!)
+            onHealthEvent?(.systemAudioUnavailable(reason: systemAudioError!))
         }
 
-        // --- 録音(1本のモノラルミックス。自分と相手を重ねて書く) ---
+        // --- 録音(モノラルミックス1本 + 相手も録るなら相手だけの1本) ---
+        // ファイル名の規則は SessionInfo.Artifact が正本。ここで組み立て直さない。
+        let dirName = sessionDir.lastPathComponent
+        func audioURL(_ artifact: SessionInfo.Artifact) -> URL {
+            sessionDir.appendingPathComponent(artifact.fileName(inDirectoryNamed: dirName))
+        }
         let recorder = SessionRecorder(
-            url: sessionDir.appendingPathComponent("\(sessionDir.lastPathComponent).m4a"),
+            url: audioURL(.audio),
+            otherURL: audioURL(.audioOther),
             includesSystemChannel: system != nil)
         await recorder.setGains(mic: micGain, system: systemGain)
+        // 書き込み失敗は actor(SessionRecorder)の外の文脈で呼ばれるため、
+        // MainActor の onHealthEvent へ触るところだけ Task で MainActor へ渡す
+        // (AppModel.onLevel と同じパターン)。
+        await recorder.setOnFailure { [weak self] in
+            Task { @MainActor in
+                self?.onHealthEvent?(.recordingWriteFailed)
+            }
+        }
         self.recorder = recorder
 
         // --- pump: 音源 → 文字起こし/録音への分岐 ---
@@ -433,7 +563,10 @@ public final class SessionEngine {
                 // 無音判定は発話レベルで切る(理由は speechLevel を参照)。ただし騒がしい
                 // 部屋で入力感度をそれより高く設定している場合は、そちらを下限にする。
                 // 感度より下は文字起こしにも渡らない音なので、発話として数える理由がない。
-                if level >= max(threshold, Self.speechLevel) { lastVoiceAt.withLock { $0 = Date() } }
+                if level >= max(threshold, Self.speechLevel) {
+                    lastVoiceAt.withLock { $0 = Date() }
+                    lastMicVoiceAt.withLock { $0 = Date() }
+                }
                 // ゲートは文字起こしにだけ効かせる。録音は無音も含めて忠実に残す。
                 if toggles.transcribing.withLock({ $0 }) {
                     switch gate.action(for: item.buffer, level: level, threshold: threshold) {
@@ -460,7 +593,10 @@ public final class SessionEngine {
                 for await item in systemBuffers {
                     let level = rmsLevel(item.buffer)
                     onLevel?("相手", level)
-                    if level >= Self.speechLevel { lastVoiceAt.withLock { $0 = Date() } }
+                    if level >= Self.speechLevel {
+                        lastVoiceAt.withLock { $0 = Date() }
+                        lastSystemVoiceAt.withLock { $0 = Date() }
+                    }
                     if toggles.transcribing.withLock({ $0 }) {
                         switch gate.action(for: item.buffer, level: level) {
                         case .open:
@@ -484,11 +620,32 @@ public final class SessionEngine {
         //
         // 通知は「無音に入った1回だけ」。毎 tick 呼ぶと同じ確認を延々と出し直すことになる。
         // 発話が戻ったら onSilenceEnded を出して、次の無音でまた通知できる状態に戻す。
+        // 相手のチャンネルを見張るのは、そもそも取得できているセッションだけ。
+        // 開始時点で取れていない場合は systemAudioUnavailable で既に伝えている。
+        let watchesSystemChannel = system != nil
         silenceWatchTask = Task { [weak self] in
             var notified = false
+            var systemNotified = false
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled, let self else { return }
+                if watchesSystemChannel {
+                    let systemSilentFor = Date().timeIntervalSince(
+                        lastSystemVoiceAt.withLock { $0 })
+                    let micSilentFor = Date().timeIntervalSince(lastMicVoiceAt.withLock { $0 })
+                    let oneSided = Self.isSystemChannelOneSided(
+                        systemSilentFor: systemSilentFor, micSilentFor: micSilentFor)
+                    if oneSided, !systemNotified {
+                        systemNotified = true
+                        debugLog("相手のチャンネルだけが \(Int(systemSilentFor)) 秒無音")
+                        self.onSystemAudioSilent?()
+                    } else if systemNotified, systemSilentFor < Self.systemChannelSilence {
+                        // 引っ込めてよいのは相手の声が戻った時だけ。自分が黙っただけで
+                        // 引っ込めると、相手が欠けたままの状態を見逃す。
+                        systemNotified = false
+                        self.onSystemAudioResumed?()
+                    }
+                }
                 let silentFor = Date().timeIntervalSince(lastVoiceAt.withLock { $0 })
                 // 発火しない不具合(しきい値が環境ノイズに埋もれていた)を、次からは
                 // ログだけで切り分けられるようにする。
@@ -565,7 +722,10 @@ public final class SessionEngine {
         eventSink = nil
 
         await writer?.close()
-        await recorder?.close()
+        if let recorder {
+            let converted = await recorder.close()
+            if !converted { onHealthEvent?(.recordingConversionFailed) }
+        }
 
         mic = nil
         system = nil
@@ -630,7 +790,8 @@ public final class SessionEngine {
 
     // SFSpeechRecognizer.requestAuthorization の完了ハンドラは TCC が背景スレッドで呼ぶ。
     // MainActor 分離のまま継続を受けるとランタイムが trap するため、nonisolated に切り出す。
-    private nonisolated static func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
+    private nonisolated static func requestSpeechAuthorizationFromSystem() async -> SFSpeechRecognizerAuthorizationStatus
+    {
         await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { status in
                 continuation.resume(returning: status)
@@ -638,3 +799,16 @@ public final class SessionEngine {
         }
     }
 }
+
+extension SessionEngine.AudioBufferSource {
+    /// 開始後の失敗を伝える口を持たない音源(マイクなど)は、何もしない。
+    func setOnFailure(_ handler: @escaping @Sendable (String) -> Void) {}
+}
+
+// MARK: - 実機クラスの AudioBufferSource/ChannelTranscribing への適合
+//
+// MicSource/SystemAudioSource/ChannelTranscriber はすでに start()/stop()/feed() を
+// 同じシグネチャで持つため、各ファイルを変更せずここで適合させる(retroactive conformance)。
+extension MicSource: SessionEngine.AudioBufferSource {}
+extension SystemAudioSource: SessionEngine.AudioBufferSource {}
+extension ChannelTranscriber: SessionEngine.ChannelTranscribing {}
