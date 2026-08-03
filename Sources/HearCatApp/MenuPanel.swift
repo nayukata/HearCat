@@ -1,4 +1,5 @@
 import AppKit
+import HearCatKit
 import SwiftUI
 
 /// メニューバーから開くパネル。開始/停止・トグル・入力メーターをここに集約する。
@@ -12,6 +13,11 @@ struct MenuPanel: View {
                 .padding(.horizontal, 14)
                 .padding(.top, 12)
                 .padding(.bottom, 10)
+            if !model.healthIssues.isEmpty {
+                healthBannerSection
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+            }
             divider
             Group {
                 if model.status.active {
@@ -59,7 +65,7 @@ struct MenuPanel: View {
                     style: FillStyle(eoFill: true))
                 .frame(width: 17, height: 17)
             Text("HearCat")
-                .font(HCFont.system(size: 14, weight: .black))
+                .font(HCFont.brand)
                 .foregroundStyle(.white)
             Spacer()
             if model.status.active, let startedAt = model.status.startedAt {
@@ -75,10 +81,32 @@ struct MenuPanel: View {
         }
     }
 
+    // MARK: - 異常バナー
+
+    /// 進行中の異常をすべて縦に並べる。複数同時にあり得るので個別に畳む/消せる。
+    private var healthBannerSection: some View {
+        VStack(spacing: 8) {
+            ForEach(model.healthIssues) { issue in
+                HealthIssueBanner(
+                    issue: issue,
+                    isCollapsed: model.collapsedHealthIssues.contains(issue.kind),
+                    onToggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            model.toggleHealthIssueCollapsed(issue)
+                        }
+                    },
+                    onDismiss: { model.dismissHealthIssue(issue) })
+            }
+        }
+    }
+
     // MARK: - 待機中
 
     private var idleSection: some View {
         VStack(spacing: 10) {
+            if let recent = model.recentlyEndedSession {
+                recentSessionCard(recent)
+            }
             groupPicker
                 // 今の予定に紐づくグループへ選択を寄せる。会議が始まっているのに
                 // 前回のグループのままだと、そのまま開始して別のグループへ入ってしまう。
@@ -106,9 +134,54 @@ struct MenuPanel: View {
                 Label("文字起こしのみ開始", systemImage: "text.quote")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(PanelButtonStyle())
+            .buttonStyle(.hcSecondary)
         }
         .disabled(model.busy)
+    }
+
+    /// 直前に終わったセッションへ戻るための行。停止したあと画面上では何も起きないため、
+    /// 記録の終わりと「見返す」入口をここで繋ぐ。要約は停止から少し遅れて出来上がるので、
+    /// 出来上がるまでは作成中であることを見せて、待てば要約が出ることを伝える。
+    private func recentSessionCard(_ session: SessionInfo) -> some View {
+        let awaitingSummary = model.isAwaitingSummary(session)
+        let hasSummary = session.summaryURL != nil
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("直前のセッション")
+                Spacer()
+                Text(session.startDate.formatted(date: .omitted, time: .shortened))
+            }
+            .font(HCFont.caption)
+            .foregroundStyle(HCColor.mistWhiteDim)
+
+            Text(session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name)
+                .font(HCFont.style(.callout, weight: .semibold))
+                .foregroundStyle(HCColor.mistWhite)
+                .lineLimit(1)
+
+            if awaitingSummary {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("要約を作成中")
+                }
+                .font(HCFont.caption)
+                .foregroundStyle(HCColor.mistWhiteDim)
+            }
+
+            Button {
+                model.showHistory(selecting: session.id)
+            } label: {
+                Label(
+                    hasSummary ? "要約を見る" : "文字起こしを見る",
+                    systemImage: hasSummary ? "list.bullet.rectangle" : "text.quote")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.hcSecondary)
+        }
+        .padding(10)
+        .background(
+            HCRadius.shape(HCRadius.card)
+                .fill(.white.opacity(0.06)))
     }
 
     /// 開始するセッションを入れるグループの選択。表示は「次のセッションが入る先」で、
@@ -214,16 +287,16 @@ struct MenuPanel: View {
                 Label("会議内容を関連資料と照合", systemImage: "text.magnifyingglass")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(PanelButtonStyle())
+            .buttonStyle(.hcSecondary)
             .disabled(!model.status.transcribing)
 
-            Button {
+            Button(role: .destructive) {
                 Task { await model.stopSession() }
             } label: {
                 Label("セッションを停止", systemImage: "stop.circle")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(PanelButtonStyle(foreground: HCColor.rec))
+            .buttonStyle(.hcSecondary)
             .disabled(model.busy)
         }
         .toggleStyle(.switch)
@@ -273,7 +346,7 @@ struct MenuPanel: View {
             }
             .help("HearCat を終了")
         }
-        .buttonStyle(PanelButtonStyle())
+        .buttonStyle(.hcSecondary)
     }
 
     private var recordingBinding: Binding<Bool> {
@@ -286,24 +359,6 @@ struct MenuPanel: View {
         Binding(
             get: { model.status.transcribing },
             set: { model.setTranscribing($0) })
-    }
-}
-
-/// パネル用の控えめなボタン。ネイビー地に白の半透明で描き、
-/// 青は主ボタン(開始)だけに残して色の役割を分ける(青=開始 / 赤=停止 / 無彩色=その他)。
-struct PanelButtonStyle: ButtonStyle {
-    var foreground: Color = .white.opacity(0.85)
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(HCFont.system(size: 12, weight: .medium))
-            .padding(.vertical, 7)
-            .padding(.horizontal, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(.white.opacity(configuration.isPressed ? 0.18 : 0.08)))
-            .foregroundStyle(foreground)
-            .contentShape(RoundedRectangle(cornerRadius: 7))
     }
 }
 

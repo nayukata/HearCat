@@ -250,7 +250,7 @@ private struct AssigneeChip: View {
 
     var body: some View {
         Text(name)
-            .font(HCFont.system(size: 11, weight: .semibold))
+            .font(HCFont.style(.subheadline, weight: .semibold))
             .foregroundStyle(style.isInteractive ? AnyShapeStyle(.secondary) : AnyShapeStyle(HCColor.cinnamon))
             .padding(.horizontal, 8)
             .padding(.vertical, 1)

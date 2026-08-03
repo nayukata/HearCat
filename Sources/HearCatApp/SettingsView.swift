@@ -3,6 +3,7 @@ import Foundation
 import HearCatKit
 import HearCatSummarize
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// マイクの入力デバイス選択肢。nil(システム標準)を含めて Picker で扱えるようにする。
 private struct MicDeviceOption: Identifiable, Hashable {
@@ -149,17 +150,48 @@ struct SettingsView: View {
     /// Claude/Codex を自動要約に選ぶ際の外部送信同意確認。ダイアログでキャンセルされたら
     /// pending の選択に戻さず、元の選択を保つためにここへ待避する。
     @State private var pendingAutoSummaryEngine: SummaryEngine?
+    /// 追加待ちの除外キーワード。追加した時点で空に戻す。
+    @State private var newExcludedKeyword = ""
+    /// 「予定から選ぶ」で出す、これから2週間ぶんの会議。押すたびに引き直す。
+    @State private var upcomingMeetings: [CalendarMeeting] = []
+    @State private var loadingUpcomingMeetings = false
+    /// メニューを出す位置の基準にする NSView(「予定から選ぶ」ボタンの実体)。
+    @State private var upcomingMenuAnchor: NSView?
+    /// NSMenuItem の target。NSMenuItem は target を弱参照するため、
+    /// ビューの生存期間だけ強参照を保持する必要がある。
+    @State private var upcomingMenuActionHandler = MenuActionHandler()
+
+    /// ストレージの合計使用量。開くたびに計算し直す(セッションの録音・削除で変わるため)。
+    @State private var storageUsage: SessionStore.StorageUsage?
+    @State private var deleteOldRecordingsMenuAnchor: NSView?
+    @State private var deleteOldRecordingsMenuActionHandler = MenuActionHandler()
+    /// 確認ダイアログに出す「対象日数」と「対象件数・サイズ」。両方揃っている間だけダイアログを出す。
+    @State private var pendingDeleteOldRecordingsDays: Int?
+    @State private var pendingDeleteOldRecordingsSummary: SessionStore.OldRecordingsSummary?
+    @State private var deleteOldRecordingsMessage: String?
+    /// 入力レベルの確認中か。押されている間だけマイクを掴む(micTestRow を参照)。
+    @State private var micTesting = false
 
     var body: some View {
         // 1本の長いスクロールだと下のセクションが見落とされるため、macOS の
         // 設定アプリと同じタブで分ける。各タブが一画面に収まる高さにする。
         TabView {
             Tab("一般", systemImage: "gearshape") { generalTab }
+            Tab("セッション", systemImage: "record.circle") { sessionTab }
             Tab("音声", systemImage: "mic") { audioTab }
             Tab("AI", systemImage: "sparkles") { aiTab }
             Tab("ホットキー", systemImage: "keyboard") { hotkeyTab }
         }
-        .frame(width: 520, height: 480)
+        // タブの並びは本文ではなくタイトルバーの中に描かれる。幅が足りないと、
+        // 並びは省略されずに丸ごと畳まれて何も見えなくなるため、必要な幅を必ず確保する。
+        //
+        // 実測(タイトルバーを画面外に描いて計測): タブ5つの帯は約 430pt、左端の信号機
+        // ボタンが約 98pt で、合計 528pt が下限。520pt だと 8pt 足りずに畳まれていた。
+        // 560pt はその下限に 32pt の余裕を持たせた値。タブの文言を長くする時はここも見直す。
+        //
+        // 幅を固定するのは、下限だけにすると折り返してほしい長い説明文の幅に
+        // ウィンドウが合わせてしまい、際限なく横に伸びるため。
+        .frame(width: 560, height: 480)
         // Toggle の switch トラック(on 側の色)は Window レベルの tint だけでは
         // system accent が優先されて青のまま残ることがある。SwitchToggleStyle に
         // 直接 tint を渡すことで、切替スイッチのトラック色を確実にシナモン茶へ。
@@ -171,6 +203,55 @@ struct SettingsView: View {
             // システム設定や CLI 側で変えられていても、開いた時点の実状態に合わせる。
             launchAtLogin = LoginItem.isEnabled
         }
+    }
+
+    /// セクションの補足説明。置き場所は必ずセクションの footer にする
+    /// (項目の直下に地の文として置くと、インデントと行間が変わって、設定項目そのものと
+    /// 見分けが付かなくなる)。複数の項目に説明が要るセクションでは、項目の順に1行ずつ並べる。
+    private func settingsFooter(_ lines: String...) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+            }
+        }
+        .font(HCFont.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 1回の記録の始まり方・名前の付き方・終わり方をまとめるタブ。
+    /// タブ名を「会議」にしないのは、通話でも独り言の口述でも使えるアプリで、
+    /// 用途を会議に狭めて見せてしまうため。アプリが画面で使っている呼び名(セッション)に揃える。
+    private var sessionTab: some View {
+        Form {
+            Section {
+                Toggle("カレンダーの予定名を自動で付ける", isOn: $settings.calendarNaming)
+            } header: {
+                Text("セッション名")
+            } footer: {
+                settingsFooter("セッション開始時、今の時刻に重なる予定 (5分後までに始まる予定も含む) のタイトルをセッション名にします。macOS のカレンダーに追加したアカウント (Google など) の予定も対象です。初回はカレンダーへのアクセス許可を求めます。")
+            }
+
+            Section {
+                Toggle("会議の時間になったら自動で録音を開始", isOn: $settings.meetingAutoStart)
+                if settings.meetingAutoStart {
+                    excludedMeetingRows
+                }
+            } header: {
+                Text("自動開始")
+            } footer: {
+                settingsFooter("会議サービスの URL が入っている予定だけが対象です。開始 30 秒前に画面右上へ予告が出るので、録りたくない回はそこで取り消せます。終日の予定と、辞退した予定は対象外です。")
+            }
+
+            Section {
+                Toggle("無音が5分続いたら停止するか確認", isOn: $settings.confirmStopOnSilence)
+            } header: {
+                Text("無音の確認")
+            } footer: {
+                settingsFooter("マイクとシステム音声の両方が5分間無音のとき、画面右上で停止するかを尋ねます。返事があるまで録音は続くので、会議が再開しても記録は途切れません。")
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var generalTab: some View {
@@ -196,39 +277,7 @@ struct SettingsView: View {
             } header: {
                 Text("起動")
             } footer: {
-                Text("Mac にログインしたとき、メニューバーに自動で常駐します。システム設定 > 一般 > ログイン項目からも変更できます。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Toggle("カレンダーの予定名を自動で付ける", isOn: $settings.calendarNaming)
-            } header: {
-                Text("セッション名")
-            } footer: {
-                Text("セッション開始時、今の時刻に重なる予定 (5分後までに始まる予定も含む) のタイトルをセッション名にします。macOS のカレンダーに追加したアカウント (Google など) の予定も対象です。初回はカレンダーへのアクセス許可を求めます。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Toggle("会議の時間になったら自動で録音を開始", isOn: $settings.meetingAutoStart)
-            } header: {
-                Text("自動開始")
-            } footer: {
-                Text("会議 URL があるか、自分以外の参加者がいる予定だけが対象です。開始 30 秒前に画面右上へ予告が出るので、録りたくない回はそこで取り消せます。終日の予定と、辞退した予定は対象外です。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Toggle("無音が5分続いたら停止するか確認", isOn: $settings.confirmStopOnSilence)
-            } header: {
-                Text("無音の確認")
-            } footer: {
-                Text("マイクとシステム音声の両方が5分間無音のとき、画面右上で停止するかを尋ねます。返事があるまで録音は続くので、会議が再開しても記録は途切れません。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter("Mac にログインしたとき、メニューバーに自動で常駐します。システム設定 > 一般 > ログイン項目からも変更できます。")
             }
 
             Section {
@@ -253,14 +302,308 @@ struct SettingsView: View {
             } header: {
                 Text("アップデート")
             } footer: {
-                Text("このコマンドをターミナルで実行すると、最新版に入れ替わります。実行中は HearCat がいったん終了するので、録音していないときに行ってください。確認するのは公開されているバージョン番号だけで、こちらからは何も送りません。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter("このコマンドをターミナルで実行すると、最新版に入れ替わります。実行中は HearCat がいったん終了するので、録音していないときに行ってください。確認するのは公開されているバージョン番号だけで、こちらからは何も送りません。")
             }
             .onAppear { checkForUpdate() }
 
+            storageSection
+
+            Section {
+                // ボタンの言葉は、開く画面の名前(ようこそ)ではなく、そこで何ができるかにする。
+                // 内部の呼び名をそのまま出しても、押した先に何があるか伝わらない。
+                Button("使い方と権限を確認") {
+                    model.openWindowAction?("welcome")
+                }
+                .controlSize(.small)
+            } header: {
+                Text("サポート")
+            } footer: {
+                settingsFooter("HearCat にできることの紹介と、マイク・音声認識・カレンダーの許可の状態を見直せます。")
+            }
+
         }
         .formStyle(.grouped)
+        .onAppear { refreshStorageUsage() }
+    }
+
+    /// 録音・文字起こしなどの合計使用量と、古い録音の削除。
+    /// 自動削除はしない方針で、常にユーザーが日数を選んでから確認画面を挟む。
+    private var storageSection: some View {
+        Section {
+            LabeledContent("使用量") {
+                Text(storageUsageText)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                Button("古い録音を削除…") {
+                    showDeleteOldRecordingsMenu()
+                }
+                .controlSize(.small)
+                .background(MenuAnchorView(anchor: $deleteOldRecordingsMenuAnchor))
+                if let deleteOldRecordingsMessage {
+                    Text(deleteOldRecordingsMessage)
+                        .font(HCFont.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("ストレージ")
+        } footer: {
+            settingsFooter("選んだ日数より前のセッションから、録音ファイルだけを削除します。文字起こしと要約は残ります。")
+        }
+        .confirmationDialog(
+            deleteOldRecordingsTitle,
+            isPresented: Binding(
+                get: { pendingDeleteOldRecordingsSummary != nil },
+                set: { if !$0 { clearPendingDeleteOldRecordings() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("削除する", role: .destructive) { performDeleteOldRecordings() }
+            Button("キャンセル", role: .cancel) { clearPendingDeleteOldRecordings() }
+        } message: {
+            Text(deleteOldRecordingsDialogMessage(for: pendingDeleteOldRecordingsSummary))
+        }
+    }
+
+    /// 自動録音の対象から外す指定。
+    ///
+    /// 2つの入り口を並べる。予告パネルの「今後録らない」で外した予定と、予定名に
+    /// 含まれる言葉での除外。前者は正確だが予告を見ていないと押せないため、
+    /// 後者を後から止める手段として置く。
+    @ViewBuilder
+    private var excludedMeetingRows: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("録らない予定")
+                .font(HCFont.caption)
+                .foregroundStyle(.secondary)
+            if !settings.excludedMeetings.isEmpty || !settings.excludedMeetingKeywords.isEmpty {
+                // 1件が1つのタグ。解除はタグの中の × で完結させる(行の右端まで視線を
+                // 往復させない)。件数が増えても折り返して収まる。
+                FlowLayout(spacing: 6) {
+                    // 予定名は変わることがあるので、外した時点の名前をそのまま出す。
+                    ForEach(
+                        settings.excludedMeetings.sorted(by: { $0.value < $1.value }), id: \.key
+                    ) { id, title in
+                        ExcludedChip(
+                            icon: "calendar", label: title.isEmpty ? "名前のない予定" : title,
+                            tinted: true
+                        ) {
+                            settings.excludedMeetings.removeValue(forKey: id)
+                        }
+                    }
+                    ForEach(settings.excludedMeetingKeywords, id: \.self) { keyword in
+                        ExcludedChip(icon: "magnifyingglass", label: keyword, tinted: false) {
+                            settings.excludedMeetingKeywords.removeAll { $0 == keyword }
+                        }
+                    }
+                }
+                Text("カレンダーの印は予定そのもの、虫めがねは予定名に含まれる言葉です。")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                // grouped Form では TextField の第1引数は左側のラベルとして描かれる。
+                // 説明を欄の中に置きたいので、ラベルは空にして prompt に入れる。
+                TextField(
+                    "", text: $newExcludedKeyword,
+                    prompt: Text("予定名に含まれる言葉 (例: リマインダー)"))
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                    .onSubmit { addExcludedKeyword() }
+                Button("追加") { addExcludedKeyword() }
+                    .disabled(
+                        newExcludedKeyword.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            // 予告を見逃した予定にも、あとから辿り着けるようにする。
+            Button {
+                loadUpcomingMeetings()
+            } label: {
+                if loadingUpcomingMeetings {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("予定から選ぶ…")
+                }
+            }
+            .controlSize(.small)
+            .disabled(loadingUpcomingMeetings)
+            .background(MenuAnchorView(anchor: $upcomingMenuAnchor))
+        }
+    }
+
+    /// これから2週間の会議から、録らないものを選ばせる。既に外したものは出さない
+    /// (タグとして上に並んでいるため)。
+    ///
+    /// 自前のポップオーバーではなく NSMenu にしている。メニューは上下キーでの移動・
+    /// Return での決定・Escape での取り消しを最初から持っていて、macOS の
+    /// 「キーボードナビゲーション」が切られている環境(既定)でもキーボードだけで
+    /// 選べるため。自前の一覧では、その環境で Tab がボタンにもリストにも止まらず、
+    /// マウス専用の画面になってしまう。
+    private func showUpcomingMeetingMenu() {
+        guard let anchor = upcomingMenuAnchor else { return }
+        let menu = makeHCMenu()
+        let selectable = upcomingMeetings.filter {
+            settings.excludedMeetings[$0.seriesID] == nil
+        }
+        if selectable.isEmpty {
+            let item = NSMenuItem(
+                title: "これから2週間に、自動で録音される予定はありません", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        } else {
+            for meeting in selectable {
+                let item = upcomingMenuActionHandler.makeItem(displayName(of: meeting)) {
+                    exclude(meeting)
+                }
+                // 同じ名前の予定が並ぶことがあるため、日時を添えて見分けられるようにする。
+                item.subtitle = meeting.startDate.formatted(
+                    date: .abbreviated, time: .shortened)
+                menu.addItem(item)
+            }
+        }
+        popUpMenu(menu, below: anchor)
+    }
+
+    private func displayName(of meeting: CalendarMeeting) -> String {
+        meeting.title.isEmpty ? "名前のない予定" : meeting.title
+    }
+
+    private func exclude(_ meeting: CalendarMeeting) {
+        settings.excludedMeetings[meeting.seriesID] = displayName(of: meeting)
+    }
+
+    private func loadUpcomingMeetings() {
+        loadingUpcomingMeetings = true
+        Task {
+            upcomingMeetings = await CalendarMeetings.upcomingMeetings(
+                within: 14 * 24 * 60 * 60)
+            loadingUpcomingMeetings = false
+            showUpcomingMeetingMenu()
+        }
+    }
+
+    private func addExcludedKeyword() {
+        let keyword = newExcludedKeyword.trimmingCharacters(in: .whitespaces)
+        guard !keyword.isEmpty, !settings.excludedMeetingKeywords.contains(keyword) else {
+            newExcludedKeyword = ""
+            return
+        }
+        settings.excludedMeetingKeywords.append(keyword)
+        newExcludedKeyword = ""
+    }
+
+    // MARK: - ストレージ
+
+    private func refreshStorageUsage() {
+        Task {
+            let usage = await Task.detached(priority: .userInitiated) {
+                SessionStore.storageUsage()
+            }.value
+            storageUsage = usage
+        }
+    }
+
+    private var storageUsageText: String {
+        guard let storageUsage else { return "計算中…" }
+        guard storageUsage.totalBytes > 0 else { return "録音・記録はまだありません" }
+        return "合計 \(formattedBytes(storageUsage.totalBytes))"
+            + " (録音 \(formattedBytes(storageUsage.audioBytes))"
+            + "・その他 \(formattedBytes(storageUsage.otherBytes)))"
+    }
+
+    private func formattedBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// 「古い録音を削除…」で出す日数の選択肢。ボタン直下に NSMenu を出す
+    /// (この環境は Tab キーがボタンに止まらない設定のため、自前の一覧ではなく NSMenu を使う)。
+    private func showDeleteOldRecordingsMenu() {
+        guard let anchor = deleteOldRecordingsMenuAnchor else { return }
+        let menu = makeHCMenu()
+        for days in [30, 90, 180] {
+            let item = deleteOldRecordingsMenuActionHandler.makeItem("\(days) 日より前") {
+                confirmDeleteOldRecordings(olderThanDays: days)
+            }
+            menu.addItem(item)
+        }
+        popUpMenu(menu, below: anchor)
+    }
+
+    /// 選んだ日数の対象を数え、0件ならその場で結果だけ伝えて確認ダイアログを出さない
+    /// (削除しようがないものの確認を挟むと、押すだけ無駄な手順になる)。
+    private func confirmDeleteOldRecordings(olderThanDays days: Int) {
+        deleteOldRecordingsMessage = nil
+        Task {
+            let summary = await Task.detached(priority: .userInitiated) {
+                SessionStore.oldRecordingsSummary(olderThanDays: days)
+            }.value
+            guard summary.sessionCount > 0 else {
+                deleteOldRecordingsMessage = "\(days) 日より前の録音はありませんでした"
+                return
+            }
+            pendingDeleteOldRecordingsDays = days
+            pendingDeleteOldRecordingsSummary = summary
+        }
+    }
+
+    private func clearPendingDeleteOldRecordings() {
+        pendingDeleteOldRecordingsDays = nil
+        pendingDeleteOldRecordingsSummary = nil
+    }
+
+    private var deleteOldRecordingsTitle: String {
+        guard let days = pendingDeleteOldRecordingsDays else { return "" }
+        return "\(days) 日より前の録音を削除しますか？"
+    }
+
+    private func deleteOldRecordingsDialogMessage(for summary: SessionStore.OldRecordingsSummary?) -> String {
+        guard let summary else { return "" }
+        return "\(summary.sessionCount) 件、\(formattedBytes(summary.bytes)) の録音を削除します。"
+            + "文字起こしと要約は残ります。この操作は取り消せません。"
+    }
+
+    private func performDeleteOldRecordings() {
+        guard let days = pendingDeleteOldRecordingsDays else { return }
+        clearPendingDeleteOldRecordings()
+        // 削除は保存先を全部走査して数十 MB のファイルを消す。メインスレッドで回すと
+        // その間ずっと設定ウィンドウが固まるため、対象件数の集計と同じく裏へ逃がす。
+        Task {
+            let freed = await Task.detached(priority: .userInitiated) {
+                SessionStore.deleteOldRecordings(olderThanDays: days)
+            }.value
+            deleteOldRecordingsMessage = "\(formattedBytes(freed)) の空き容量を確保しました"
+            refreshStorageUsage()
+        }
+    }
+
+    /// 入力レベルの確認。押した間だけマイクを掴む。
+    ///
+    /// タブを開いただけで掴まないのは、Bluetooth のイヤホンだと、マイクを掴んだ時点で
+    /// 機器が通話用の経路へ切り替わり、聞こえている音の大きさまで変わってしまうため。
+    /// (実測: AirPods Pro で、マイクを掴むと出力音量が 0.390 → 0.330 に変わり、
+    /// マイクを離しても元に戻らなかった。設定を見に来ただけで音が変わるのは事故に近い。)
+    ///
+    /// メーターの表示/非表示を伝えるだけで、実際にプローブを動かすかどうかの判定
+    /// (セッション中でないか等)は AppModel.updateMicProbe に集約している。
+    /// デバイス変更時の作り直しも settings.micDeviceChanged 経由で同じ場所に集約される。
+    private var micTestRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(micTesting ? "マイクの確認を止める" : "マイクを試す") {
+                micTesting.toggle()
+                model.setMicMeterVisible(micTesting)
+            }
+            .controlSize(.small)
+            if micTesting {
+                micLevelMeter
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 感度の自動調整に戻した時、タブを離れた時、ウィンドウを閉じた時のいずれでも
+        // マイクを離す。掴んだままにすると、設定を閉じたあとも音の経路が戻らない。
+        .onDisappear {
+            micTesting = false
+            model.setMicMeterVisible(false)
+        }
     }
 
     private var audioTab: some View {
@@ -271,29 +614,20 @@ struct SettingsView: View {
                         Text(option.name).tag(option.uid)
                     }
                 }
-                Text("デバイスの変更は次のセッションから有効です。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
                 Toggle("エコー除去", isOn: $settings.echoRemoval)
-                Text("スピーカーから出た相手の声が、自分の発言として文字起こしされるのを防ぎます。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
                 Toggle("入力感度を自動調整", isOn: $settings.micSensitivityAuto)
                 if !settings.micSensitivityAuto {
                     micSensitivitySlider
-                    // メーターの表示/非表示を伝えるだけで、実際にプローブを動かすかどうかの
-                    // 判定(セッション中でないか等)は AppModel.updateMicProbe に集約している。
-                    // デバイス変更時の作り直しも settings.micDeviceChanged 経由で同じ場所に集約される。
-                    micLevelMeter
-                        .onAppear { model.setMicMeterVisible(true) }
-                        .onDisappear { model.setMicMeterVisible(false) }
+                    micTestRow
                 }
             } header: {
                 Text("マイク")
             } footer: {
-                Text("入力感度は、マイクの音量がこの値を下回る間は文字起こしに流しません。低すぎると回り込みを拾い、高すぎると小さな声を取りこぼします。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter(
+                    "入力デバイスの変更は次のセッションから有効です。",
+                    "エコー除去は、スピーカーから出た相手の声が自分の発言として文字起こしされるのを防ぎます。",
+                    "入力感度は、マイクの音量がこの値を下回る間は文字起こしに流しません。低すぎると回り込みを拾い、高すぎると小さな声を取りこぼします。",
+                    "「マイクを試す」の間だけマイクを使います。Bluetooth のイヤホンでは、マイクを使うと機器が通話用に切り替わり、聞こえる音の大きさが変わることがあります。")
             }
 
             Section {
@@ -302,9 +636,7 @@ struct SettingsView: View {
             } header: {
                 Text("録音の音量")
             } footer: {
-                Text("録音ファイルに書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter("録音ファイルに書く音量です。100% が原音。セッション中の変更もすぐに反映されます。文字起こしの精度には影響しません。")
             }
         }
         .formStyle(.grouped)
@@ -326,9 +658,7 @@ struct SettingsView: View {
             } header: {
                 Text("自動要約")
             } footer: {
-                Text("セッション停止直後に自動で走る要約に使います。Apple Intelligence はオンデバイスで完結します。Claude / Codex は文字起こしを外部の AI サービスへ送信するため、初回だけ確認します。空欄なら各 CLI の設定を使います。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter("セッション停止直後に自動で走る要約に使います。Apple Intelligence はオンデバイスで完結します。Claude / Codex は文字起こしを外部の AI サービスへ送信するため、初回だけ確認します。空欄なら各 CLI の設定を使います。")
             }
 
             Section {
@@ -345,9 +675,7 @@ struct SettingsView: View {
             } header: {
                 Text("関連資料との照合")
             } footer: {
-                Text("会議中にホットキーを押すと、文字起こしを紐付けた資料フォルダと照合します。処理は読み取り専用で、明示的に押した時だけ実行されます。空欄なら各 CLI の設定を使います。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter("会議中にホットキーを押すと、AI がここまでの文字起こしと、あらかじめ紐付けた資料フォルダの中身を見比べ、話の背景や食い違いがないかを確認します。資料は読み取るだけで書き換えません。ホットキーを押した時だけ動きます。空欄なら Claude や Codex 側の設定を使います。")
             }
 
             Section {
@@ -368,17 +696,11 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("AI エージェント連携")
-                    Text("AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。")
-                        .font(HCFont.footnote)
-                        .foregroundStyle(.secondary)
-                        .textCase(nil)
-                }
+                Text("AI エージェント連携")
             } footer: {
-                Text("各エージェント配下 (~/.claude/skills/ など) には実体へのリンクを張ります。アプリを起動するたびに自動で最新に更新します。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter(
+                    "AI エージェント (Claude Code / Codex / Copilot など) が「文字起こしを始めて」などの指示でこのアプリを操作できるようになります。",
+                    "各エージェントの設定フォルダ (~/.claude/skills/ など) に、この機能を使うためのファイルを配置します。アプリを起動するたびに自動で最新の内容に更新されるので、入れ直しは不要です。")
             }
         }
         .formStyle(.grouped)
@@ -395,17 +717,13 @@ struct SettingsView: View {
             } header: {
                 Text("ホットキー")
             } footer: {
-                Text("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。録音/文字起こしのキーは、セッション外で押すとその機能だけオンでセッションを開始します。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter("他のアプリを使っている時でも効きます。⌘ ⌥ ⌃ のいずれかを含むキー、または F1〜F12 を登録できます。録音/文字起こしのキーは、セッション外で押すとその機能だけオンでセッションを開始します。")
             }
 
             Section {
                 Toggle("ホットキーで開始する前に保存先グループを確認", isOn: $settings.hotkeyGroupPicker)
             } footer: {
-                Text("オンのときは、ホットキーでセッションを始めるたびに、どのグループに入れるかを選ぶ画面を挟みます。オフのときは前回選んだグループでそのまま始まります。")
-                    .font(HCFont.caption)
-                    .foregroundStyle(.secondary)
+                settingsFooter("オンのときは、ホットキーでセッションを始めるたびに、どのグループに入れるかを選ぶ画面を挟みます。オフのときは前回選んだグループでそのまま始まります。")
             }
         }
         .formStyle(.grouped)
@@ -492,10 +810,28 @@ struct SettingsView: View {
     /// モデル入力欄。用途ごとに保存先が違う(要約用と照合用)ため、
     /// ラベルと保存先の Binding を呼び出し側で決める。
     private func agentModelField(for cli: AgentCLI, binding: Binding<String>) -> some View {
-        LabeledContent("\(cli.displayName) のモデル") {
-            AgentModelComboBox(value: binding, suggestions: modelOptions(for: cli))
-                .frame(width: 260)
+        let options = modelOptions(for: cli)
+        return LabeledContent("\(cli.displayName) のモデル") {
+            AgentModelComboBox(value: binding, suggestions: options)
+                .frame(width: Self.agentModelFieldWidth(for: options))
         }
+    }
+
+    /// モデル欄の幅。中身に合わせて決める。
+    ///
+    /// 一律 260pt にしていたときは、「Sonnet 5」のような短い候補しか無い場面でも
+    /// 行の右半分を占め、すぐ上の「使う AI」の Picker(中身に合わせて縮む)と不揃いに見えた。
+    ///
+    /// 下限は、何も選んでいない時に出るプレースホルダ「CLI の設定を使用」(実測 96pt)が
+    /// 切れない幅。上限は、`claude-sonnet-4-5-20250929` のような長い名前を直接入力した時に
+    /// 行を独占しないための歯止め(入り切らない分は欄の中でスクロールする)。
+    private static func agentModelFieldWidth(for options: [AgentModelOption]) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let widest = options
+            .map { ($0.label as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+        // 文字の左右の余白と、右端の展開ボタンのぶん。
+        return min(240, max(150, widest + 46))
     }
 
     private func modelOptions(for cli: AgentCLI) -> [AgentModelOption] {
@@ -545,7 +881,7 @@ struct SettingsView: View {
                 Slider(value: value, in: 0...2)
                     .frame(width: 180)
                 Text("\(Int(value.wrappedValue * 100))%")
-                    .font(HCFont.monospacedDigit(.caption1))
+                    .font(HCFont.timecode)
                     .foregroundStyle(.secondary)
                     .frame(width: 40, alignment: .trailing)
                 Button("戻す") { value.wrappedValue = 1.0 }
@@ -583,10 +919,12 @@ struct SettingsView: View {
                     in: 0...1
                 )
                 .frame(width: 180)
-                Text(String(format: "%.4f", settings.micSensitivity))
-                    .font(HCFont.monospacedDigit(.caption1))
+                // RMS の生値(例: 0.0012)はユーザーに意味が伝わらないため、スライダーの
+                // 位置をパーセントで見せる(rmsToUI で変換するだけで、内部の保存値は変えない)。
+                Text("\(Int((rmsToUI(settings.micSensitivity) * 100).rounded()))%")
+                    .font(HCFont.timecode)
                     .foregroundStyle(.secondary)
-                    .frame(width: 56, alignment: .trailing)
+                    .frame(width: 40, alignment: .trailing)
             }
         }
     }
@@ -599,9 +937,9 @@ struct SettingsView: View {
                 let levelFraction = rmsToUI(Double(model.micLevel))
                 let thresholdFraction = rmsToUI(settings.micSensitivity)
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
+                    Capsule()
                         .fill(.quaternary)
-                    RoundedRectangle(cornerRadius: 3)
+                    Capsule()
                         .fill(.tint)
                         .frame(width: geometry.size.width * levelFraction)
                     Rectangle()
@@ -758,10 +1096,10 @@ struct HotkeyRecorderField: View {
             .padding(.vertical, 4)
             .frame(minWidth: 96)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                HCRadius.shape(HCRadius.chip)
                     .fill(HCColor.mistDarkSurface.opacity(0.4)))
             .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                HCRadius.shape(HCRadius.chip)
                     .strokeBorder(HCColor.cinnamon.opacity(0.65), lineWidth: 1.2))
     }
 
@@ -778,13 +1116,13 @@ struct HotkeyRecorderField: View {
             .padding(.vertical, 4)
             .frame(minWidth: 96)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                HCRadius.shape(HCRadius.chip)
                     .fill(HCColor.mistDarkSurface.opacity(0.4)))
             .overlay(
                 // 破線は「空スロット」の中立的表現。cinnamon で描くと「割り当てるべき箇所」
                 // というアクションを催促する印象が強すぎて違和感が出る。灰系で目立たせつつ
                 // 意味を持たせない: white opacity 0.3 で mistDark 上でもちゃんと視認できる。
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                HCRadius.shape(HCRadius.chip)
                     .strokeBorder(
                         Color.white.opacity(0.3),
                         style: StrokeStyle(lineWidth: 1.2, dash: [4, 4])))
@@ -799,10 +1137,10 @@ struct HotkeyRecorderField: View {
             .frame(minWidth: 22, minHeight: 22)
             .padding(.horizontal, 4)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                HCRadius.shape(HCRadius.chip)
                     .fill(HCColor.mistDarkSurface))
             .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                HCRadius.shape(HCRadius.chip)
                     .stroke(HCColor.mistDarkStroke, lineWidth: 1))
     }
 
@@ -863,3 +1201,89 @@ private struct HCKeyCapButtonStyle: ButtonStyle {
             .contentShape(Rectangle())
     }
 }
+
+/// 自動録音から外した1件。解除はタグの中の × で完結する。
+private struct ExcludedChip: View {
+    let icon: String
+    let label: String
+    /// 予定そのものを外したものは色を付けて、言葉での除外と見分けられるようにする。
+    let tinted: Bool
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .imageScale(.small)
+                .foregroundStyle(.secondary)
+            Text(label)
+                .font(HCFont.caption)
+                .lineLimit(1)
+            Button(action: remove) {
+                Image(systemName: "xmark")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+                    // 記号そのものは小さいので、押せる範囲を周りまで広げる。
+                    .padding(3)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("解除")
+            // 記号だけでは何のボタンか読み上げられないので、名前を持たせる。
+            .accessibilityLabel("「\(label)」の除外を解除")
+        }
+        .padding(.leading, 9)
+        .padding(.trailing, 4)
+        .padding(.vertical, 2)
+        .background(
+            Capsule().fill(
+                tinted ? HCColor.cinnamon.opacity(0.18) : Color.primary.opacity(0.06)))
+        .overlay(
+            Capsule().stroke(Color.primary.opacity(tinted ? 0 : 0.12), lineWidth: 0.5))
+    }
+}
+
+/// タグを左から詰めて、入りきらなくなったら折り返す並べ方。
+/// SwiftUI に折り返し用の標準レイアウトが無いため用意する。
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout Void
+    ) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxWidth.isFinite ? maxWidth : x, height: y + rowHeight)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void
+    ) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+

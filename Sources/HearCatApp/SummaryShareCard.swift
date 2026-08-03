@@ -85,7 +85,7 @@ struct SummaryShareCard: View {
                     .font(HCFont.style(.caption1, weight: .semibold))
                     .foregroundStyle(HCColor.mistWhiteDim)
                 Text("会議中にメモを取らなくていい、Mac の文字起こし")
-                    .font(HCFont.caption2)
+                    .font(HCFont.caption)
                     .foregroundStyle(HCColor.mistPlaceholder)
                 Spacer(minLength: 0)
             }

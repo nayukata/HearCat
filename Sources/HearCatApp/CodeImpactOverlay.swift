@@ -132,9 +132,9 @@ private struct CodeImpactOverlayView: View {
         .frame(width: 520, height: 480)
         .background(HCColor.mistDark)
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            HCRadius.shape(HCRadius.panel)
                 .stroke(HCColor.mistDarkStroke, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(HCRadius.shape(HCRadius.panel))
         .onExitCommand { model.dismissCodeImpactOverlay() }
         .onAppear { inputFocused = true }
     }
@@ -151,7 +151,7 @@ private struct CodeImpactOverlayView: View {
                     .stroke(HCColor.cinnamonStroke, lineWidth: 1)
                     .frame(width: 18, height: 18)
                 Text("?")
-                    .font(HCFont.system(size: 10, weight: .semibold))
+                    .font(HCFont.style(.caption1, weight: .semibold))
                     .foregroundStyle(HCColor.cinnamon)
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -167,7 +167,7 @@ private struct CodeImpactOverlayView: View {
                 model.dismissCodeImpactOverlay()
             } label: {
                 Image(systemName: "xmark")
-                    .font(HCFont.system(size: 12, weight: .semibold))
+                    .font(HCFont.style(.callout, weight: .semibold))
                     .frame(width: 22, height: 22)
                     .foregroundStyle(HCColor.mistWhiteDim)
             }
@@ -181,7 +181,7 @@ private struct CodeImpactOverlayView: View {
     private var inputField: some View {
         HStack(spacing: 10) {
             Text("›")
-                .font(HCFont.system(size: 14, weight: .regular))
+                .font(HCFont.body)
                 .foregroundStyle(HCColor.mistPlaceholder)
             TextField(inputPlaceholder, text: $input)
                 .textFieldStyle(.plain)
@@ -197,10 +197,10 @@ private struct CodeImpactOverlayView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            HCRadius.shape(HCRadius.control)
                 .fill(HCColor.mistDarkSurface))
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            HCRadius.shape(HCRadius.control)
                 .stroke(inputFocused ? HCColor.cinnamonStroke : HCColor.mistDarkStroke,
                         lineWidth: inputFocused ? 1.2 : 1))
     }
@@ -284,7 +284,7 @@ private struct CodeImpactOverlayView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            HCRadius.shape(HCRadius.control)
                                 .fill(HCColor.cinnamon))
                 }
                 .buttonStyle(.plain)
@@ -307,12 +307,12 @@ private struct CodeImpactOverlayView: View {
                 .foregroundStyle(HCColor.mistWhiteDim)
             Button("中止") { model.cancelCodeImpactAnalysis() }
                 .buttonStyle(.plain)
-                .font(HCFont.footnote)
+                .font(HCFont.caption)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
                 .foregroundStyle(HCColor.mistWhiteDim)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    HCRadius.shape(HCRadius.chip)
                         .stroke(HCColor.mistDarkStroke, lineWidth: 1))
             Spacer(minLength: 0)
         }
@@ -324,7 +324,7 @@ private struct CodeImpactOverlayView: View {
             HStack(spacing: 8) {
                 Circle().fill(HCColor.cinnamon).frame(width: 6, height: 6)
                 Text("\(cli.displayName) · 直近の文字起こしを調査")
-                    .font(HCFont.style(.footnote, weight: .semibold))
+                    .font(HCFont.style(.caption1, weight: .semibold))
                     .foregroundStyle(HCColor.cinnamon)
                 Spacer()
                 CopyButton { result }
@@ -352,7 +352,7 @@ private struct CodeImpactOverlayView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            HCRadius.shape(HCRadius.control)
                                 .fill(HCColor.cinnamon))
                 }
                 .buttonStyle(.plain)
@@ -384,22 +384,22 @@ private struct CodeImpactOverlayView: View {
         HStack(spacing: 6) {
             keyCap("⌘ ↩")
             Text("送信")
-                .font(HCFont.footnote)
+                .font(HCFont.caption)
                 .foregroundStyle(HCColor.mistWhiteDim)
                 .padding(.trailing, 10)
             keyCap("⌘ C")
             Text("コピー")
-                .font(HCFont.footnote)
+                .font(HCFont.caption)
                 .foregroundStyle(HCColor.mistWhiteDim)
                 .padding(.trailing, 10)
             keyCap("Esc")
             Text("閉じる")
-                .font(HCFont.footnote)
+                .font(HCFont.caption)
                 .foregroundStyle(HCColor.mistWhiteDim)
             Spacer()
             if case .completed(let cli, _) = model.codeImpactAnalysisState {
                 Text("追加質問できます · \(cli.displayName)")
-                    .font(HCFont.footnote)
+                    .font(HCFont.caption)
                     .foregroundStyle(HCColor.mistWhiteDim)
             }
         }
@@ -412,7 +412,7 @@ private struct CodeImpactOverlayView: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                HCRadius.shape(HCRadius.keycap)
                     .fill(HCColor.mistKeyCap))
     }
 
@@ -435,7 +435,7 @@ private struct CodeImpactOverlayView: View {
                         .padding(.top, 6)
                 } else if text.hasPrefix("### ") {
                     Text(String(text.dropFirst(4)))
-                        .font(HCFont.style(.footnote, weight: .semibold))
+                        .font(HCFont.style(.caption1, weight: .semibold))
                         .foregroundStyle(HCColor.mistWhite)
                         .padding(.top, 2)
                 } else if text.trimmingCharacters(in: .whitespaces).isEmpty {

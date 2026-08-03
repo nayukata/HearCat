@@ -11,6 +11,21 @@ struct MainWindow: View {
     @State private var selection: Set<String> = []
     /// 折りたたんだフォルダ。既定は全部展開。
     @State private var collapsedFolders: Set<String> = []
+    /// ドラッグ中にドロップ先として狙われているグループ。行のハイライトに使う
+    /// (自前の dropDestination は List 標準の挿入インジケータが出ないため、自前で見せる)。
+    @State private var dropTargetFolder: String?
+    /// いまグループをドラッグ中なら、そのグループ名。ドラッグの種類 (グループの並べ替えか、
+    /// セッションの移動か) で見せる表示を変えるために、ドラッグ開始時に記録する。
+    /// ドロップ処理の完了時に必ず nil に戻す (キャンセル時は次のドロップまで残り得るが、
+    /// 表示が一瞬変わるだけで動作は壊れない)。
+    @State private var draggingFolder: String?
+    /// 並べ替えのドロップ先として狙われているグループ (このグループの前に挿し込む)。
+    @State private var insertionTargetFolder: String?
+    /// 末尾への挿入 (未分類ヘッダー) が狙われているか。
+    @State private var insertionTargetEnd = false
+    /// 挿入線を消す予約。行間の隙間で targeting が一瞬 false になっても、すぐ次の行に
+    /// 入るなら消さないためのデバウンス。
+    @State private var insertionClearTask: DispatchWorkItem?
     /// 全文検索。入力中はフォルダ構造の代わりに横断ヒットの一覧を出す。
     @State private var searchText = ""
     @State private var searchResults: [SessionInfo] = []
@@ -30,6 +45,15 @@ struct MainWindow: View {
 
     /// ライブ行の選択タグ。AppModel からも選択リクエストの値として参照するため internal にする。
     static let liveID = "live"
+
+    /// グループ行のドラッグを、セッション行のドラッグ (session.id) と見分けるための接頭辞。
+    /// セッション ID はディレクトリ名由来でこの形にならない。
+    private static let folderDragPrefix = "folder-reorder:"
+
+    private static func folderName(fromDragPayload payload: String) -> String? {
+        guard payload.hasPrefix(folderDragPrefix) else { return nil }
+        return String(payload.dropFirst(folderDragPrefix.count))
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -67,7 +91,12 @@ struct MainWindow: View {
         })
         .onAppear {
             model.refreshSessions()
-            if selection.isEmpty {
+            // ウィンドウがまだ無いうちに届いた選択リクエスト(閉じている状態から
+            // パネル経由で開いた場合)は onChange では拾えないため、ここで消費する。
+            if let request = model.mainWindowSelectionRequest {
+                selection = [request]
+                model.mainWindowSelectionRequest = nil
+            } else if selection.isEmpty {
                 let first = model.status.active ? Self.liveID : model.sessions.first?.id
                 if let first { selection = [first] }
             }
@@ -182,9 +211,26 @@ struct MainWindow: View {
                         sessionRow(session)
                     }
                 } header: {
+                    // グループの並べ替えでは「このグループの後ろが無い = 末尾へ」の受け皿を兼ねる。
                     Text(model.folders.isEmpty ? "履歴" : "未分類")
                         .dropDestination(for: String.self) { ids, _ in
-                            _ = moveSessions(ids, toFolder: nil)
+                            debugLog("dnd " + "drop on=end ids=\(ids)")
+                            defer { endFolderDrag() }
+                            if let dragged = ids.compactMap(Self.folderName(fromDragPayload:)).first {
+                                return moveFolderToEnd(dragged)
+                            }
+                            return moveSessions(ids, toFolder: nil)
+                        } isTargeted: { targeting in
+                            debugLog("dnd " + 
+                                "target end targeting=\(targeting) dragging=\(draggingFolder ?? "nil")")
+                            guard draggingFolder != nil else { return }
+                            setInsertionTarget(nil, end: true, targeting: targeting)
+                        }
+                        .overlay(alignment: .top) {
+                            if insertionTargetEnd {
+                                Capsule().fill(HCColor.cinnamon).frame(height: 2.5)
+                                    .offset(y: -3)
+                            }
                         }
                 }
             }
@@ -250,14 +296,58 @@ struct MainWindow: View {
         .overlay(alignment: .top) { Divider() }
     }
 
-    /// 折りたたみ式のグループ行。中にそのグループのセッションが入る。
+    /// グループのヘッダー行と、展開中ならそのグループのセッション行。
+    /// DisclosureGroup にしないのは、そのラベル行が draggable/onDrag のどちらでも
+    /// ドラッグ元にならず、並べ替えの DnD が始められないため。開閉は行頭の
+    /// chevron ボタンで自前管理する (collapsedFolders の意味は従来どおり)。
+    @ViewBuilder
     private func folderGroup(_ folder: String) -> some View {
         let sessions = pastSessions.filter { $0.folder == folder }
-        return DisclosureGroup(isExpanded: expandedBinding(folder)) {
+        let hasVisibleChildren = !collapsedFolders.contains(folder) && !sessions.isEmpty
+        folderHeader(folder, count: sessions.count, hasVisibleChildren: hasVisibleChildren)
+        if !collapsedFolders.contains(folder) {
             ForEach(sessions) { session in
                 sessionRow(session)
+                    .padding(.leading, 16)
+                    // グループをドラッグ中は、展開中の子行もヘッダーと同じ受け皿にする。
+                    // ヘッダー行だけだと展開時の的が細く、行間をピンポイントで狙う操作になるため。
+                    // セッションのドラッグには反応させない (folderName が nil なら何もしない)。
+                    .dropDestination(for: String.self) { ids, _ in
+                        guard let dragged = ids.compactMap(Self.folderName(fromDragPayload:)).first
+                        else { return false }
+                        defer { endFolderDrag() }
+                        debugLog("dnd " + "drop on=child-of-\(folder) ids=\(ids)")
+                        return insertFolder(dragged, onto: folder)
+                    } isTargeted: { targeting in
+                        guard draggingFolder != nil, insertionEdge(for: folder) != nil else { return }
+                        setInsertionTarget(folder, targeting: targeting)
+                    }
+                    // グループを下から上へドラッグしているとき、展開中のブロックの下端は
+                    // 最後の子行の下にしか付けられない (ヘッダー直下だと途中の行に見えてしまう)。
+                    .overlay(alignment: .bottom) {
+                        if session.id == sessions.last?.id,
+                            insertionTargetFolder == folder,
+                            insertionEdge(for: folder) == .bottom {
+                            insertionLine.offset(y: 3)
+                        }
+                    }
             }
-        } label: {
+        }
+    }
+
+    /// グループの見出し行。開閉の chevron、フォルダ名、関連フォルダ chip、件数 badge を持つ。
+    /// ドラッグ&ドロップ(並べ替え・セッションの受け入れ)と右クリックメニューはこの行に付く。
+    private func folderHeader(_ folder: String, count: Int, hasVisibleChildren: Bool) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation { toggleCollapsed(folder) }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(collapsedFolders.contains(folder) ? 0 : 90))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .font(HCFont.caption)
             Label {
                 HStack(spacing: 6) {
                     Text(folder)
@@ -271,37 +361,98 @@ struct MainWindow: View {
             } icon: {
                 Image(systemName: "folder")
             }
-                .badge(sessions.count)
-                .contextMenu {
-                    Button("グループ名を変更…") {
-                        folderRenameText = folder
-                        folderRenameTarget = folder
+        }
+        .badge(count)
+        // 行のどこをクリックしても開閉できるようにする (DisclosureGroup 時代と同じ操作感)。
+        // ドラッグは押して動かした時だけ始まるため、クリックでの開閉と両立する。
+        .contentShape(Rectangle())
+        // ドラッグ元は contentShape の後ろに置き、名前ラベルだけでなく行のどこからでも
+        // 掴めるようにする。onDrag なのは、draggable(_:preview:) がログ上ドロップ判定を
+        // 一切発火させなかったため (プレビュー付き draggable はペイロード登録が壊れる疑い)。
+        .onDrag {
+            draggingFolder = folder
+            debugLog("dnd " + "ondrag folder=\(folder)")
+            return NSItemProvider(object: (Self.folderDragPrefix + folder) as NSString)
+        } preview: {
+            // ドラッグ中に「何を掴んでいるか」を見せるチップ。fixedSize が無いと名前が省略される。
+            Label(folder, systemImage: "folder")
+                .font(HCFont.callout)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(HCRadius.shape(HCRadius.chip).fill(HCColor.mistDarkSurface))
+                .foregroundStyle(HCColor.mistWhite)
+                .fixedSize()
+        }
+        .onTapGesture { withAnimation { toggleCollapsed(folder) } }
+        .contextMenu {
+            Button("グループ名を変更…") {
+                folderRenameText = folder
+                folderRenameTarget = folder
+            }
+            Button("上へ移動") { swapFolderOrder(folder, offset: -1) }
+                .disabled(model.folders.first == folder)
+            Button("下へ移動") { swapFolderOrder(folder, offset: 1) }
+                .disabled(model.folders.last == folder)
+            // 関連フォルダの設定はエージェント要約(claude/codex)が使うためのもの。
+            // どちらも検出されていなければ意味のない項目になるため出さない。
+            if !AgentCLIDetector.shared.availableCLIs.isEmpty {
+                if model.settings.referenceFolders[folder] != nil {
+                    Button("関連フォルダを変更…") {
+                        Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
                     }
-                    // 関連フォルダの設定はエージェント要約(claude/codex)が使うためのもの。
-                    // どちらも検出されていなければ意味のない項目になるため出さない。
-                    if !AgentCLIDetector.shared.availableCLIs.isEmpty {
-                        if model.settings.referenceFolders[folder] != nil {
-                            Button("関連フォルダを変更…") {
-                                Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
-                            }
-                            Button("関連フォルダを解除") {
-                                model.settings.referenceFolders.removeValue(forKey: folder)
-                            }
-                        } else {
-                            // ラベルは機能名(関連フォルダ)でなく効能(要約精度が上がる)で語る。
-                            // 「関連フォルダ」という名前だけでは初見で何が嬉しいか伝わらないため。
-                            Button("資料フォルダと紐付けて要約精度を上げる…") {
-                                Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
-                            }
-                        }
+                    Button("関連フォルダを解除") {
+                        model.settings.referenceFolders.removeValue(forKey: folder)
                     }
-                    Button("グループを削除…", role: .destructive) {
-                        folderDeleteTarget = folder
+                } else {
+                    // ラベルは機能名(関連フォルダ)でなく効能(要約精度が上がる)で語る。
+                    // 「関連フォルダ」という名前だけでは初見で何が嬉しいか伝わらないため。
+                    Button("資料フォルダと紐付けて要約精度を上げる…") {
+                        Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
                     }
                 }
-                .dropDestination(for: String.self) { ids, _ in
-                    _ = moveSessions(ids, toFolder: folder)
+            }
+            Button("グループを削除…", role: .destructive) {
+                folderDeleteTarget = folder
+            }
+        }
+        .dropDestination(for: String.self) { ids, _ in
+            debugLog("dnd " + "drop on=\(folder) ids=\(ids)")
+            defer { endFolderDrag() }
+            if let dragged = ids.compactMap(Self.folderName(fromDragPayload:)).first {
+                return insertFolder(dragged, onto: folder)
+            }
+            return moveSessions(ids, toFolder: folder)
+        } isTargeted: { targeting in
+            debugLog("dnd " + 
+                "target folder=\(folder) targeting=\(targeting) dragging=\(draggingFolder ?? "nil")")
+            // グループのドラッグなら挿入線、セッションのドラッグなら行の塗りを出す。
+            if draggingFolder != nil {
+                guard insertionEdge(for: folder) != nil else { return }
+                setInsertionTarget(folder, targeting: targeting)
+            } else {
+                if targeting {
+                    dropTargetFolder = folder
+                } else if dropTargetFolder == folder {
+                    dropTargetFolder = nil
                 }
+            }
+        }
+        .listRowBackground(
+            dropTargetFolder == folder
+                ? HCRadius.shape(HCRadius.chip).fill(HCColor.cinnamon.opacity(0.22))
+                : nil)
+        // 挿入線。行として挟むと List が最低高さを取って行間が開くため、行の上縁/下縁に重ねる。
+        .overlay(alignment: .top) {
+            if insertionTargetFolder == folder, insertionEdge(for: folder) == .top {
+                insertionLine.offset(y: -3)
+            }
+        }
+        // 下端の線は、子行が見えているときは最後の子行側 (folderGroup) に出すのでここでは出さない。
+        .overlay(alignment: .bottom) {
+            if insertionTargetFolder == folder, insertionEdge(for: folder) == .bottom,
+                !hasVisibleChildren {
+                insertionLine.offset(y: 3)
+            }
         }
     }
 
@@ -312,7 +463,7 @@ struct MainWindow: View {
             Image(systemName: "link")
             Text(URL(fileURLWithPath: path).lastPathComponent)
         }
-        .font(HCFont.caption2)
+        .font(HCFont.caption)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(Capsule().fill(.quaternary))
@@ -320,8 +471,11 @@ struct MainWindow: View {
     }
 
     private func sessionRow(_ session: SessionInfo) -> some View {
-        SessionRow(session: session)
+        SessionRow(session: session, sessionsVersion: model.sessionsVersion)
             .tag(session.id)
+            // 実績のある素の draggable に戻す (プレビュー付きはドロップ判定が死んだ)。
+            // ドラッグ開始のフックは onDrag 側 (グループ行) にしか無いため、
+            // 直前のグループドラッグがキャンセルされていた場合の記録消しはここでは行わない。
             .draggable(session.id)
             .contextMenu {
                 // 複数選択中に選択内の行を右クリックした場合は、選択全体を対象にする。
@@ -375,6 +529,7 @@ struct MainWindow: View {
 
     /// ドラッグ&ドロップで受け取ったセッション ID をフォルダへ移す。
     private func moveSessions(_ ids: [String], toFolder folder: String?) -> Bool {
+        debugLog("dnd " + "move-sessions ids=\(ids) to=\(folder ?? "nil")")
         var moved = false
         for id in ids {
             guard let session = model.sessions.first(where: { $0.id == id }),
@@ -418,16 +573,114 @@ struct MainWindow: View {
         })
     }
 
-    private func expandedBinding(_ folder: String) -> Binding<Bool> {
-        Binding(
-            get: { !collapsedFolders.contains(folder) },
-            set: { expanded in
-                if expanded {
-                    collapsedFolders.remove(folder)
-                } else {
-                    collapsedFolders.insert(folder)
+    /// ドラッグ終了時の後始末。ドロップを受けた場所によらず、並べ替え関連の状態を全部戻す。
+    private func endFolderDrag() {
+        draggingFolder = nil
+        insertionTargetFolder = nil
+        insertionTargetEnd = false
+        insertionClearTask?.cancel()
+        insertionClearTask = nil
+    }
+
+    /// 挿入線の表示先を切り替える。行と行の隙間はどの行の判定にも入らないため、
+    /// targeting=false を素直に反映すると行をまたぐたびに線が消えて点滅する。
+    /// 消す方だけ 0.15 秒遅らせ、その間に次の行へ入ったら消さない。
+    private func setInsertionTarget(_ folder: String?, end: Bool = false, targeting: Bool) {
+        if targeting {
+            insertionClearTask?.cancel()
+            insertionClearTask = nil
+            insertionTargetFolder = folder
+            insertionTargetEnd = end
+        } else {
+            guard insertionTargetFolder == folder, insertionTargetEnd == end else { return }
+            let task = DispatchWorkItem {
+                if insertionTargetFolder == folder, insertionTargetEnd == end {
+                    insertionTargetFolder = nil
+                    insertionTargetEnd = false
                 }
-            })
+            }
+            insertionClearTask?.cancel()
+            insertionClearTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: task)
+        }
+    }
+
+    /// 乗せ先に対して、ドラッグ元がどちら側から来たか。上から来たなら .bottom (後ろに入る)、
+    /// 下から来たなら .top (前に入る)。自分自身や不明なら nil。
+    private func insertionEdge(for folder: String) -> VerticalEdge? {
+        guard let dragging = draggingFolder,
+            let from = model.folders.firstIndex(of: dragging),
+            let to = model.folders.firstIndex(of: folder), from != to
+        else { return nil }
+        return from < to ? .bottom : .top
+    }
+
+    private var insertionLine: some View {
+        Capsule().fill(HCColor.cinnamon).frame(height: 2.5)
+    }
+
+    /// ドラッグしたグループを乗せ先の位置へ挿し込む。上から来たら乗せ先の後ろ、
+    /// 下から来たら乗せ先の前 (挿入線の表示位置と一致させる)。
+    private func insertFolder(_ name: String, onto target: String) -> Bool {
+        guard name != target else {
+            debugLog("dnd " + "insert-reject same")
+            return false
+        }
+        var order = model.folders
+        guard let from = order.firstIndex(of: name),
+            let to = order.firstIndex(of: target)
+        else {
+            debugLog("dnd " + "insert-reject missing")
+            return false
+        }
+        order.remove(at: from)
+        // remove で from より後ろが1つ詰まるため、from < to のときの to は「乗せ先の後ろ」を指す。
+        order.insert(name, at: to)
+        guard order != model.folders else {
+            debugLog("dnd " + "insert-reject no-change")
+            return false
+        }
+        debugLog("dnd " + "reorder \(name) onto \(target) -> \(order)")
+        model.reorderFolders(order)
+        return true
+    }
+
+    /// ドラッグしたグループを末尾へ回す (未分類ヘッダーへのドロップ)。
+    private func moveFolderToEnd(_ name: String) -> Bool {
+        var order = model.folders
+        guard let from = order.firstIndex(of: name) else {
+            debugLog("dnd " + "move-to-end-reject from-missing")
+            return false
+        }
+        order.remove(at: from)
+        order.append(name)
+        guard order != model.folders else {
+            debugLog("dnd " + "move-to-end-reject no-change")
+            return false
+        }
+        debugLog("dnd " + "move-to-end \(name) -> \(order)")
+        model.reorderFolders(order)
+        return true
+    }
+
+    /// フォルダの並び順を1つ前後に入れ替える。先頭/末尾での呼び出しは右クリックメニュー側の
+    /// disabled で防いでいるが、範囲外を渡されても何もしないだけにしておく。
+    private func swapFolderOrder(_ folder: String, offset: Int) {
+        guard let index = model.folders.firstIndex(of: folder) else { return }
+        let target = index + offset
+        guard model.folders.indices.contains(target) else { return }
+        var order = model.folders
+        order.swapAt(index, target)
+        model.reorderFolders(order)
+    }
+
+    /// グループの開閉を切り替える。集合の意味(入っていれば折りたたみ中)は従来どおり。
+    private func toggleCollapsed(_ folder: String) {
+        if collapsedFolders.contains(folder) {
+            collapsedFolders.remove(folder)
+        } else {
+            collapsedFolders.insert(folder)
+        }
     }
 
 }
@@ -441,6 +694,21 @@ func presented<T>(_ target: Binding<T?>) -> Binding<Bool> {
         set: { if !$0 { target.wrappedValue = nil } })
 }
 
+/// セッション削除の確認で見せる文言。サイドバーからの一括削除と詳細画面の削除の
+/// 2箇所から出るため、同じ操作なのに「何が消えるか」の説明が場所によって違わないよう
+/// 1箇所にまとめる(詳細画面側は説明が薄く、消える中身が伝わっていなかった)。
+enum SessionDeletionCopy {
+    static func title(count: Int) -> String {
+        count == 1 ? "このセッションを削除しますか？" : "\(count) 個のセッションを削除しますか？"
+    }
+
+    static func confirmButton(count: Int) -> String {
+        count == 1 ? "文字起こしと録音を削除" : "\(count) 件を削除"
+    }
+
+    static let message = "元に戻せません。文字起こしと録音も一緒に消えます。"
+}
+
 /// 一括削除の確認ダイアログを提供する ViewModifier。MainWindow.body が
 /// 型推論のタイムアウトに達したため、修飾子を外へ切り出す。
 private struct BulkDeleteConfirmation: ViewModifier {
@@ -449,19 +717,17 @@ private struct BulkDeleteConfirmation: ViewModifier {
 
     func body(content: Content) -> some View {
         content.confirmationDialog(
-            targets.count == 1
-                ? "このセッションを削除しますか？"
-                : "\(targets.count) 個のセッションを削除しますか？",
+            SessionDeletionCopy.title(count: targets.count),
             isPresented: Binding(
                 get: { !targets.isEmpty },
                 set: { if !$0 { targets = [] } }),
             titleVisibility: .visible
         ) {
             Button(
-                targets.count == 1 ? "文字起こしと録音を削除" : "\(targets.count) 件を削除",
+                SessionDeletionCopy.confirmButton(count: targets.count),
                 role: .destructive, action: onConfirm)
         } message: {
-            Text("元に戻せません。文字起こしと録音も一緒に消えます。")
+            Text(SessionDeletionCopy.message)
         }
     }
 }
@@ -472,8 +738,20 @@ struct WindowAccessor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        // window はビューが階層に載った後でないと取れないため1サイクル遅らせる。
-        DispatchQueue.main.async { onResolve(view.window) }
+        // window はビューが階層に載った後でないと取れない。載るまでの時間は状況で変わり、
+        // 1サイクル待ちでは間に合わず nil を掴んだまま取り直せないことがあった
+        // (ようこそ画面の「はじめる」が close 先を失って空振りした)。取れるまで
+        // 1サイクルずつ待ち直す。上限は、結局ウィンドウに載らなかった場合の打ち切り。
+        func resolve(remaining: Int) {
+            DispatchQueue.main.async {
+                if let window = view.window {
+                    onResolve(window)
+                } else if remaining > 0 {
+                    resolve(remaining: remaining - 1)
+                }
+            }
+        }
+        resolve(remaining: 120)
         return view
     }
 
@@ -485,6 +763,18 @@ struct SessionRow: View {
     static let untitledPlaceholder = "名称未設定"
 
     let session: SessionInfo
+    /// 一覧の版数。要約は停止したあと少し遅れて出来上がるため、一覧が更新されたら
+    /// プレビューを問い合わせ直す(取り置きがあれば読み直しは起きない)。
+    let sessionsVersion: Int
+
+    /// 要約(無ければ文字起こし)の先頭1行。読み込み中と、読めるものが無い時は nil。
+    @State private var preview: String?
+
+    /// プレビューを取り直すきっかけ。セッションが変わった時と、一覧が更新された時。
+    private struct PreviewKey: Equatable {
+        let id: String
+        let version: Int
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -512,7 +802,20 @@ struct SessionRow: View {
             }
             .font(HCFont.caption)
             .foregroundStyle(.secondary)
+            // 何の話だったかの手がかり。名前を付けていないセッションは日時しか
+            // 手がかりが無く、1件ずつ開いて確かめることになるため。
+            // 読めるものが無いセッションでは行を足さない(空行で高さだけ変えない)。
+            if let preview, !preview.isEmpty {
+                Text(preview)
+                    .font(HCFont.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
         .padding(.vertical, 2)
+        .task(id: PreviewKey(id: session.id, version: sessionsVersion)) {
+            preview = await SessionPreviewCache.shared.preview(for: session)
+        }
     }
 }

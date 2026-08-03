@@ -96,7 +96,7 @@ struct ImportSessionSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            HCRadius.shape(HCRadius.card)
                 .fill(.quaternary.opacity(0.5)))
     }
 

@@ -87,14 +87,63 @@ enum HCFont {
         cascaded(.monospacedSystemFont(ofSize: size, weight: .regular), weight: .regular)
     }
 
+    // MARK: - 文字のはしご
+    //
+    // pt ではなく役割で選ぶ。段は「実際に大きさが違うもの」だけを置く。
+    // macOS の footnote / caption1 / caption2 は3つとも 10pt で、名前を変えても
+    // 大きさは1ミリも変わらない(実測)。名前の数だけ段があると思って選ぶと必ず外すため、
+    // 同じ大きさに複数の名前を与えない。
+    //
+    //   title3      15  画面の見出し
+    //   headline    13  セクションの見出し(semibold)
+    //   body        13  本文(文字起こし、要約、設定の項目名)
+    //   callout     12  一段小さい本文(パネル内のボタン、バーのラベル)
+    //   subheadline 11  ラベル、チップ、経過時間
+    //   caption     10  補足説明、バッジ
+    //
+    // 太さを変えたい時は段を下げるのではなく style(_:weight:) で weight を渡す。
+
+    static var title3: Font { style(.title3) }
+    static var headline: Font { style(.headline, weight: .semibold) }
     static var body: Font { style(.body) }
     static var callout: Font { style(.callout) }
     static var subheadline: Font { style(.subheadline) }
-    static var footnote: Font { style(.footnote) }
     static var caption: Font { style(.caption1) }
-    static var caption2: Font { style(.caption2) }
-    static var headline: Font { style(.headline, weight: .semibold) }
-    static var title3: Font { style(.title3) }
+
+    // MARK: - はしごから意図的に外すもの
+    //
+    // 下の3つだけは役割が固定で、はしごの段では表せない。ここ以外で pt を直書きしない。
+
+    /// メニューバーのパネルに置くブランド名。ロゴマークと組にした意匠なので、
+    /// 本文のはしご(13pt)には乗せず、マークの高さに合わせた大きさで固定する。
+    static var brand: Font { system(size: 14, weight: .black) }
+    /// 文字起こしの行頭と再生バーに出す経過時間。桁が揺れると行が踊るため数字を等幅にする。
+    /// ライブ画面と履歴画面で同じ物差し・同じ見た目にするための唯一の口。
+    static var timecode: Font { monospacedDigit(.caption1) }
+    /// REC や「必須 / 任意」のような、短い語を詰めたバッジ。
+    static var badge: Font { style(.caption1, weight: .bold) }
+}
+
+/// 角丸のはしご。面の大きさに比例させる(小さい面に大きい角丸は丸すぎ、
+/// 大きい面に小さい角丸は角ばって見える)。半径はその面の高さの 1/4 を上限に選ぶ。
+/// 角丸をここ以外に直書きしない。
+enum HCRadius {
+    /// 高さ 14pt 前後の極小の面。キーキャップなど。
+    static let keycap: CGFloat = 4
+    /// 高さ 20〜28pt の面。チップ、一覧の行のハイライト、細い枠。
+    static let chip: CGFloat = 6
+    /// 高さ 28〜36pt の面。ボタン、入力欄。
+    static let control: CGFloat = 8
+    /// 中の要素をまとめる面。バナー、カード、情報ブロック。
+    static let card: CGFloat = 10
+    /// ウィンドウ相当の外周。浮遊パネル、オーバーレイ。
+    static let panel: CGFloat = 14
+
+    /// 角丸の四角。style は必ず .continuous で揃える。既定の .circular と混ざると、
+    /// 同じ半径でも角の曲がり方が違って見える。
+    static func shape(_ radius: CGFloat) -> RoundedRectangle {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+    }
 }
 
 /// ランディングページ (docs/index.html) と揃えたデザイントークン。
@@ -149,6 +198,13 @@ enum HCColor {
     static let youText = Color(red: 255 / 255, green: 225 / 255, blue: 184 / 255)  // #FFE1B8
     static let youBackground = Color(red: 255 / 255, green: 176 / 255, blue: 74 / 255).opacity(0.16)
 
+    // 明るい背景向けの話者チップ。上の4色は暗い背景を前提に明るく振ってあるため、
+    // ライトモードの履歴画面では地に沈んで読めない。色相は揃えたまま濃さだけ入れ替える。
+    static let meTextLight = Color(red: 0x1B / 255, green: 0x4F / 255, blue: 0xB0 / 255)  // #1B4FB0
+    static let meBackgroundLight = blue.opacity(0.12)
+    static let youTextLight = Color(red: 0x8A / 255, green: 0x4E / 255, blue: 0x12 / 255)  // #8A4E12
+    static let youBackgroundLight = Color(red: 255 / 255, green: 176 / 255, blue: 74 / 255).opacity(0.22)
+
 }
 
 /// アプリ全体で使う落ち着いた secondary button のスタイル。
@@ -177,10 +233,10 @@ struct HCSecondaryButtonStyle: ButtonStyle {
             .padding(.horizontal, compact ? 10 : 12)
             .padding(.vertical, compact ? 3 : 6)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                HCRadius.shape(HCRadius.control)
                     .fill(bg))
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                HCRadius.shape(HCRadius.control)
                     .stroke(border, lineWidth: 1))
             .opacity(configuration.isPressed ? 0.9 : 1)
     }
@@ -196,7 +252,7 @@ struct HCPrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                HCRadius.shape(HCRadius.control)
                     .fill(configuration.isPressed ? HCColor.cinnamonStroke : HCColor.cinnamon))
     }
 }
@@ -467,15 +523,29 @@ enum HCIcon {
 /// 話者チップ。LP の .u .s と同じ配色(自分=青 / 相手=オレンジ)。
 struct SpeakerChip: View {
     let speaker: String
+    /// ライブ画面や共有カードは常に暗い背景だが、履歴画面はシステムの外観に従う。
+    /// どちらでも読めるよう、実際に置かれた側の外観で色を選ぶ。
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isMe: Bool { speaker == "自分" }
+
+    private var textColor: Color {
+        if colorScheme == .dark { return isMe ? HCColor.meText : HCColor.youText }
+        return isMe ? HCColor.meTextLight : HCColor.youTextLight
+    }
+
+    private var backgroundColor: Color {
+        if colorScheme == .dark { return isMe ? HCColor.meBackground : HCColor.youBackground }
+        return isMe ? HCColor.meBackgroundLight : HCColor.youBackgroundLight
+    }
 
     var body: some View {
         Text(speaker)
-            .font(HCFont.system(size: 11, weight: .bold))
+            .font(HCFont.style(.subheadline, weight: .bold))
             .padding(.horizontal, 9)
             .padding(.vertical, 1)
-            .foregroundStyle(speaker == "自分" ? HCColor.meText : HCColor.youText)
-            .background(
-                Capsule().fill(speaker == "自分" ? HCColor.meBackground : HCColor.youBackground))
+            .foregroundStyle(textColor)
+            .background(Capsule().fill(backgroundColor))
     }
 }
 
@@ -519,7 +589,7 @@ struct RecBadge: View {
                 .opacity(dimmed ? 0.15 : 1)
                 .animation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true), value: dimmed)
             Text("REC")
-                .font(HCFont.system(size: 10, weight: .bold))
+                .font(HCFont.badge)
                 .kerning(1)
                 .foregroundStyle(Color(red: 1, green: 122 / 255, blue: 122 / 255))
         }

@@ -44,6 +44,11 @@ struct SessionDetailView: View {
     /// 録音があるか。session.audioURL は実体の存在確認を伴うため、body の評価のたびに
     /// ディスクを見にいかないよう、読み込み時に控えた値を使う。
     @State private var hasAudio = false
+    /// 再生位置が今どの行にあたるか。再生位置そのもの(0.25 秒ごとに変わる)ではなく
+    /// 行の切り替わりだけをここに持つことで、文字起こしの描き直しを最小限にする。
+    @State private var currentLineID: TranscriptLine.ID?
+    /// 再生に合わせて文字起こしを自動で送るか。手でスクロールした時点で切れる。
+    @State private var followsPlayback = true
 
     private struct ShareNotice: Equatable {
         let message: String
@@ -82,6 +87,14 @@ struct SessionDetailView: View {
             Divider()
             if let player, player.hasAudio {
                 PlayerView(player: player)
+                    // 再生位置の監視はレイアウトに出ない小さなビューへ閉じ込める。
+                    // 位置は 0.25 秒ごとに変わるため、これを本体の body で読むと
+                    // 文字起こし全体がその頻度で描き直しの対象になる。
+                    .background {
+                        PlaybackTracker(
+                            player: player, lines: transcriptLines,
+                            currentLineID: $currentLineID)
+                    }
                 Divider()
             }
             content
@@ -142,15 +155,16 @@ struct SessionDetailView: View {
                 Label("削除", systemImage: "trash")
             }
             .confirmationDialog(
-                "このセッションを削除しますか？", isPresented: $confirmingDelete
+                SessionDeletionCopy.title(count: 1), isPresented: $confirmingDelete,
+                titleVisibility: .visible
             ) {
-                Button("文字起こしと録音を削除", role: .destructive) {
+                Button(SessionDeletionCopy.confirmButton(count: 1), role: .destructive) {
                     player?.teardown()
                     model.delete(session)
                     onDelete()
                 }
             } message: {
-                Text("元に戻せません。")
+                Text(SessionDeletionCopy.message)
             }
         }
         .padding()
@@ -174,6 +188,34 @@ struct SessionDetailView: View {
                 .onChange(of: session.id) {
                     proxy.scrollTo(Self.contentTop, anchor: .top)
                 }
+                // 再生が次の行へ進んだら、その行が見える位置まで送る。
+                .onChange(of: currentLineID) {
+                    guard followsPlayback, let currentLineID else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(currentLineID, anchor: .center)
+                    }
+                }
+                .overlay(alignment: .bottom) { resumeFollowButton(proxy) }
+        }
+    }
+
+    /// 追従を切った後に戻るための唯一の導線。追従できている間は出さない
+    /// (常設のトグルにすると、正常時にも操作対象が1つ増えるため)。
+    @ViewBuilder
+    private func resumeFollowButton(_ proxy: ScrollViewProxy) -> some View {
+        if !followsPlayback, let currentLineID, player?.hasAudio == true {
+            Button {
+                followsPlayback = true
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(currentLineID, anchor: .center)
+                }
+            } label: {
+                Label("再生位置へ戻る", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.hcSecondary)
+            .controlSize(.small)
+            .padding(.bottom, 12)
+            .transition(.opacity)
         }
     }
 
@@ -214,7 +256,11 @@ struct SessionDetailView: View {
                                     .foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             } else {
-                                VStack(alignment: .leading, spacing: 3) {
+                                // 見えている行だけを作る。長い会議は数百行になり、
+                                // 全行を一度に組み立てるとセッションを選んだ瞬間に
+                                // そのぶん画面が止まる(1行あたり時刻・話者・本文と
+                                // 部品が複数あるため、行数がそのまま効く)。
+                                LazyVStack(alignment: .leading, spacing: 3) {
                                     ForEach(transcriptLines) { line in
                                         transcriptRow(line)
                                     }
@@ -240,6 +286,13 @@ struct SessionDetailView: View {
             .padding()
             .id(Self.contentTop)
         }
+        // 手でスクロールした時点で追従をやめる。読み返している最中に表示位置を
+        // 奪われないようにするため。追従による移動は .animating、静止は .idle なので、
+        // それ以外(指やホイールに由来する動き)を人の操作とみなす。トラックパッドと
+        // マウスホイールで報告される段階が違うため、.interacting だけを見ない。
+        .onScrollPhaseChange { _, phase in
+            if phase != .idle && phase != .animating { followsPlayback = false }
+        }
     }
 
     /// 1行ぶんの文字起こし。録音内の経過時間(再生バーと同じ物差し)を出し、
@@ -251,20 +304,32 @@ struct SessionDetailView: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if let player, player.hasAudio {
                     Button(formatPlaybackTime(offset)) {
+                        // 位置を指定した以上、以後は再生を追いかけたいはずなので追従を戻す。
+                        followsPlayback = true
                         player.playFrom(offset)
                     }
                     .buttonStyle(.plain)
-                    .font(HCFont.monospacedDigit(.caption1))
+                    .font(HCFont.timecode)
                     .foregroundStyle(.tint)
                     .help("この位置から再生")
                 } else {
                     Text(formatPlaybackTime(offset))
-                        .font(HCFont.monospacedDigit(.caption1))
+                        .font(HCFont.timecode)
                         .foregroundStyle(.secondary)
                 }
-                Text(line.body)
-                    .textSelection(.enabled)
+                // 話者はライブ画面と同じチップで示す。同じ内容を2度読ませないよう、
+                // 本文からは話者ラベルを外す(コピーは元の「話者: 発言」のまま)。
+                if let speaker = line.speaker {
+                    SpeakerChip(speaker: speaker.rawValue)
+                    Text(line.text)
+                        .textSelection(.enabled)
+                } else {
+                    Text(line.body)
+                        .textSelection(.enabled)
+                }
             }
+            .modifier(CurrentLineHighlight(isCurrent: line.id == currentLineID))
+            .id(line.id)
         } else {
             Text(line.body)
                 .textSelection(.enabled)
@@ -279,6 +344,8 @@ struct SessionDetailView: View {
     private func resetForNewSession() {
         summaryError = nil
         shareNotice = nil
+        currentLineID = nil
+        followsPlayback = true
         confirmingDelete = false
         confirmingAgentCLI = nil
         // 実行中のエージェント要約は止めない(生成は AppModel 側で走り続ける)。
@@ -300,7 +367,7 @@ struct SessionDetailView: View {
             // 前のセッションの再生と読み込みを止めてから差し替える。ビューを使い回すように
             // なったため、ここで畳まないと切り替え後も前の録音が鳴り続ける。
             player?.teardown()
-            player = SessionPlayer(audioURL: audioURL)
+            player = SessionPlayer(audioURL: audioURL, otherURL: session.audioOtherURL)
         }
     }
 
@@ -369,32 +436,11 @@ struct SessionDetailView: View {
         }
     }
 
-    /// ボタンの直下に出すメニューの土台。
-    /// NSMenu は既定で autoenablesItems = true で、この場合 target/action が有効な
-    /// 項目は isEnabled への手動代入を無視して常に有効化される。使えない項目が
-    /// 押せてしまうため、自動有効化を切って isEnabled をそのまま尊重させる。
-    private func makeMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        return menu
-    }
-
-    /// メニューをボタンの直下に出す。popUp の指定点はメニューの左上角。素の NSView は
-    /// isFlipped = false(非 flipped、y=0 が下端)なので、ボタン直下に出すには負のオフセットを
-    /// 使う。NSHostingView 等の flipped なビューに載る場合は上端 y=0 なので、そちらは
-    /// 高さぶん下げる。
-    private func popUp(_ menu: NSMenu, below anchor: NSView) {
-        let point = anchor.isFlipped
-            ? NSPoint(x: 0, y: anchor.bounds.height + 4)
-            : NSPoint(x: 0, y: -4)
-        menu.popUp(positioning: nil, at: point, in: anchor)
-    }
-
     /// NSMenu を要約ボタンの直下にポップアップする。項目: オンデバイス、検出済み
     /// エージェント CLI ごと、(関連フォルダ未設定のグループなら)関連フォルダの設定。
     private func popUpSummarizeMenu() {
         guard let anchor = summarizeMenuAnchor else { return }
-        let menu = makeMenu()
+        let menu = makeHCMenu()
 
         let onDeviceItem = summarizeMenuActionHandler.makeItem("Apple Intelligence で生成") {
             Task { await summarize() }
@@ -432,7 +478,7 @@ struct SessionDetailView: View {
             menu.addItem(referenceFolderItem)
         }
 
-        popUp(menu, below: anchor)
+        popUpMenu(menu, below: anchor)
     }
 
     // MARK: - 共有
@@ -459,7 +505,7 @@ struct SessionDetailView: View {
 
     private func popUpShareMenu() {
         guard let anchor = shareMenuAnchor else { return }
-        let menu = makeMenu()
+        let menu = makeHCMenu()
 
         // 画像は要約があってこそ意味があるため、要約が無いセッションでは選べない。
         for scope in SummaryShareScope.allCases {
@@ -487,7 +533,7 @@ struct SessionDetailView: View {
         textOnly.isEnabled = transcript != nil
         menu.addItem(textOnly)
 
-        popUp(menu, below: anchor)
+        popUpMenu(menu, below: anchor)
     }
 
     private func copySummaryImage(scope: SummaryShareScope) {
@@ -579,6 +625,36 @@ struct SessionDetailView: View {
     }
 }
 
+/// 再生位置から今の行を割り出して控えるだけの、レイアウトに出ないビュー。
+///
+/// 独立したビューにするのは、`onChange(of:)` に渡す値が「渡した先の body」ではなく
+/// 「渡した側の body」の評価中に読まれるため。SessionDetailView のメソッドとして書くと、
+/// 0.25 秒ごとに変わる `player.currentTime` への依存が詳細画面そのものに登録され、
+/// 再生中は毎秒4回、ヘッダーから文字起こしの全行までが描き直しの対象になる。
+private struct PlaybackTracker: View {
+    let player: SessionPlayer
+    let lines: [TranscriptLine]
+    @Binding var currentLineID: TranscriptLine.ID?
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: player.currentTime, initial: true) {
+                let id = Self.lineID(at: player.currentTime, in: lines)
+                if id != currentLineID { currentLineID = id }
+            }
+    }
+
+    /// 指定の再生位置にあたる行。その位置までに始まった最後の行を選ぶ。
+    /// 最初の発話より前(頭出し直後など)は、どの行でもないので nil。
+    /// offset が nil の行(旧形式ヘッダーの混入時のみ)は選ばれない。
+    private static func lineID(
+        at time: TimeInterval, in lines: [TranscriptLine]
+    ) -> TranscriptLine.ID? {
+        lines.last { ($0.offset ?? .infinity) <= time }?.id
+    }
+}
+
 /// 要約を生成したエンジンのバッジ。「この要約はどのエンジンが作ったか」を後から見ても
 /// 分かるようにする(表示のたびに現在の設定から推測せず、生成時点に固定した値を出す。
 /// 詳細は SummaryEngine のコメント参照)。
@@ -587,11 +663,37 @@ private struct EngineChip: View {
 
     var body: some View {
         Text(engine.displayName)
-            .font(HCFont.caption2)
+            .font(HCFont.caption)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(.quaternary))
+    }
+}
+
+/// 再生中の行の目印。塗りは色味を持たない薄さにして、話者の色分けと喧嘩させない。
+/// 余白は現在行かどうかに関わらず同じにする(行が移るたびに文字が動かないように)。
+private struct CurrentLineHighlight: ViewModifier {
+    let isCurrent: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.vertical, 3)
+            .padding(.leading, 8)
+            .padding(.trailing, 6)
+            .background {
+                if isCurrent {
+                    HCRadius.shape(HCRadius.chip)
+                        .fill(Color.primary.opacity(0.07))
+                        .overlay(alignment: .leading) {
+                            Capsule()
+                                .fill(.tint)
+                                .frame(width: 3)
+                                .padding(.vertical, 2)
+                        }
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: isCurrent)
     }
 }
 
@@ -611,7 +713,7 @@ struct PlayerView: View {
             .buttonStyle(.plain)
 
             Text(formatPlaybackTime(scrubTime ?? player.currentTime))
-                .font(HCFont.monospacedDigit(.caption1))
+                .font(HCFont.timecode)
                 .foregroundStyle(.secondary)
 
             Slider(
@@ -630,52 +732,39 @@ struct PlayerView: View {
                 .disabled(!player.isReady)
 
             Text(formatPlaybackTime(player.duration))
-                .font(HCFont.monospacedDigit(.caption1))
+                .font(HCFont.timecode)
                 .foregroundStyle(.secondary)
+
+            channelPicker
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
     }
 
+    /// 鳴らす音の選択。相手の音も録ったセッションにしか出さない
+    /// (選べるものが1つしかない場面で、意味のない操作対象を増やさない)。
+    @ViewBuilder
+    private var channelPicker: some View {
+        if player.availableChannels.count > 1 {
+            Picker("音声", selection: channelBinding) {
+                ForEach(player.availableChannels) { channel in
+                    Text(channel.label).tag(channel)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+            .help("聞く声を選べます。会議アプリでマイクを切っていた場面でも、自分の声を拾っていることがあります")
+        }
+    }
+
+    private var channelBinding: Binding<PlaybackChannel> {
+        Binding(get: { player.channel }, set: { player.select($0) })
+    }
 }
 
 /// 録音内の経過時間の表示。再生バーと文字起こしの行で同じ物差し・同じ見た目にする。
 private func formatPlaybackTime(_ time: TimeInterval) -> String {
     let seconds = Int(time.rounded())
     return String(format: "%d:%02d", seconds / 60, seconds % 60)
-}
-
-/// SwiftUI の Button からは実体の NSView に直接アクセスできないため、透明な NSView を
-/// background に仕込んで実体を取り出す。取り出した NSView は NSMenu.popUp(in:) の
-/// アンカーに使う(ボタンの直下にメニューを出すため)。
-private struct MenuAnchorView: NSViewRepresentable {
-    @Binding var anchor: NSView?
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        // view はビューが階層に載った後でないと座標系が確定しないため1サイクル遅らせる。
-        DispatchQueue.main.async { anchor = view }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-}
-
-/// NSMenuItem の target/action を SwiftUI のクロージャに橋渡しする。NSMenuItem は
-/// Objective-C のセレクタ経由でしか反応せずクロージャを直接渡せないため、
-/// representedObject にクロージャを積み、共通のセレクタから呼び出す。
-/// NSMenuItem は target を弱参照するため、呼び出し側(View)がこのインスタンスを
-/// @State 等で強参照し続ける必要がある。
-final class MenuActionHandler: NSObject {
-    func makeItem(_ title: String, action: @escaping () -> Void) -> NSMenuItem {
-        let item = NSMenuItem(
-            title: title, action: #selector(performAction(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = action
-        return item
-    }
-
-    @objc private func performAction(_ sender: NSMenuItem) {
-        (sender.representedObject as? () -> Void)?()
-    }
 }

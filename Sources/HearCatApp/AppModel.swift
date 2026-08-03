@@ -34,6 +34,46 @@ private enum AutoSummaryError: LocalizedError {
     }
 }
 
+/// 録音・文字起こしの異常の種類。同じ種類の異常が続けて起きても、パネルには
+/// 常に最新の1件だけを出す(古い理由文言のまま積み上がらないようにするため)。
+enum HealthIssueKind: Hashable {
+    case micPermissionDenied
+    case speechPermissionDenied
+    case systemAudioUnavailable
+    /// 相手のチャンネルだけが長く無音のまま。取得自体は動いているが中身が来ていない状態。
+    case systemAudioSilent
+    case recordingWriteFailed
+    case recordingConversionFailed
+
+    /// いまも続いている不調か。続いているものは、読んだだけで画面から消せないようにする。
+    /// 消せてしまうと、自分の声が1文字も残らないまま見た目だけ正常に戻り、
+    /// あとで気づいても録り直せない(消す代わりに、畳んで小さくできる)。
+    var isOngoing: Bool {
+        switch self {
+        case .micPermissionDenied, .speechPermissionDenied, .systemAudioUnavailable,
+            .systemAudioSilent, .recordingWriteFailed:
+            return true
+        // 録音ファイルの仕上げ失敗は、起きた時点で終わっている出来事。元の録音データは
+        // 残っていて、以後の記録にも影響しないため、読んだら消してよい。
+        case .recordingConversionFailed:
+            return false
+        }
+    }
+}
+
+/// メニューバーのパネルに出す異常1件分。
+struct HealthIssue: Identifiable, Equatable {
+    let kind: HealthIssueKind
+    let title: String
+    let detail: String
+    /// 対処として開くべきシステム設定のペイン名。nil なら対処ボタンを出さない
+    /// (権限拒否以外は設定を開いても直せないため)。
+    let settingsPane: String?
+
+    var id: HealthIssueKind { kind }
+    var isOngoing: Bool { kind.isOngoing }
+}
+
 private enum CodeImpactContextError: LocalizedError {
     case inactive
     case sessionNotFound
@@ -64,6 +104,12 @@ final class AppModel {
     private var ipcServer: IPCServer?
 
     private(set) var status = SessionEngine.Status()
+    /// 現在進行中のセッションで起きている異常。複数同時にあり得るため配列で持つ。
+    /// 新しいセッションを始めたらクリアする(前のセッションの異常を持ち越さない)。
+    private(set) var healthIssues: [HealthIssue] = []
+    /// 畳んで1行にしている異常。パネルはメニューを開くたびに作り直されるため、
+    /// 畳んだかどうかはビューではなくここで覚える。
+    private(set) var collapsedHealthIssues: Set<HealthIssueKind> = []
     private(set) var sessions: [SessionInfo] = []
     /// プロジェクトフォルダの一覧(空のフォルダも含む)。履歴のセクション表示に使う。
     private(set) var folders: [String] = []
@@ -130,6 +176,19 @@ final class AppModel {
     /// 直前に終了したセッションの ID。停止直後、ライブ画面からその詳細へ
     /// 自然に遷移させるために MainWindow が参照する。
     private(set) var lastEndedSessionID: String?
+
+    /// 直前に終わったセッション。停止しても画面上では何も起きず、履歴ウィンドウを
+    /// 開いていなければ要約が出来たことにも気づけなかったため、次にパネルを開いた時に
+    /// 「見返す」導線として出す。次のセッションを始めるまで残る。
+    var recentlyEndedSession: SessionInfo? {
+        guard !status.active, let id = lastEndedSessionID else { return nil }
+        return sessions.first { $0.id == id }
+    }
+
+    /// そのセッションの要約が、いま作られている途中か(停止直後の待ち時間も含む)。
+    func isAwaitingSummary(_ session: SessionInfo) -> Bool {
+        summarizingSessionID == session.id || pendingAutoSummarySessionID == session.id
+    }
     /// refreshSessions が呼ばれるたびに増える版数。停止直後は最終行の書き込みが
     /// 完了直前まで遅れるため、SessionDetailView が読み直すきっかけに使う。
     private(set) var sessionsVersion = 0
@@ -195,6 +254,9 @@ final class AppModel {
                 liveTimeline.finalize(segment)
             }
         }
+        engine.onHealthEvent = { [weak self] event in
+            self?.handleHealthEvent(event)
+        }
         engine.onLevel = { [weak self] speaker, level in
             Task { @MainActor in
                 guard let self else { return }
@@ -232,9 +294,23 @@ final class AppModel {
         engine.onSilenceEnded = { [weak self] in
             self?.dismissNudge(.silence)
         }
+        // 相手だけが無音のまま続くのは、耳では気づけない片側だけの欠落の兆候。
+        // 会議中に割り込むほどではないので、パネルのバナーとしてだけ出す。
+        engine.onSystemAudioSilent = { [weak self] in
+            self?.presentSystemAudioSilentIssue()
+        }
+        engine.onSystemAudioResumed = { [weak self] in
+            self?.resolveHealthIssue(.systemAudioSilent)
+        }
         let meetingScheduler = MeetingAutoStartScheduler()
         meetingScheduler.onDue = { [weak self] meeting in
             self?.presentMeetingStartNudge(for: meeting)
+        }
+        meetingScheduler.exclusions = { [weak self] in
+            guard let self else { return (ids: [], keywords: []) }
+            return (
+                ids: Set(settings.excludedMeetings.keys),
+                keywords: settings.excludedMeetingKeywords)
         }
         meetingAutoStartScheduler = meetingScheduler
         meetingScheduler.setEnabled(settings.meetingAutoStart)
@@ -269,6 +345,110 @@ final class AppModel {
         // claude/codex の検出は zsh -lc 経由で数百 ms かかり得るため、起動をブロックしない
         // バックグラウンド検出に回す(結果はキャッシュされ、以後は即座に読める)。
         AgentCLIDetector.shared.detectIfNeeded()
+        // 前回の強制終了で変換されずに残った録音を拾う。起動をブロックしないよう
+        // 非同期で行い、1件以上救えたら通知センターで知らせる
+        // (パネルを開かない限り気づけない静かな回収のため)。
+        Task { await recoverOrphanedRecordings() }
+    }
+
+    private func recoverOrphanedRecordings() async {
+        let results = await RecordingRecovery.recoverAll()
+        guard results.contains(where: \.succeeded) else { return }
+        HealthNotifier.notify(title: "前回の録音を復旧しました", body: nil)
+    }
+
+    /// エンジンからの健全性イベントを、パネルに出す文言と対処導線に組み立てる。
+    /// 録音が止まっても文字起こしは独立して続く(SessionRecorder.writeBlock 参照)ため、
+    /// 録音系の異常は「録音は止まったが記録自体は続いている」ことが伝わる文言にする。
+    private func handleHealthEvent(_ event: SessionHealthEvent) {
+        let issue: HealthIssue
+        // 権限拒否はセッション開始直後にパネルを見れば気づける想定のため通知はしない。
+        // セッション中に無言で止まり得るものだけ通知センターにも出す。
+        var shouldNotify = false
+        switch event {
+        case .micPermissionDenied:
+            issue = HealthIssue(
+                kind: .micPermissionDenied,
+                title: "マイクが許可されていません",
+                detail: "自分の声が録音・文字起こしされません。",
+                settingsPane: "Privacy_Microphone")
+        case .speechPermissionDenied:
+            issue = HealthIssue(
+                kind: .speechPermissionDenied,
+                title: "音声認識が許可されていません",
+                detail: "文字起こしが行われません。",
+                settingsPane: "Privacy_SpeechRecognition")
+        case .systemAudioUnavailable(let reason):
+            issue = HealthIssue(
+                kind: .systemAudioUnavailable,
+                title: "相手の音声を取得できませんでした",
+                detail: reason,
+                settingsPane: nil)
+            shouldNotify = true
+        case .recordingWriteFailed:
+            issue = HealthIssue(
+                kind: .recordingWriteFailed,
+                title: "録音が停止しました",
+                detail: "文字起こしは引き続き行われます。",
+                settingsPane: nil)
+            shouldNotify = true
+        case .recordingConversionFailed:
+            issue = HealthIssue(
+                kind: .recordingConversionFailed,
+                title: "録音ファイルの仕上げに失敗しました",
+                detail: "元の録音データは残っています。",
+                settingsPane: nil)
+            shouldNotify = true
+        }
+        present(issue, notify: shouldNotify)
+    }
+
+    /// 相手のチャンネルだけが長く無音になっている、という知らせ。取得自体は動いているため、
+    /// 断定はせず「届いていない」という事実と、直し方だけを伝える。
+    /// 通知センターにも出す(パネルを開かない限り気づけない静かな欠落のため)。
+    private func presentSystemAudioSilentIssue() {
+        present(
+            HealthIssue(
+                kind: .systemAudioSilent,
+                title: "相手の音声が10分以上届いていません",
+                detail: "相手が話しているのにこの表示が出る場合は、いったん停止して開始し直してください。",
+                settingsPane: nil),
+            notify: true)
+    }
+
+    /// 異常を1件出す。「同じ種類は最新の1件だけ」「再発したら畳んだ状態は引き継がない」
+    /// という規則を守る唯一の場所(規則を足す時にここだけ見ればよくする)。
+    private func present(_ issue: HealthIssue, notify: Bool) {
+        healthIssues.removeAll { $0.kind == issue.kind }
+        healthIssues.append(issue)
+        collapsedHealthIssues.remove(issue.kind)
+        if notify {
+            HealthNotifier.notify(title: issue.title, body: issue.detail)
+        }
+    }
+
+    /// 異常の原因が解消したので引っ込める。ユーザーの「了解」ではなく、状態の回復で消す経路。
+    private func resolveHealthIssue(_ kind: HealthIssueKind) {
+        healthIssues.removeAll { $0.kind == kind }
+        collapsedHealthIssues.remove(kind)
+    }
+
+    /// パネルのバナーで「了解」を押した時に、その異常だけを引っ込める。
+    /// 続いている異常は消さない(消せる導線をバナー側が出さないが、二重の歯止めとして
+    /// ここでも弾く)。続いているものを引っ込めたい場合は畳む方を使う。
+    func dismissHealthIssue(_ issue: HealthIssue) {
+        guard !issue.isOngoing else { return }
+        resolveHealthIssue(issue.kind)
+    }
+
+    /// 続いている異常の表示を、1行に畳む/元に戻す。畳んでもメニューバーの印は残るため、
+    /// 「いま何かおかしい」こと自体は見えたままになる。
+    func toggleHealthIssueCollapsed(_ issue: HealthIssue) {
+        if collapsedHealthIssues.contains(issue.kind) {
+            collapsedHealthIssues.remove(issue.kind)
+        } else {
+            collapsedHealthIssues.insert(issue.kind)
+        }
     }
 
     /// エコー除去/入力感度の設定をエンジンへ反映する。自動時は threshold を nil にして
@@ -352,6 +532,9 @@ final class AppModel {
         cancelPendingMeetingStart()
         // 過去の無関係なエラーを引きずって「開始失敗」と誤報告しないようにする。
         lastError = nil
+        // 前のセッションの異常を持ち越さない。
+        healthIssues = []
+        collapsedHealthIssues = []
         // プローブ稼働中(設定画面のメーターが動いている)にセッションを始めると、
         // 同じマイクを二重に掴んでしまうため、セッション側を優先してプローブを止める。
         stopMicProbe()
@@ -499,6 +682,13 @@ final class AppModel {
                 detail: "この時間になったら、録音と文字起こしを自動で始めます。",
                 deadline: deadline,
                 actions: [
+                    // 毎回「今回はやめる」を押させないための逃げ道。繰り返しの予定は
+                    // ID が全回で共通なので、一度押せば以後この予定では予告も出ない。
+                    NudgeAction(title: "今後録らない") { [weak self] in
+                        guard let self else { return }
+                        settings.excludedMeetings[meeting.seriesID] = name
+                        cancelPendingMeetingStart()
+                    },
                     NudgeAction(title: "今回はやめる") { [weak self] in
                         self?.cancelPendingMeetingStart()
                     },
@@ -600,6 +790,11 @@ final class AppModel {
     /// いま要約を生成中のセッション ID(自動・手動共通)。詳細画面の
     /// ボタン表示と二重実行の防止に使う。
     private(set) var summarizingSessionID: String?
+
+    /// 停止直後の自動要約を待っているセッション ID。生成が始まるまでに数秒の間があり、
+    /// summarizingSessionID だけを見ると、その間だけ「要約なし」に見えてしまう
+    /// (パネルの直前セッションの表示が「文字起こしを見る」→「作成中」と揺れる)。
+    private(set) var pendingAutoSummarySessionID: String?
 
     /// 要約を生成して summary.md に保存し、履歴を読み直す。
     /// 停止直後の自動生成と詳細画面のボタンの共通経路。
@@ -788,7 +983,9 @@ final class AppModel {
     /// 「要約が生成されない」ことしか分からなかった。
     private func autoSummarize(sessionID: String) {
         guard let engine = settings.autoSummaryEngine else { return }
+        pendingAutoSummarySessionID = sessionID
         Task {
+            defer { pendingAutoSummarySessionID = nil }
             // 最後の発話の確定は、停止よりファイル書き込みがわずかに遅れることがある。
             try? await Task.sleep(for: .seconds(2))
             guard summarizingSessionID == nil,
@@ -936,11 +1133,15 @@ final class AppModel {
 
     // MARK: - ウィンドウ表示
 
-    func showHistory() {
+    /// 履歴ウィンドウを開く。selecting を渡すと、そのセッションを選んだ状態で開く
+    /// (停止直後にパネルから「要約を見る」で飛ぶ経路で使う)。
+    func showHistory(selecting sessionID: String? = nil) {
         dismissPanel()
-        // セッション中に開く場合は、既に開いたことのあるウィンドウでも必ずライブへ
-        // 戻す(前回選んでいたセッションのまま止まってしまわないように)。
-        if status.active {
+        if let sessionID {
+            mainWindowSelectionRequest = sessionID
+        } else if status.active {
+            // セッション中に開く場合は、既に開いたことのあるウィンドウでも必ずライブへ
+            // 戻す(前回選んでいたセッションのまま止まってしまわないように)。
             mainWindowSelectionRequest = MainWindow.liveID
         }
         guard let openWindowAction else {
@@ -988,6 +1189,7 @@ final class AppModel {
     func refreshSessions() {
         sessions = SessionStore.list()
         folders = SessionStore.listFolders()
+        SessionPreviewCache.shared.retain(ids: Set(sessions.map(\.id)))
         sessionsVersion += 1
     }
 
@@ -1008,6 +1210,14 @@ final class AppModel {
     /// セッションをプロジェクトフォルダへ移動し、移動後の ID を返す。nil で未分類へ戻す。
     func move(_ session: SessionInfo, toFolder folder: String?) -> String? {
         mutateSession(session) { try SessionStore.move($0, toFolder: folder) }
+    }
+
+    /// グループの並び順をユーザーの指定通りに固定する。サイドバーのドラッグ&ドロップ、
+    /// 右クリックの「上へ移動」「下へ移動」から呼ぶ。
+    func reorderFolders(_ newOrder: [String]) {
+        SessionStore.setFolderOrder(newOrder)
+        // 書いた直後に読み直さない。newOrder は現在の folders の並べ替えなので内容は同じ。
+        folders = newOrder
     }
 
     /// 空のプロジェクトフォルダを作る。

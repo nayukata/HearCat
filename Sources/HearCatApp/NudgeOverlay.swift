@@ -48,7 +48,12 @@ final class NudgeOverlayController {
 
     private let state: NudgeOverlayState
     private let panel: NSPanel
-    static let size = NSSize(width: 340, height: 178)
+    /// 選択肢は横1列に並べる。幅が足りないとボタンの文字が2行に折り返して、
+    /// 「今後録らない」だけ高さが変わり押し間違えやすくなる。
+    /// 内訳(実測、日本語は同梱の Noto Sans JP): 6文字のボタンが3つで約 300pt、
+    /// パネルの左右余白 32pt。折り返さない下限は約 340pt だが、字幅は環境で少し動くため
+    /// 400pt にして余裕を持たせる。ボタンの文言を長くする時はここも見直す。
+    static let size = NSSize(width: 400, height: 178)
 
     private init() {
         let state = NudgeOverlayState()
@@ -114,9 +119,9 @@ private struct NudgeOverlayView: View {
             height: NudgeOverlayController.size.height)
         .background(HCColor.mistDark)
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            HCRadius.shape(HCRadius.panel)
                 .stroke(HCColor.mistDarkStroke, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(HCRadius.shape(HCRadius.panel))
     }
 
     private func content(_ prompt: NudgePrompt) -> some View {
@@ -131,7 +136,7 @@ private struct NudgeOverlayView: View {
                         .font(HCFont.style(.subheadline, weight: .semibold))
                         .foregroundStyle(HCColor.mistWhite)
                     Text(prompt.detail)
-                        .font(HCFont.footnote)
+                        .font(HCFont.caption)
                         .foregroundStyle(HCColor.mistWhiteDim)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineLimit(3)
@@ -140,9 +145,9 @@ private struct NudgeOverlayView: View {
             if let deadline = prompt.deadline {
                 HStack(spacing: 6) {
                     Image(systemName: "timer")
-                        .font(HCFont.footnote)
+                        .font(HCFont.caption)
                     Text(timerInterval: Date.now...deadline, countsDown: true)
-                        .font(HCFont.monospacedDigit(.footnote))
+                        .font(HCFont.timecode)
                 }
                 .foregroundStyle(HCColor.cinnamon)
             }
@@ -159,6 +164,10 @@ private struct NudgeOverlayView: View {
                     }
                 }
             }
+            // 幅が足りない時は折り返さず、はみ出す方に倒す。折り返すと選択肢ごとに
+            // 高さが変わり、並びが崩れて押し間違えやすくなる。
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(16)
     }

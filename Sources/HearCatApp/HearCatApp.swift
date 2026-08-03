@@ -1,4 +1,5 @@
 import AppKit
+import HearCatKit
 import SwiftUI
 
 @main
@@ -35,6 +36,13 @@ struct HearCatApp: App {
                 })
         }
         .windowResizability(.contentSize)
+
+        Window("ようこそ", id: WelcomeView.windowID) {
+            WelcomeView()
+                .tint(HCColor.cinnamon)
+                .environment(\.font, HCFont.body)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -47,10 +55,38 @@ private struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(nsImage: model.menuIcon)
-            .onAppear {
-                model.openWindowAction = { id in openWindow(id: id) }
+        ZStack(alignment: .topTrailing) {
+            Image(nsImage: model.menuIcon)
+            // 異常が起きている間、猫アイコンに小さいバッジを重ねる。パネルを開かなくても
+            // メニューバーを見るだけで気づけるようにする(バナー自体はパネルの中)。
+            if !model.healthIssues.isEmpty {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 6, height: 6)
+                    .offset(x: 2, y: -2)
             }
+        }
+        .onAppear {
+            reportMenuBarState()
+            model.openWindowAction = { id in openWindow(id: id) }
+            WelcomeView.presentIfFirstLaunch(openWindow: openWindow)
+        }
+    }
+
+    /// メニューバーに実際に居場所を得られたかを HEARCAT_DEBUG 時だけ記録する。
+    /// 「アプリは動いているのにアイコンが見当たらない」を切り分ける唯一の手がかりで、
+    /// メニューバー項目は他プロセス(コントロールセンター)が描くため外からは観測できない。
+    /// ラベルの描画直後はまだ実体が載っていないので、1サイクル待ってから測る。
+    private func reportMenuBarState() {
+        guard hearcatDebug else { return }
+        debugLog("メニューバーのラベルが描画された icon=\(model.menuIcon.size)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            let statusWindows = NSApp.windows.filter { $0.className.contains("NSStatusBarWindow") }
+            debugLog("ステータス項目の数=\(statusWindows.count)")
+            for window in statusWindows {
+                debugLog("ステータス項目 frame=\(window.frame) visible=\(window.isVisible)")
+            }
+        }
     }
 }
 

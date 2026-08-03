@@ -171,10 +171,10 @@ enum AgentSummarizeError: LocalizedError {
         case .noTranscript:
             return "文字起こしがありません"
         case .timedOut:
-            return "AI 処理がタイムアウトしました(5分)"
+            return "AI 処理がタイムアウトしました (5 分)"
         case .failed(let exitCode, let stderr):
             let summary = stderr.isEmpty ? "" : ": \(stderr)"
-            return "AI 処理に失敗しました(終了コード \(exitCode))\(summary)"
+            return "AI 処理に失敗しました (終了コード \(exitCode))\(summary)"
         case .emptyOutput:
             return "AI からの応答が空でした"
         }
@@ -185,7 +185,7 @@ enum AgentSummarizeError: LocalizedError {
 private enum AgentSummarizePrompt {
     static func build(referenceFolder: String?) -> String {
         var parts = [
-            "会議の文字起こし(標準入力で渡されます)を読み、議事録品質の要約を作ってください。",
+            "会議の文字起こし (標準入力で渡されます) を読み、議事録品質の要約を作ってください。",
             "音声認識による誤変換(固有名詞・技術用語など)は、文脈から正しい表記に直してください。",
         ]
         if referenceFolder != nil {
@@ -211,7 +211,7 @@ private enum AgentSummarizePrompt {
              「担当者:」「担当 -」など別の表記にしない。
              担当が分からない項目は括弧ごと書かない。「(担当: 不明)」とは書かない)
             """)
-        parts.append("文字起こしに書かれていないことを書かないでください(捏造禁止)。不確かな内容は書かないでください。")
+        parts.append("文字起こしに書かれていないことを書かないでください (捏造禁止)。不確かな内容は書かないでください。")
         return parts.joined(separator: "\n\n")
     }
 }
