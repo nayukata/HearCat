@@ -56,12 +56,28 @@ private final class DebugLogFile: @unchecked Sendable {
             .appendingPathComponent("HearCat")
         let url = dir.appendingPathComponent("debug.log")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        Self.rotateIfNeeded(url: url)
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         handle = try? FileHandle(forWritingTo: url)
         _ = try? handle?.seekToEnd()
         write("==== 起動 \(Date().formatted()) ====")
+    }
+
+    /// debug.log が上限を超えていたら debug.log.old へ退避して新規作成する(1世代のみ)。
+    /// HEARCAT_DEBUG は開発時にしか立てないが、立てっぱなしの環境で際限なく肥大化するのを防ぐ。
+    private static let maxSizeBytes: Int64 = 5 * 1024 * 1024
+
+    private static func rotateIfNeeded(url: URL) {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let size = (attrs[.size] as? NSNumber)?.int64Value,
+              size > maxSizeBytes
+        else { return }
+        let oldURL = url.deletingLastPathComponent().appendingPathComponent("debug.log.old")
+        try? fm.removeItem(at: oldURL)
+        try? fm.moveItem(at: url, to: oldURL)
     }
 
     func write(_ message: String) {
