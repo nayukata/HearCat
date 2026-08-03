@@ -118,6 +118,105 @@ struct SessionRecorderTests {
         #expect(seconds < 26, "録音が実時間より長い(遅配の二重計上): \(seconds)秒")
     }
 
+    /// 相手だけの録音は、混ぜたものと同じ時間軸で書かれている必要がある。
+    /// ずれると、文字起こしからのジャンプと再生バーが音を選んだ瞬間に食い違う。
+    @Test func 相手だけの録音は混ぜたものと同じ尺で書かれる() async throws {
+        let url = tempURL()
+        let otherURL = tempURL()
+        defer { for u in [url, otherURL] { try? FileManager.default.removeItem(at: u) } }
+
+        let recorder = SessionRecorder(url: url, otherURL: otherURL, includesSystemChannel: true)
+        let tone = sineSamples(count: blockFrames, startIndex: 0, amplitude: 0.05, frequency: 220)
+        let silence = [Float](repeating: 0, count: blockFrames)
+        for _ in 0..<20 {
+            await recorder.appendSystem(makeBuffer(tone))
+            await recorder.appendMic(makeBuffer(silence))
+        }
+        await recorder.close()
+
+        let mixed = try AVAudioFile(forReading: url).length
+        #expect(try AVAudioFile(forReading: otherURL).length == mixed)
+    }
+
+    /// 「相手だけ」で聞く目的は、会議アプリでマイクを切っていた場面で自分の声が
+    /// 混ざっているのを避けること。相手側のファイルに自分の音が残っていては意味がない。
+    @Test func 相手だけの録音に自分の声は入らない() async throws {
+        let url = tempURL()
+        let otherURL = tempURL()
+        defer { for u in [url, otherURL] { try? FileManager.default.removeItem(at: u) } }
+
+        let recorder = SessionRecorder(url: url, otherURL: otherURL, includesSystemChannel: true)
+        let tone = sineSamples(count: blockFrames, startIndex: 0, amplitude: 0.05, frequency: 220)
+        let silence = [Float](repeating: 0, count: blockFrames)
+        for _ in 0..<20 {
+            await recorder.appendSystem(makeBuffer(silence))
+            await recorder.appendMic(makeBuffer(tone))
+        }
+        await recorder.close()
+
+        #expect(try readOverallRMS(url: otherURL) < 0.001)
+        // 混ぜたものには自分の声が(自動ゲインで底上げされて)入っている。
+        #expect(try readOverallRMS(url: url) > 0.01)
+    }
+
+    /// 相手の音を録らないセッション(マイクだけ)では、分けても中身が同じになるだけ。
+    /// 無駄なファイルを増やさないことの確認。
+    @Test func 相手の音を録らないセッションでは相手だけの録音を作らない() async throws {
+        let url = tempURL()
+        let otherURL = tempURL()
+        defer { for u in [url, otherURL] { try? FileManager.default.removeItem(at: u) } }
+
+        let recorder = SessionRecorder(url: url, otherURL: otherURL, includesSystemChannel: false)
+        let tone = sineSamples(count: blockFrames, startIndex: 0, amplitude: 0.05, frequency: 220)
+        for _ in 0..<20 {
+            await recorder.appendMic(makeBuffer(tone))
+        }
+        await recorder.close()
+
+        let fm = FileManager.default
+        #expect(fm.fileExists(atPath: url.path))
+        #expect(!fm.fileExists(atPath: otherURL.path))
+    }
+
+    /// stop() の正常経路では、最終形式(.m4a)が残り、録音中に書いていた生ファイル(.aac)は
+    /// 消えている必要がある(両方残ると容量が倍になり、後者だけ残ると再生できない)。
+    @Test func 停止後は最終形式が残り生ファイルは消えている() async throws {
+        let url = tempURL()
+        let stagingURL = SessionRecorder.stagingURL(for: url)
+        defer { for u in [url, stagingURL] { try? FileManager.default.removeItem(at: u) } }
+
+        let recorder = SessionRecorder(url: url, includesSystemChannel: false)
+        let tone = sineSamples(count: blockFrames, startIndex: 0, amplitude: 0.05, frequency: 220)
+        for _ in 0..<20 { await recorder.appendMic(makeBuffer(tone)) }
+        let converted = await recorder.close()
+
+        #expect(converted)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(!FileManager.default.fileExists(atPath: stagingURL.path))
+        // 変換はパススルー(再エンコードなし)なので、音の中身は保たれているはず。
+        #expect(try readOverallRMS(url: url) > 0.01)
+    }
+
+    /// close() を呼ばない(強制終了相当)状態でも、録音中に書いていた生ファイルは
+    /// 読める必要がある。これが .caf ではなく .aac(ADTS の AAC 生ストリーム)を選んだ理由そのもの
+    /// (SessionRecorder の型 doc comment を参照)。
+    @Test func stopを呼ばなくても書きかけの生ファイルは読める() async throws {
+        let url = tempURL()
+        let stagingURL = SessionRecorder.stagingURL(for: url)
+        defer { for u in [url, stagingURL] { try? FileManager.default.removeItem(at: u) } }
+
+        let recorder = SessionRecorder(url: url, includesSystemChannel: false)
+        let tone = sineSamples(count: blockFrames, startIndex: 0, amplitude: 0.05, frequency: 220)
+        // close() を呼ばずに、writeBlock が実際にディスクへ書く量(blockFrames の倍数)だけ送る。
+        for _ in 0..<10 { await recorder.appendMic(makeBuffer(tone)) }
+
+        #expect(FileManager.default.fileExists(atPath: stagingURL.path))
+        let staged = try AVAudioFile(forReading: stagingURL)
+        #expect(staged.length > 0)
+        // close() を呼んでいないので、最終形式(.m4a)への変換はまだ走っていない。
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
     @Test func システム音声には自動ゲインが掛からない() async throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }

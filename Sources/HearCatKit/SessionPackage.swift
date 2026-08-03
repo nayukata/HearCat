@@ -117,7 +117,9 @@ public enum SessionPackage {
 
         for artifact in SessionInfo.Artifact.allCases {
             // 録音は含めない指定があり得る。それ以外は入っているものをそのまま詰める。
-            if artifact == .audio, audio == nil { continue }
+            // 自分だけ・相手だけの録音も同じ扱いにする(片方だけ渡すと、受け取った側で
+            // 再生の選択肢が中途半端に欠ける)。
+            if artifact.isAudio, audio == nil { continue }
             guard let source = session.url(of: artifact) else { continue }
             try place(source, at: staging.appendingPathComponent(artifact.portableFileName))
         }

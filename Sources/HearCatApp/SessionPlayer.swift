@@ -2,7 +2,24 @@
 import Foundation
 import Observation
 
-/// 録音(自分と相手をミックスした1ファイル)の再生。
+/// 再生する音の種類。相手だけの録音は、相手の音も録ったセッションにしか無い
+/// (この機能より前に録ったセッションにも無い)。
+enum PlaybackChannel: CaseIterable, Identifiable, Sendable {
+    /// 自分と相手を混ぜたもの。従来からある録音で、既定はこれ。
+    case both
+    case other
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .both: return "自分と相手"
+        case .other: return "相手だけ"
+        }
+    }
+}
+
+/// 録音の再生。
 ///
 /// ファイルを開く処理(AVAudioPlayer の生成と prepareToPlay)は、1時間超の録音(数十 MB)だと
 /// 実測で 140〜350ms かかる。これをメインスレッドで行うと、履歴でセッションを選んだ瞬間に
@@ -22,18 +39,59 @@ final class SessionPlayer {
     /// 再生を始められる状態か。読み込み中は false(録音があっても、まだ開けていない)。
     private(set) var isReady = false
 
+    /// 種類ごとの録音の場所。
+    private let urls: [PlaybackChannel: URL]
+    /// 今どの音を鳴らしているか。
+    private(set) var channel: PlaybackChannel = .both
+
     /// 録音があるか。ファイルの有無だけで決まるため読み込みの完了を待たずに答えられる。
     /// 再生バーを出すかどうかの判断はこれで即座にできる。
-    let hasAudio: Bool
+    var hasAudio: Bool { urls[.both] != nil }
+
+    /// 選べる音。相手だけの録音が無いセッションでは .both だけになり、
+    /// 呼び出し側はこれを見て切り替えの導線を出すかどうかを決める。
+    var availableChannels: [PlaybackChannel] {
+        PlaybackChannel.allCases.filter { urls[$0] != nil }
+    }
 
     var duration: TimeInterval { player?.duration ?? 0 }
 
-    init(audioURL: URL?) {
-        hasAudio = audioURL != nil
+    init(audioURL: URL?, otherURL: URL? = nil) {
+        var urls: [PlaybackChannel: URL] = [:]
+        urls[.both] = audioURL
+        // 相手だけの録音は、混ぜたものがあって初めて意味を持つ(選択肢の一方として出す)。
+        if audioURL != nil { urls[.other] = otherURL }
+        self.urls = urls
         guard let audioURL else { return }
+        load(audioURL)
+    }
+
+    /// 鳴らす音を切り替える。2本は同じ時間軸で書かれているため、位置と再生状態を
+    /// そのまま引き継げる(読み直しの間だけ音が途切れる)。
+    func select(_ channel: PlaybackChannel) {
+        guard channel != self.channel, let url = urls[channel] else { return }
+        // 読み込み中に押された再生要求(pendingStart)も「再生するつもり」として引き継ぐ。
+        // 開くのを待っている間に音を切り替えても、押した操作が消えないようにする。
+        let wasPlaying = isPlaying || pendingStart != nil
+        let position = currentTime
+        self.channel = channel
+
+        loadTask?.cancel()
+        player?.stop()
+        player = nil
+        timer?.invalidate()
+        timer = nil
+        isPlaying = false
+        isReady = false
+        currentTime = position
+        pendingStart = wasPlaying ? position : nil
+        load(url)
+    }
+
+    private func load(_ url: URL) {
         loadTask = Task { [weak self] in
             let loaded = await Task.detached(priority: .userInitiated) {
-                let player = try? AVAudioPlayer(contentsOf: audioURL)
+                let player = try? AVAudioPlayer(contentsOf: url)
                 // 実際に音を出す直前のバッファ確保もここで済ませる(再生ボタンを押した
                 // 瞬間の引っかかりを、切り替え直後の見えない時間に寄せる)。
                 player?.prepareToPlay()
@@ -97,6 +155,9 @@ final class SessionPlayer {
     private func adopt(_ loaded: AVAudioPlayer?) {
         player = loaded
         isReady = loaded != nil
+        // 音を切り替えた直後の player は先頭を向いている。表示している位置へ合わせる
+        // (再生していなかった場合でも、シークバーと実体をずらさない)。
+        if loaded != nil, currentTime > 0 { seek(to: currentTime) }
         guard let pendingStart else { return }
         self.pendingStart = nil
         playFrom(pendingStart)

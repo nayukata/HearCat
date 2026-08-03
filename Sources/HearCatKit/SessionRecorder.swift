@@ -2,24 +2,56 @@
 import Foundation
 
 /// セッションの録音を audio.m4a 1本(モノラル、自分と相手のミックス)に書く。
+/// 相手の音も録っている場合は、これに加えて相手だけの録音も書く。
 ///
 /// なぜモノラルミックスか: 再生時に両者の声が左右どちらかに寄らず、
 /// 両耳から自然に聞こえるようにするため。話者の区別は文字起こし側(話者ラベル)が担保する。
 /// 音量設定(micGain / systemGain)は、そのままミックスバランスとして効く。
+///
+/// なぜ相手だけの録音を「録ったまま」ではなくここで分けるか: 2音源は開始位置合わせ・
+/// 無音での穴埋め・遅配の相殺を通して初めて時間軸が揃う(下記の各処理)。素の音を別に
+/// 書き出すとこの補正が乗らず、混ぜたものと再生位置が食い違って、文字起こしからの
+/// ジャンプが当てにならなくなる。同じブロックから枝分かれさせることで2本の尺を揃える。
 ///
 /// 設計メモ(なぜ AVAudioConverter を使わないか):
 /// interleaved→deinterleaved の同レート変換に AVAudioConverter を使ったところ、
 /// 各バッファの約半分が無音に置き換わる破損が実測で確認された(周期的なゲート状ノイズ)。
 /// 録音のチャンネル取り出し・モノラル化・レート合わせはここで手書きの決定的な処理で行う。
 /// (文字起こし側の 16kHz モノラル変換は実績があるためそのまま)
+///
+/// 設計メモ(録音中は .aac、停止時に .m4a へ変換する理由):
+/// 録音中に直接 .m4a(MPEG-4 コンテナ)へ書くと、アプリが強制終了した場合コンテナの
+/// 索引(moov)が確定せず、書きかけの録音がまるごと再生不能になる。この対策として
+/// 「録音中は別の入れ物に書き、停止時に正常完了した場合だけ .m4a へ変換する」方式にする。
+///
+/// 入れ物には CAF ではなく拡張子 .aac(ADTS の AAC 生ストリーム)を選んだ。実機検証の結果、
+/// CAF コンテナに AAC を書いた場合もパケット表(pakt チャンク)は close() 時にしか書かれず、
+/// SIGKILL 相当の強制終了後は長さ0・変換不能になることを確認した(m4a の moov と同じ弱点を
+/// 持つ)。一方 ADTS は各フレームが自己完結したヘッダを持つため索引を必要とせず、
+/// 強制終了後に途中で切れたファイルでもそのまま読める・変換できることを実機で確認済み。
+/// 停止時の .m4a への変換は AVAssetExportSession のパススルー(再エンコードなし)で行う。
 public actor SessionRecorder {
     /// 書き出しのサンプルレート。ソースが異なるレートの場合は線形補間で合わせる。
     public static let sampleRate: Double = 48_000
 
     private let url: URL
+    /// 相手だけの書き出し先。相手の音を録らないセッションでは分ける意味が
+    /// ないため nil にして、混ぜたもの1本だけを書く。
+    private let otherURL: URL?
     private let includesSystemChannel: Bool
+    /// 録音中に実際に書き込む先(ADTS AAC の生ストリーム)。url/otherURL と同じ場所・
+    /// 同じ基底名で拡張子だけ .aac にする。stop() の正常経路でだけ url/otherURL(.m4a)へ
+    /// 変換する(型の doc comment を参照)。
+    private let stagingURL: URL
+    private let otherStagingURL: URL?
     private var file: AVAudioFile?
+    private var otherFile: AVAudioFile?
     private var failed = false
+    /// 書き込みが失敗して以後の録音を諦めた時に一度だけ呼ぶ。UI へ知らせる出口
+    /// (SessionEngine が setOnFailure で設定し、SessionEngine.SessionHealthEvent へ変換して流す)。
+    /// actor の外から設定・actor の外の文脈(呼び出し元のスレッド)で呼ばれ得るため
+    /// @Sendable クロージャとして持つ。
+    private var onFailureHandler: (@Sendable () -> Void)?
 
     /// 各音源の待ち行列。ミックスは時間軸が揃っていないと成立しないため、
     /// 両方が揃った分だけブロック単位で合成してファイルへ書く。
@@ -108,9 +140,17 @@ public actor SessionRecorder {
                 + " sys穴埋=\(String(format: "%.1f", Double(diagSystemPadFrames) / rate))s")
     }
 
-    public init(url: URL, includesSystemChannel: Bool) {
+    public init(url: URL, otherURL: URL? = nil, includesSystemChannel: Bool) {
         self.url = url
+        self.otherURL = includesSystemChannel ? otherURL : nil
         self.includesSystemChannel = includesSystemChannel
+        self.stagingURL = Self.stagingURL(for: url)
+        self.otherStagingURL = self.otherURL.map(Self.stagingURL(for:))
+    }
+
+    /// 書き込み失敗の通知先を設定する。SessionEngine がセッション開始時に一度だけ呼ぶ。
+    public func setOnFailure(_ handler: @escaping @Sendable () -> Void) {
+        onFailureHandler = handler
     }
 
     public func appendMic(_ buffer: AVAudioPCMBuffer) {
@@ -146,15 +186,63 @@ public actor SessionRecorder {
         systemQueue.removeAll()
     }
 
-    /// 残りを無音詰めで書き切ってファイルを閉じる。
-    public func close() {
+    /// 残りを無音詰めで書き切り、生ファイル(.aac)を最終形式(.m4a)へ変換してファイルを閉じる。
+    /// 何も録音していなければ(一度も writeBlock が走っていなければ)変換対象が無いので true を返す。
+    /// 変換に失敗した場合は false を返し、生ファイルは削除せずそのまま残す
+    /// (次回起動時に RecordingRecovery が拾えるよう、データを消さないことを最優先にする)。
+    @discardableResult
+    public func close() async -> Bool {
         let remaining = max(micQueue.count, includesSystemChannel ? systemQueue.count : 0)
         if remaining > 0 {
             micQueue.append(contentsOf: repeatElement(0, count: remaining - micQueue.count))
             systemQueue.append(contentsOf: repeatElement(0, count: remaining - systemQueue.count))
             writeBlock(frames: remaining)
         }
+        // AVAudioFile を解放してファイルハンドルを閉じる。パススルー変換は解放後でないと
+        // 正しく読めない(解放前に読むと長さ0・変換失敗になることを実機で確認済み)。
+        let didOpenMain = file != nil
+        let didOpenOther = otherFile != nil
         file = nil
+        otherFile = nil
+
+        guard didOpenMain else { return true }
+
+        let mainConverted = await Self.convertRecording(from: stagingURL, to: url)
+        if mainConverted {
+            try? FileManager.default.removeItem(at: stagingURL)
+        }
+
+        if didOpenOther, let otherStagingURL, let otherURL {
+            // 相手だけの録音が変換できなくても、混ぜた本体の成否とは分けて扱う
+            // (openOtherFile と同じ方針: 選べる音が減るだけで、録音そのものは失わない)。
+            if await Self.convertRecording(from: otherStagingURL, to: otherURL) {
+                try? FileManager.default.removeItem(at: otherStagingURL)
+            } else {
+                errorLog("相手だけの録音の変換に失敗しました(\(otherStagingURL.lastPathComponent))")
+            }
+        }
+        return mainConverted
+    }
+
+    /// 生ファイル(.aac, ADTS の AAC 生ストリーム)を最終形式(.m4a)へ、再エンコードなしの
+    /// パススルーで変換する。stop() 時の変換と、RecordingRecovery の起動時回収の両方が使う
+    /// 共通の入口。
+    public static func convertRecording(from stagingURL: URL, to finalURL: URL) async -> Bool {
+        guard FileManager.default.fileExists(atPath: stagingURL.path) else { return false }
+        let asset = AVURLAsset(url: stagingURL)
+        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            errorLog("録音の変換に失敗しました(\(stagingURL.lastPathComponent)): エクスポートセッションを作成できません")
+            return false
+        }
+        // 前回の失敗などで仕掛かりの .m4a が残っていると export が上書きできず失敗するため、先に消す。
+        try? FileManager.default.removeItem(at: finalURL)
+        do {
+            try await export.export(to: finalURL, as: .m4a)
+            return true
+        } catch {
+            errorLog("録音の変換に失敗しました(\(stagingURL.lastPathComponent)): \(error)")
+            return false
+        }
     }
 
     // MARK: - 書き込み
@@ -192,13 +280,8 @@ public actor SessionRecorder {
         }
         do {
             if file == nil {
-                let settings: [String: Any] = [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: Self.sampleRate,
-                    AVNumberOfChannelsKey: 1,
-                    AVEncoderBitRateKey: 96_000,
-                ]
-                file = try AVAudioFile(forWriting: url, settings: settings)
+                file = try AVAudioFile(forWriting: stagingURL, settings: Self.encoderSettings)
+                openOtherFile()
             }
             guard let file else { return }
             let format = file.processingFormat
@@ -208,24 +291,83 @@ public actor SessionRecorder {
                 return
             }
             block.frameLength = AVAudioFrameCount(frames)
+            // 相手だけの録音は、混ぜる前の値を同じブロックから取る(尺と位置を揃えるため)。
+            let otherBlock = channelBlock(format: format, frames: frames, for: otherFile)
             // 2音源を重み付きで足し込む。同時発話で振り切れると折り返しノイズになるため [-1, 1] に収める。
             let out = data[0]
+            let otherOut = otherBlock?.floatChannelData?[0]
             micQueue.withUnsafeBufferPointer { mic in
                 systemQueue.withUnsafeBufferPointer { system in
                     updateAutoMicGain(mic: mic, frames: frames)
                     for i in 0..<frames {
-                        let mixed = mic[i] * micGain * autoMicGain + system[i] * systemGain
-                        out[i] = max(-1, min(1, mixed))
+                        let me = mic[i] * micGain * autoMicGain
+                        let other = system[i] * systemGain
+                        out[i] = max(-1, min(1, me + other))
+                        otherOut?[i] = max(-1, min(1, other))
                     }
                 }
             }
             try file.write(from: block)
+            // 相手だけの録音が書けなくなっても、混ぜた本体は残す(再生の選択肢が
+            // 減るだけで済ませ、録音そのものを落とさない)。
+            writeChannel(otherBlock, to: &otherFile)
             micQueue.removeFirst(frames)
             systemQueue.removeFirst(frames)
         } catch {
-            // 録音の失敗で文字起こしまで巻き込まない。以後の書き込みは諦めてログに残す。
+            // 録音の失敗で文字起こしまで巻き込まない。以後の書き込みは諦めてログに残し、
+            // 呼び出し側(SessionEngine)へ一度だけ知らせる。
+            let alreadyFailed = failed
             failed = true
-            errorLog("録音エラー(\(url.lastPathComponent)): \(error)")
+            errorLog("録音エラー(\(stagingURL.lastPathComponent)): \(error)")
+            if !alreadyFailed { onFailureHandler?() }
+        }
+    }
+
+    /// 2本とも同じ条件で書く(尺と音質を揃えるため)。[String: Any] は Sendable でないので
+    /// 保持せず、必要になるたびに組み立てる。
+    private static var encoderSettings: [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 96_000,
+        ]
+    }
+
+    /// 相手だけの書き出し先を開く。ここで失敗しても録音本体は続ける
+    /// (選べる音が減るだけで、会議の記録そのものは失われない)。
+    private func openOtherFile() {
+        guard let otherStagingURL else { return }
+        otherFile = try? AVAudioFile(forWriting: otherStagingURL, settings: Self.encoderSettings)
+        if otherFile == nil { errorLog("相手だけの録音を開けません(\(otherStagingURL.lastPathComponent))") }
+    }
+
+    /// 録音中の生ファイルの場所。最終ファイル(.m4a)と同じディレクトリ・同じ基底名で
+    /// 拡張子だけ .aac にする(ファイル名の規則自体は SessionInfo.Artifact が正本のため、
+    /// ここでは拡張子の付け替えだけにとどめる)。
+    static func stagingURL(for finalURL: URL) -> URL {
+        finalURL.deletingPathExtension().appendingPathExtension("aac")
+    }
+
+    private func channelBlock(
+        format: AVAudioFormat, frames: Int, for file: AVAudioFile?
+    ) -> AVAudioPCMBuffer? {
+        guard file != nil,
+            let block = AVAudioPCMBuffer(
+                pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
+        else { return nil }
+        block.frameLength = AVAudioFrameCount(frames)
+        return block
+    }
+
+    /// 相手だけの録音を書く。書けなくなったらそのファイルだけ諦める。
+    private func writeChannel(_ block: AVAudioPCMBuffer?, to file: inout AVAudioFile?) {
+        guard let block, let target = file else { return }
+        do {
+            try target.write(from: block)
+        } catch {
+            errorLog("片側だけの録音を中止します: \(error)")
+            file = nil
         }
     }
 
