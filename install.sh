@@ -22,7 +22,9 @@ fi
 
 # Swift 6 は Xcode 26 に含まれる。CLT だけでは足りない環境がある。
 if ! command -v swift >/dev/null 2>&1; then
-  echo "エラー: swift コマンドが見つかりません。App Store から Xcode 26 を導入してください。" >&2
+  echo "エラー: swift コマンドが見つかりません。" >&2
+  echo "  App Store から Xcode 26 を導入し、一度起動して追加コンポーネントを入れてから、" >&2
+  echo "  もう一度 ./install.sh を実行してください。" >&2
   exit 1
 fi
 
@@ -40,13 +42,16 @@ case "$DEV_DIR" in
     ;;
 esac
 
-echo "==> release ビルドと .app の組み立て(署名込み)"
-make -C "$DIR" app CONFIG=release
-
+# 署名できない環境でビルドを待たせないため、証明書の確認を先に行う。
 IDENTITY="$(security find-identity -v -p codesigning | awk '/Apple Development|Developer ID Application/ {print $2; exit}')"
 if [ -z "${IDENTITY}" ]; then
   echo "エラー: codesigning 用の証明書が見つかりません。" >&2
-  echo "Xcode > Settings > Accounts でアカウントを追加し、Apple Development 証明書を作成してください。" >&2
+  echo "  システム音声 (相手) のキャプチャは、安定した署名が無いと無音で失敗するため、無署名では導入しません。" >&2
+  echo "  次の手順で Apple Development 証明書を作成してください (無料の Apple ID で可):" >&2
+  echo "    1. Xcode を開き、メニューの Xcode > Settings... > Accounts で Apple ID を追加する" >&2
+  echo "    2. 追加したアカウントを選び、Manage Certificates... > 左下の + > Apple Development を選ぶ" >&2
+  echo "    3. もう一度 ./install.sh を実行する" >&2
+  echo "  作成できたかの確認: security find-identity -v -p codesigning" >&2
   exit 1
 fi
 
@@ -73,10 +78,16 @@ if [ "$wwdr_ok" -ne 0 ]; then
   echo "  Apple Development 証明書は WWDR CA の中間証明書で検証されるため、" >&2
   echo "  期限内の中間証明書が無いと署名が実質無効になります。" >&2
   echo "  Apple 公式 PKI ページから WWDR G3 以降を1枚ダウンロードし、" >&2
-  echo "  ダブルクリックで Keychain に追加してください:" >&2
-  echo "    https://www.apple.com/certificateauthority/" >&2
+  echo "  次の手順で追加してください:" >&2
+  echo "    1. https://www.apple.com/certificateauthority/ を開く" >&2
+  echo "    2. Worldwide Developer Relations の G3 以降の証明書 (.cer) を1枚ダウンロードする" >&2
+  echo "    3. ダウンロードしたファイルをダブルクリックして Keychain に追加する" >&2
+  echo "    4. もう一度 ./install.sh を実行する" >&2
   exit 1
 fi
+
+echo "==> release ビルドと .app の組み立て(署名込み)"
+make -C "$DIR" app CONFIG=release
 
 echo "==> ${APP_DIR}/HearCat.app へ配置"
 # 起動中の旧アプリが残っていると差し替え後も旧プロセスが生き続けるため、先に終了させる。

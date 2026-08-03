@@ -7,7 +7,7 @@ CONFIG ?= debug
 BUILD_DIR := .build/$(CONFIG)
 APP := $(BUILD_DIR)/HearCat.app
 
-.PHONY: build app run cli dist check-dist-identity check-notary-profile icon ogp clean
+.PHONY: build app run cli dist check-identity check-dist-identity check-notary-profile icon ogp clean
 
 build:
 ifeq ($(CONFIG),release)
@@ -17,7 +17,7 @@ else
 endif
 
 # SwiftPM は .app バンドルを作れないため、ここで組み立てる。
-app: build
+app: check-identity build
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp $(BUILD_DIR)/HearCatApp $(APP)/Contents/MacOS/HearCat
@@ -74,6 +74,20 @@ dist: check-dist-identity check-notary-profile
 	xcrun stapler validate $(DMG)
 	spctl -a -vv -t open --context context:primary-signing-identifier $(DMG)
 	@echo "配布物: $(DMG)(Developer ID 署名 + 公証 + staple 済み)"
+
+# codesigning 証明書が無ければフォールバックせずここで止める。
+# システム音声(相手)のキャプチャは無署名だと無音で失敗するため、無署名では組み立てない。
+check-identity:
+	@if [ -z "$(IDENTITY)" ]; then \
+		echo "エラー: codesigning 用の証明書が見つかりません。" >&2; \
+		echo "  システム音声(相手)のキャプチャは、安定した署名が無いと無音で失敗するため、無署名では組み立てません。" >&2; \
+		echo "  次の手順で Apple Development 証明書を作成してください (無料の Apple ID で可):" >&2; \
+		echo "    1. Xcode を開き、メニューの Xcode > Settings... > Accounts で Apple ID を追加する" >&2; \
+		echo "    2. 追加したアカウントを選び、Manage Certificates... > 左下の + > Apple Development を選ぶ" >&2; \
+		echo "    3. もう一度このコマンドを実行する" >&2; \
+		echo "  作成できたかの確認: security find-identity -v -p codesigning" >&2; \
+		exit 1; \
+	fi
 
 # Developer ID Application 証明書が無ければフォールバックせずここで止める。
 check-dist-identity:
