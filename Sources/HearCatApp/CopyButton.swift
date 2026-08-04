@@ -18,7 +18,18 @@ struct CopyButton: View {
                 copied = false
             }
         } label: {
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            // doc.on.doc と checkmark は SF Symbols 上の横幅が異なり、Image を単純に
+            // 差し替えるとボタン自身の確保領域が変わって周囲がわずかに動く
+            // (Spacer の反対側に置かれた要素でも、ボタンの見た目上の位置が揺れて見える)。
+            // 両方を重ねて同じ固定フレームに収め、opacity だけを切り替えることで
+            // 確保領域を状態に関わらず一定にする。
+            ZStack {
+                Image(systemName: "doc.on.doc")
+                    .opacity(copied ? 0 : 1)
+                Image(systemName: "checkmark")
+                    .opacity(copied ? 1 : 0)
+            }
+            .frame(width: 16, height: 16)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
