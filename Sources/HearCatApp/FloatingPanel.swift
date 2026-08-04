@@ -13,10 +13,21 @@ import SwiftUI
 /// 閉じる導線は各コントローラ側に持たせる。
 @MainActor
 enum FloatingPanel {
-    static func make(size: NSSize, title: String, content: some View) -> NSPanel {
+    /// - Parameter resizable: true にすると、ユーザーがウィンドウ端をドラッグして
+    ///   大きさを変えられるようにする(`contentMinSize` も併せて設定)。既定は false で、
+    ///   他のパネルの挙動(固定サイズ)は変わらない。
+    static func make(
+        size: NSSize, title: String, content: some View, resizable: Bool = false
+    ) -> NSPanel {
+        var styleMask: NSWindow.StyleMask = [
+            .titled, .fullSizeContentView, .utilityWindow, .nonactivatingPanel,
+        ]
+        if resizable {
+            styleMask.insert(.resizable)
+        }
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.titled, .fullSizeContentView, .utilityWindow, .nonactivatingPanel],
+            styleMask: styleMask,
             backing: .buffered,
             defer: false)
         panel.title = title
@@ -34,8 +45,15 @@ enum FloatingPanel {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.contentViewController = NSHostingController(
+        let hostingController = NSHostingController(
             rootView: content.environment(\.colorScheme, .dark))
+        if resizable {
+            panel.contentMinSize = NSSize(width: 460, height: 360)
+            // 既定では NSHostingController が SwiftUI 側の理想サイズにウィンドウを引き戻そうとする。
+            // リサイズ可能にした意味が無くなるため、この場合だけそれを止める。
+            hostingController.sizingOptions = []
+        }
+        panel.contentViewController = hostingController
         // contentViewController を載せるとウィンドウの大きさは中身に合わせて決まる。
         // 位置決めの前に確定させておかないと、枠(タイトルバー分)を数えそこねてずれる。
         panel.setContentSize(size)

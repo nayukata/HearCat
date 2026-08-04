@@ -282,7 +282,7 @@ struct MenuPanel: View {
             }
 
             Button {
-                model.requestCodeImpactAnalysis()
+                model.openCodeImpactPanel()
             } label: {
                 Label("会議内容を関連資料と照合", systemImage: "text.magnifyingglass")
                     .frame(maxWidth: .infinity)

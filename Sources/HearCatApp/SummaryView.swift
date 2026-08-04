@@ -160,7 +160,7 @@ private struct StructuredSummaryView: View {
 
     /// 本文1つぶん。行内 Markdown の解釈と、書体・色・選択可否をここに集約する。
     private func text(_ body: String) -> some View {
-        Text(summaryInlineText(body))
+        Text(inlineMarkdownText(body))
             .font(style.font)
             .foregroundStyle(style.bodyStyle)
             .selectableText(style.isInteractive)
@@ -211,7 +211,7 @@ private struct TopicRow: View {
     }
 
     private var title: some View {
-        Text(summaryInlineText(topic.title))
+        Text(inlineMarkdownText(topic.title))
             .font(HCFont.style(style.isInteractive ? .body : .callout, weight: .medium))
             .selectableText(style.isInteractive)
     }
@@ -235,7 +235,7 @@ private struct TopicRow: View {
     }
 
     private func body(_ text: String) -> some View {
-        Text(summaryInlineText(text))
+        Text(inlineMarkdownText(text))
             .font(style.font)
             .foregroundStyle(style.bodyStyle)
             .selectableText(style.isInteractive)
@@ -277,7 +277,8 @@ extension View {
 
 /// 行内の Markdown 装飾(**強調** など)だけを解釈して描画用の文字列にする。
 /// 解釈に失敗したら原文のまま表示する。
-func summaryInlineText(_ text: String) -> AttributedString {
+/// SummaryView と CodeImpactOverlay(調査結果のインライン装飾)の両方から使う共通実装。
+func inlineMarkdownText(_ text: String) -> AttributedString {
     (try? AttributedString(
         markdown: text,
         options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))

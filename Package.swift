@@ -40,7 +40,8 @@ let package = Package(
             path: "Sources/HearCatApp",
             exclude: ["Info.plist", "AppIcon.icns"],
             // 同梱フォント(Noto Sans JP)。起動時に HCFont.registerBundledFonts() が登録する。
-            resources: [.copy("Resources/Fonts")],
+            // 同梱 mermaid(v11)。MermaidDiagramView が同じ探索順序で読む。
+            resources: [.copy("Resources/Fonts"), .copy("Resources/Mermaid")],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

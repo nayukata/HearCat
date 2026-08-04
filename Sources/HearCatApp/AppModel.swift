@@ -9,8 +9,16 @@ enum CodeImpactAnalysisState {
     case idle
     case requiresConsent(AgentCLI)
     case analyzing(AgentCLI)
-    case completed(AgentCLI, String)
+    case completed(AgentCLI)
     case failed(String)
+}
+
+/// 「関連資料との照合」オーバーレイの Q&A 1 往復分。同じ会議のあいだの履歴として積み上げる
+/// (codeImpactTurns 参照)。question が nil なのは、質問なしのダイジェスト調査。
+struct CodeImpactTurn: Identifiable {
+    let id = UUID()
+    let question: String?
+    let result: String
 }
 
 /// セッション開始時にどのグループへ入れるかの指示。
@@ -77,7 +85,6 @@ struct HealthIssue: Identifiable, Equatable {
 private enum CodeImpactContextError: LocalizedError {
     case inactive
     case sessionNotFound
-    case referenceFolderMissing
 
     var errorDescription: String? {
         switch self {
@@ -85,8 +92,6 @@ private enum CodeImpactContextError: LocalizedError {
             return "文字起こし中のセッションで使えます"
         case .sessionNotFound:
             return "進行中のセッションを読み込めませんでした"
-        case .referenceFolderMissing:
-            return "このセッションのグループに資料フォルダが紐付いていません"
         }
     }
 }
@@ -119,9 +124,37 @@ final class AppModel {
 
     /// 進行中の会議と関連コードを照合した結果。専用オーバーレイだけが表示する。
     private(set) var codeImpactAnalysisState: CodeImpactAnalysisState = .idle
+    /// いま調査対象になっている質問。ホットキー・メニューからの初回調査(質問なし)なら nil、
+    /// 入力欄に質問を入れて送った場合はその文字列。requiresCodeImpactAnalysis /
+    /// requestFollowUpCodeImpact の開始時に更新し、以後 confirm・retry・resume の
+    /// あいだはここを読むだけにする(state の enum に持たせると同じ組み立てが
+    /// 呼び出し側ごとに重複するため、1 箇所に集約している)。
+    private(set) var codeImpactQuestion: String?
+    /// 同じ会議のあいだの Q&A 履歴。追加質問で前のやり取りが画面から消えないよう、完了した調査を積んでいく。
+    private(set) var codeImpactTurns: [CodeImpactTurn] = []
     @ObservationIgnored private var codeImpactTask: Task<Void, Never>?
     @ObservationIgnored private var codeImpactRequestID: UUID?
     @ObservationIgnored private var codeImpactOverlayController: CodeImpactOverlayController?
+    /// claude の会話セッション ID(--resume で継続する)。同じ会議のあいだだけ持ち回す。
+    @ObservationIgnored private var codeImpactSessionID: String?
+    /// codeImpactSessionID がどのセッションディレクトリのものかの記録。
+    /// 会議が変わった(= セッションディレクトリが変わった)ら両方リセットする。
+    @ObservationIgnored private var codeImpactSessionDirectory: String?
+    /// 結果内のファイルパスをクリックで開くために、いま表示中の調査が使った資料フォルダを覚えておく。
+    private(set) var codeImpactActiveReferenceFolder: String?
+    /// 未分類のまま録音中のセッションは資料フォルダに紐付くグループへ動かせないため、
+    /// この会議のあいだだけメモリ上で資料フォルダを覚える一時的な紐付け。
+    /// アプリ再起動や別セッションでは引き継がない(sessionDirectory が変われば無効)。
+    @ObservationIgnored private var codeImpactReferenceFolderOverride: (sessionDirectory: String, path: String)?
+    /// ストリーミングで届いた assistant テキストの断片を蓄積したもの。
+    /// completed になったら使わなくなり、次の analyzing 開始時にクリアする。
+    private(set) var codeImpactPartialText: String = ""
+    /// ストリーミング中の進捗行(例: "Read: AppModel.swift")。オーバーレイの上端に出す。
+    private(set) var codeImpactActivity: String?
+    /// 結果セクション(見出しタイトル)ごとの開閉のユーザー操作。ストリーミング表示と完了表示で
+    /// ビューの実体が変わっても開閉が引き継がれるよう、ビューの @State ではなくここに持つ。
+    /// 新しい調査の開始時にクリアする。
+    var codeImpactSectionOverrides: [String: Bool] = [:]
 
     /// 入力レベル(RMS)。メニューバーのパネルにメーターとして出す。
     private(set) var micLevel: Float = 0
@@ -846,9 +879,33 @@ final class AppModel {
 
     // MARK: - 進行中の会議を関連資料と照合する
 
-    /// ホットキーとメニューバーの共通入口。実行中に繰り返し押された場合は、
-    /// 新しい処理を増やさず、進行中のオーバーレイだけを前面へ戻す。
-    func requestCodeImpactAnalysis() {
+    /// ホットキーとメニューバーの共通入口。オーバーレイを開くだけで、調査は開始しない
+    /// (何を調べるかは入力欄からユーザーが決める。開いた瞬間に空のダイジェスト調査が
+    /// 走る旧挙動は、質問ファーストの UX に変えた際に廃止した)。
+    /// 調査中・結果表示中ならその画面を前面へ戻す。開いた時点で使えない状態
+    /// (文字起こし停止中など)だけは先に知らせる。
+    func openCodeImpactPanel() {
+        showCodeImpactOverlay()
+        switch codeImpactAnalysisState {
+        case .idle, .failed:
+            do {
+                _ = try codeImpactContext()
+                // 前回の失敗表示が残っていても、いま使える状態なら入力待ちへ戻す。
+                codeImpactAnalysisState = .idle
+            } catch {
+                codeImpactAnalysisState = .failed(error.localizedDescription)
+            }
+        case .requiresConsent, .analyzing, .completed:
+            break
+        }
+    }
+
+    /// 調査の開始(オーバーレイの送信・再試行・紐付け後の再開から呼ばれる)。
+    /// question を渡すと質問特化のプロンプト、nil ならダイジェスト調査で走らせる。
+    func requestCodeImpactAnalysis(question: String? = nil) {
+        // nil も含めて上書きする。同意待ち・失敗からの再試行など、以後の続行処理は
+        // すべてこの codeImpactQuestion を読むだけにするため、他のどのチェックよりも先に確定させる。
+        codeImpactQuestion = question
         showCodeImpactOverlay()
         if case .analyzing = codeImpactAnalysisState { return }
 
@@ -867,6 +924,7 @@ final class AppModel {
     }
 
     /// 外部 AI へ文字起こしを送る初回確認後、そのまま同じ操作を続行する。
+    /// requiresConsent の間も codeImpactQuestion は変わらないため、同意で入力が失われない。
     /// 同意は関連資料との照合に限定した codeImpactConsented を立てる。
     /// 要約側(agentSummaryConsented)には波及させない(片方の同意で
     /// もう片方が外部送信され得るプライバシー越境を防ぐため)。
@@ -886,6 +944,46 @@ final class AppModel {
         codeImpactOverlayController?.close()
     }
 
+    /// 資料フォルダ未紐付けのまま調べた結果(完了表示の下の導線、または過去の失敗表示)から、
+    /// その場で資料フォルダを選んで照合をやり直す。セッションがグループ所属ならそのグループへ
+    /// 紐付け、未分類なら新規グループを作らずこの会議だけの一時紐付け
+    /// (codeImpactReferenceFolderOverride)にする(録音中のセッションはディレクトリを
+    /// 移動できないため)。question は codeImpactQuestion を読む。
+    func linkReferenceFolderForCodeImpact() {
+        guard status.active, status.transcribing, let sessionDirectory = status.sessionDirectory,
+            let session = SessionStore.list().first(where: { $0.directory.path == sessionDirectory })
+        else {
+            // ここに来るはずのボタンは進行中のセッションでしか出ないが、念のため
+            // 崩れていた場合は通常の調査要求に任せて、そちらのエラー表示に委ねる。
+            requestCodeImpactAnalysis(question: codeImpactQuestion)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            if let folder = session.folder {
+                await ReferenceFolderPicker.pick(forGroup: folder, from: nil)
+                // キャンセル等で紐付かなかった場合は failed 表示のまま何もしない。
+                guard self.settings.referenceFolders[folder] != nil else { return }
+            } else {
+                guard let newFolder = await ReferenceFolderPicker.pickForNewGroup(from: nil),
+                    let path = self.settings.referenceFolders[newFolder]
+                else { return }
+                // セッションはグループへ移さず(進行中は不可)、この会議だけ覚える。
+                // 既定グループ(plannedFolder)も変更しない。
+                self.codeImpactReferenceFolderOverride = (sessionDirectory, path)
+            }
+            // 質問を入力して失敗していた場合だけ、その質問で自動再開する。
+            // 何も入力していなかった場合は、紐付けだけで調査(外部送信)を勝手に
+            // 始めず、入力待ちへ戻す(何を調べるかはユーザーが決める)。
+            let trimmedQuestion = self.codeImpactQuestion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if trimmedQuestion.isEmpty {
+                self.codeImpactAnalysisState = .idle
+            } else {
+                self.requestCodeImpactAnalysis(question: trimmedQuestion)
+            }
+        }
+    }
+
     private var selectedCodeImpactAgent: AgentCLI {
         let preferred = settings.codeImpactAgent
         let available = AgentCLIDetector.shared.availableCLIs
@@ -899,21 +997,34 @@ final class AppModel {
     func requestFollowUpCodeImpact(question: String) {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard case .completed(let cli, let previousResult) = codeImpactAnalysisState else { return }
+        guard case .completed(let cli) = codeImpactAnalysisState else { return }
+        guard let previousResult = codeImpactTurns.last?.result else { return }
+        codeImpactQuestion = trimmed
         showCodeImpactOverlay()
-        startCodeImpactAnalysis(using: cli, followUp: (trimmed, previousResult))
+        startCodeImpactAnalysis(using: cli, previousResult: previousResult)
     }
 
+    /// question は引数に取らず、常に codeImpactQuestion(呼び出し側が事前に設定済み)を読む。
     private func startCodeImpactAnalysis(
         using cli: AgentCLI,
-        followUp: (question: String, previousResult: String)? = nil
+        previousResult: String? = nil
     ) {
-        let context: (transcript: String, referenceFolder: String)
+        let context: (transcript: String, referenceFolder: String?)
         do {
             context = try codeImpactContext()
         } catch {
             codeImpactAnalysisState = .failed(error.localizedDescription)
             return
+        }
+        codeImpactActiveReferenceFolder = context.referenceFolder
+
+        // 会議(セッションディレクトリ)が変わっていたら、前の会議の claude セッションを
+        // 引き継がない。同じ会議のあいだは維持し、--resume で会話を続ける。
+        if status.sessionDirectory != codeImpactSessionDirectory {
+            codeImpactSessionID = nil
+            codeImpactSessionDirectory = status.sessionDirectory
+            // 会議が変われば Q&A 履歴も前の会議のものなので持ち越さない。
+            codeImpactTurns = []
         }
 
         // ここでは settings.codeImpactAgent へは書かない。
@@ -921,24 +1032,72 @@ final class AppModel {
         // フォールバックする」経路のため、この時の cli を保存し戻すと、フォールバック値が
         // ユーザーの選択として固定化されてしまう(希望の CLI が復帰しても Codex のまま等)。
         let model = settings.codeImpactAgentModel(for: cli)
+        let question = codeImpactQuestion
         codeImpactAnalysisState = .analyzing(cli)
+        codeImpactPartialText = ""
+        codeImpactActivity = nil
+        codeImpactSectionOverrides = [:]
         codeImpactTask?.cancel()
         let requestID = UUID()
         codeImpactRequestID = requestID
         codeImpactTask = Task { [weak self] in
             do {
-                let result = try await AgentCodeImpactAnalyzer.analyze(
-                    using: cli,
-                    model: model,
-                    transcript: context.transcript,
-                    referenceFolder: context.referenceFolder,
-                    previousResult: followUp?.previousResult,
-                    followUpQuestion: followUp?.question)
+                let result: String
+                switch cli {
+                case .claude:
+                    // claude だけストリーミング + セッション継続の経路を使う。
+                    let resumeSessionID = self?.codeImpactSessionID
+                    let prompt = AgentCodeImpactAnalyzer.buildPrompt(
+                        question: question, previousResult: previousResult,
+                        isResuming: resumeSessionID != nil,
+                        hasReferenceFolder: context.referenceFolder != nil)
+                    let stream = try await AgentCodeImpactStream.run(
+                        model: model,
+                        transcript: context.transcript,
+                        referenceFolder: context.referenceFolder,
+                        prompt: prompt,
+                        resumeSessionID: resumeSessionID
+                    ) { event in
+                        // readabilityHandler の背景キューから呼ばれるため、self を直接は
+                        // 使わず(@Sendable クロージャに MainActor 型を捕まえないため)、
+                        // MainActor 上で shared 経由で状態を更新する。
+                        Task { @MainActor in
+                            let model = AppModel.shared
+                            guard model.codeImpactRequestID == requestID else { return }
+                            switch event {
+                            case .sessionID(let id):
+                                model.codeImpactSessionID = id
+                            case .textDelta(let text):
+                                model.codeImpactPartialText += text
+                            case .activity(let text):
+                                model.codeImpactActivity = text
+                            case .reset:
+                                model.codeImpactPartialText = ""
+                                model.codeImpactActivity = nil
+                            }
+                        }
+                    }
+                    result = stream.result
+                    if let sessionID = stream.sessionID {
+                        self?.codeImpactSessionID = sessionID
+                    }
+                case .codex:
+                    // codex はストリーミング/セッション継続の対象外。従来どおり一括実行。
+                    result = try await AgentCodeImpactAnalyzer.analyze(
+                        using: cli,
+                        model: model,
+                        transcript: context.transcript,
+                        referenceFolder: context.referenceFolder,
+                        question: question,
+                        previousResult: previousResult)
+                }
                 guard !Task.isCancelled, self?.codeImpactRequestID == requestID else { return }
-                self?.codeImpactAnalysisState = .completed(cli, result)
+                // 失敗・キャンセルでは積まない。ここに来た時点で成功が確定している。
+                self?.codeImpactTurns.append(CodeImpactTurn(question: question, result: result))
+                self?.codeImpactAnalysisState = .completed(cli)
             } catch {
-                guard !Task.isCancelled, self?.codeImpactRequestID == requestID else { return }
-                self?.codeImpactAnalysisState = .failed(error.localizedDescription)
+                guard !Task.isCancelled, let self, self.codeImpactRequestID == requestID else { return }
+                self.codeImpactAnalysisState = .failed(error.localizedDescription)
             }
             if self?.codeImpactRequestID == requestID {
                 self?.codeImpactTask = nil
@@ -947,19 +1106,15 @@ final class AppModel {
         }
     }
 
-    private func codeImpactContext() throws -> (transcript: String, referenceFolder: String) {
+    private func codeImpactContext() throws -> (transcript: String, referenceFolder: String?) {
         guard status.active, status.transcribing, let sessionDirectory = status.sessionDirectory else {
             throw CodeImpactContextError.inactive
         }
         guard let session = SessionStore.list().first(where: { $0.directory.path == sessionDirectory }) else {
             throw CodeImpactContextError.sessionNotFound
         }
-        guard let folder = session.folder,
-            let referenceFolder = settings.referenceFolders[folder],
-            FileManager.default.fileExists(atPath: referenceFolder)
-        else {
-            throw CodeImpactContextError.referenceFolderMissing
-        }
+        let referenceFolder = resolveCodeImpactReferenceFolder(
+            session: session, sessionDirectory: sessionDirectory)
         guard let transcriptURL = session.transcriptURL,
             let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8),
             !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -967,6 +1122,30 @@ final class AppModel {
             throw AgentSummarizeError.noTranscript
         }
         return (transcript, referenceFolder)
+    }
+
+    /// 資料フォルダの解決。優先順は次のとおり:
+    /// 1. セッションがグループ所属で、そのグループに資料フォルダが紐付いていればそれ。
+    /// 2. なければ codeImpactReferenceFolderOverride(この会議だけの一時的な紐付け)が
+    ///    同じセッションディレクトリのものであり、パスが実在すればそれ。
+    /// 3. どちらも無ければ nil。資料フォルダが無くても文字起こしだけを根拠に調査できる
+    ///    ため、呼び出し側はこれをエラーではなく「文字起こしのみモード」の合図として扱う。
+    private func resolveCodeImpactReferenceFolder(
+        session: SessionInfo, sessionDirectory: String
+    ) -> String? {
+        if let folder = session.folder,
+            let referenceFolder = settings.referenceFolders[folder],
+            FileManager.default.fileExists(atPath: referenceFolder)
+        {
+            return referenceFolder
+        }
+        if let override = codeImpactReferenceFolderOverride,
+            override.sessionDirectory == sessionDirectory,
+            FileManager.default.fileExists(atPath: override.path)
+        {
+            return override.path
+        }
+        return nil
     }
 
     private func showCodeImpactOverlay() {
@@ -1099,7 +1278,7 @@ final class AppModel {
                 Task { await startSessionViaHotkey(record: false, transcribe: true) }
             }
         case .analyzeCodeImpact:
-            requestCodeImpactAnalysis()
+            openCodeImpactPanel()
         case .openHistory:
             showHistory()
         case .openSettings:

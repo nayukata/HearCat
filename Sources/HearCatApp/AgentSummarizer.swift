@@ -117,8 +117,8 @@ enum AgentCLIResolver {
 
 /// 標準出力・標準エラーの蓄積用バッファ。readabilityHandler は GCD の内部キューから
 /// 呼ばれるため、Sendable な形でロックしながら溜める。
-/// AgentCLIResolver と AgentSummarizer の両方から使うのでファイル可視性で置く。
-fileprivate final class AgentOutputBuffer: @unchecked Sendable {
+/// AgentCLIResolver・AgentSummarizer・AgentCodeImpactStream から使うので internal。
+final class AgentOutputBuffer: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: Data())
     func append(_ chunk: Data) { lock.withLock { $0.append(chunk) } }
     func snapshot() -> Data { lock.withLock { $0 } }
@@ -226,7 +226,7 @@ private enum AgentSummarizePrompt {
 /// 欠けると CLI が「ログインしていない」と判断することがある(実測: USER を落とすと
 /// claude が保存済みの認証情報に到達できず "Not logged in" になる)。
 /// 足りないものだけ補い、既にある値は上書きしない。
-private enum AgentProcessEnvironment {
+enum AgentProcessEnvironment {
     static func make(binaryPath: String) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         if env["HOME"]?.isEmpty != false {
@@ -489,14 +489,16 @@ enum AgentSummarizer {
 
     /// ログイン切れかどうか。CLI ごとに文言が違ううえ版によっても変わるため、
     /// 語幹で拾う("authenticate" は "authentication" では拾えない)。
-    private static func isAuthError(_ output: String) -> Bool {
+    /// AgentCodeImpactStream(claude のストリーミング実行)からも使うため internal。
+    static func isAuthError(_ output: String) -> Bool {
         let lowered = output.lowercased()
         return ["login", "log in", "authenticat", "unauthorized", "oauth", "credential"]
             .contains { lowered.contains($0) }
     }
 
     /// エラーメッセージに載せる stderr の要約(長大なログをそのまま出さない)。
-    private static func summarize(stderr: String) -> String {
+    /// AgentCodeImpactStream からも使うため internal。
+    static func summarize(stderr: String) -> String {
         let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.count > 300 ? String(trimmed.prefix(300)) + "…" : trimmed
     }
@@ -504,14 +506,16 @@ enum AgentSummarizer {
     /// 本文は「## 概要」で始まる想定。前置きが混ざっていたら最初の「## 」以降だけを採用する。
     /// 「## 」自体が見つからない場合は、指示した Markdown 形式で返ってきていないとみなし nil を返す
     /// (呼び出し側で unexpectedOutput として扱う)。
-    private static func extractMarkdown(_ raw: String) -> String? {
+    /// AgentCodeImpactStream からも使うため internal。
+    static func extractMarkdown(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let range = trimmed.range(of: "## ") else { return nil }
         return String(trimmed[range.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// unexpectedOutput の抜粋。改行を空白へ畳み、先頭 120 文字までに切り詰める。
-    private static func excerpt(from raw: String) -> String {
+    /// AgentCodeImpactStream からも使うため internal。
+    static func excerpt(from raw: String) -> String {
         let singleLine = raw.replacingOccurrences(of: "\n", with: " ")
         guard singleLine.count > 120 else { return singleLine }
         return String(singleLine.prefix(120)) + "…"

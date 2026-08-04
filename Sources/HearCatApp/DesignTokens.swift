@@ -2,43 +2,48 @@ import AppKit
 import CoreText
 import SwiftUI
 
+/// SwiftPM が生成するリソースバンドル(`hearcat_HearCatApp.bundle`)の base URL を探す。
+/// HCFont(同梱フォント)と MermaidDiagramView(同梱 mermaid.min.js)の両方がこのバンドル配下の
+/// 別ファイルを読むため、探索ロジックをここ1箇所に集約する。呼び出し側はここから
+/// `Fonts` や `Mermaid/mermaid.min.js` を appendingPathComponent して使う。
+///
+/// SwiftPM 自動生成の `Bundle.module` は、まず `Bundle.main.bundleURL` 直下を探し、
+/// 無ければ実行ファイルに焼き込まれたビルド時の絶対パス
+/// (`.build/.../hearcat_HearCatApp.bundle`) にフォールバックする実装になっている。
+/// 前者は `Makefile` が `Contents/Resources/` に配置するため常に外れる。後者は
+/// ビルドマシン固有の一時ディレクトリで、`bootstrap.sh` 経由のインストールでは
+/// 削除済み。両方失敗すると `Bundle.module` は内部で `fatalError` してプロセスごと
+/// 落ちる(実際に起動時クラッシュの原因になった)ため、ここでは `Bundle.module` を使わず
+/// 実際の配置場所を自前で探す。
+func hcResourceBundleURL() -> URL? {
+    let bundleName = "hearcat_HearCatApp.bundle"
+    let candidates = [
+        // 配布・通常起動時: .app/Contents/Resources/hearcat_HearCatApp.bundle (Makefile が配置)
+        Bundle.main.resourceURL,
+        // 開発時: `swift build` 実行ファイルを .app 化せず直接叩いた場合、
+        // 実行ファイルと同じディレクトリに SwiftPM がバンドルを生成する。
+        Bundle.main.bundleURL,
+    ]
+    for base in candidates {
+        guard let base else { continue }
+        let url = base.appendingPathComponent(bundleName)
+        if FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+    }
+    return nil
+}
+
 /// アプリ全体のフォント。欧文・数字はシステム(SF Pro)のまま、日本語グリフだけ
 /// 同梱の Noto Sans JP に落とすカスケード指定を作る。フォントをここ以外で直接
 /// 指定しない(SwiftUI 標準の .font(.caption) 等はシステムのフォールバック=
 /// ヒラギノで描画されてしまうため)。
 enum HCFont {
-    /// SwiftPM 自動生成の `Bundle.module` は、まず `Bundle.main.bundleURL` 直下を探し、
-    /// 無ければ実行ファイルに焼き込まれたビルド時の絶対パス
-    /// (`.build/.../hearcat_HearCatApp.bundle`) にフォールバックする実装になっている。
-    /// 前者は `Makefile` が `Contents/Resources/` に配置するため常に外れる。後者は
-    /// ビルドマシン固有の一時ディレクトリで、`bootstrap.sh` 経由のインストールでは
-    /// 削除済み。両方失敗すると `Bundle.module` は内部で `fatalError` してプロセスごと
-    /// 落ちる(実際に起動時クラッシュの原因になった)ため、ここでは `Bundle.module` を使わず
-    /// 実際の配置場所を自前で探す。
-    private static var bundledResourcesURL: URL? {
-        let bundleName = "hearcat_HearCatApp.bundle"
-        let candidates = [
-            // 配布・通常起動時: .app/Contents/Resources/hearcat_HearCatApp.bundle (Makefile が配置)
-            Bundle.main.resourceURL,
-            // 開発時: `swift build` 実行ファイルを .app 化せず直接叩いた場合、
-            // 実行ファイルと同じディレクトリに SwiftPM がバンドルを生成する。
-            Bundle.main.bundleURL,
-        ]
-        for base in candidates {
-            guard let base else { continue }
-            let url = base.appendingPathComponent(bundleName)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url
-            }
-        }
-        return nil
-    }
-
     /// 同梱フォントの登録。起動時に一度だけ呼ぶ。プロセススコープなのでシステムは汚さない。
     /// リソースバンドルが見つからなければ何もしない(カスケード先が未登録の場合、
     /// システムが従来どおりヒラギノに落とす。fatalError は絶対にしない)。
     static func registerBundledFonts() {
-        guard let resourcesURL = bundledResourcesURL else { return }
+        guard let resourcesURL = hcResourceBundleURL() else { return }
         let fontsURL = resourcesURL.appendingPathComponent("Fonts")
         guard
             let urls = try? FileManager.default.contentsOfDirectory(
