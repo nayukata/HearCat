@@ -43,15 +43,30 @@ case "$DEV_DIR" in
 esac
 
 # 署名できない環境でビルドを待たせないため、証明書の確認を先に行う。
-IDENTITY="$(security find-identity -v -p codesigning | awk '/Apple Development|Developer ID Application/ {print $2; exit}')"
+# HEARCAT_IDENTITY=<ハッシュ> で使う証明書を明示指定できる(make 側にも環境変数のまま届く)。
+IDENTITY="${HEARCAT_IDENTITY:-$(sh "$DIR/scripts/select-codesign-identity.sh" 2>/dev/null || true)}"
 if [ -z "${IDENTITY}" ]; then
-  echo "エラー: codesigning 用の証明書が見つかりません。" >&2
-  echo "  システム音声 (相手) のキャプチャは、安定した署名が無いと無音で失敗するため、無署名では導入しません。" >&2
-  echo "  次の手順で Apple Development 証明書を作成してください (無料の Apple ID で可):" >&2
-  echo "    1. Xcode を開き、メニューの Xcode > Settings... > Accounts で Apple ID を追加する" >&2
-  echo "    2. 追加したアカウントを選び、Manage Certificates... > 左下の + > Apple Development を選ぶ" >&2
-  echo "    3. もう一度 ./install.sh を実行する" >&2
-  echo "  作成できたかの確認: security find-identity -v -p codesigning" >&2
+  # grep -c は 0 件のとき終了コード 1 を返し、set -e で落ちるため || true を付ける。
+  identity_count=$(security find-identity -v -p codesigning | grep -c -E 'Apple Development|Developer ID Application' || true)
+  if [ "${identity_count}" -gt 0 ]; then
+    echo "エラー: 証明書は見つかりましたが、どれもテスト署名に失敗しました。" >&2
+    echo "  チームを抜けた・役割が変わったなどで失効した証明書が残っている可能性があります。" >&2
+    echo "  次の手順で確認してください:" >&2
+    echo "    1. security find-identity -v -p codesigning で一覧を確認する" >&2
+    echo "    2. Xcode > Settings... > Accounts のチーム一覧で「自分の名前 (Personal Team)」を選び、" >&2
+    echo "       Manage Certificates... > 左下の + > Apple Development で作り直す" >&2
+    echo "    3. もう一度 ./install.sh を実行する" >&2
+  else
+    echo "エラー: codesigning 用の証明書が見つかりません。" >&2
+    echo "  システム音声 (相手) のキャプチャは、安定した署名が無いと無音で失敗するため、無署名では導入しません。" >&2
+    echo "  次の手順で Apple Development 証明書を作成してください (無料の Apple ID で可):" >&2
+    echo "    1. Xcode を開き、メニューの Xcode > Settings... > Accounts で Apple ID を追加する" >&2
+    echo "    2. 追加したアカウントのチーム一覧で「自分の名前 (Personal Team)」を選び、" >&2
+    echo "       Manage Certificates... > 左下の + > Apple Development を選ぶ" >&2
+    echo "       (会社や他プロジェクトのチームを選ぶと、権限が無い場合に Access Unavailable になる)" >&2
+    echo "    3. もう一度 ./install.sh を実行する" >&2
+    echo "  作成できたかの確認: security find-identity -v -p codesigning" >&2
+  fi
   exit 1
 fi
 

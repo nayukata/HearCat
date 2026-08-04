@@ -1,7 +1,11 @@
 # システム音声(相手)のキャプチャは、バイナリが安定した署名を持たないと無音で失敗する。
 # そのため app は「ビルド → .app 組み立て → 署名」を必ず通す。
 # 署名証明書はマシンごとに異なるため、ハッシュを直書きせず自動検出する(可搬性のため)。
-IDENTITY := $(shell security find-identity -v -p codesigning | awk '/Apple Development|Developer ID Application/ {print $$2; exit}')
+# security find-identity は失効済みの証明書も valid として載せることがあるため、
+# 一覧の先頭ではなく、実際にテスト署名が通る証明書を自動選択する(scripts/select-codesign-identity.sh)。
+# それでも複数チームの証明書が並んでいる Mac では意図と違う証明書が選ばれることがある。
+# その場合は HEARCAT_IDENTITY=<ハッシュ> で明示指定できる(チームを抜ける必要はない)。
+IDENTITY := $(or $(HEARCAT_IDENTITY),$(shell sh scripts/select-codesign-identity.sh 2>/dev/null))
 
 CONFIG ?= debug
 BUILD_DIR := .build/$(CONFIG)
@@ -79,14 +83,39 @@ dist: check-dist-identity check-notary-profile
 # システム音声(相手)のキャプチャは無署名だと無音で失敗するため、無署名では組み立てない。
 check-identity:
 	@if [ -z "$(IDENTITY)" ]; then \
-		echo "エラー: codesigning 用の証明書が見つかりません。" >&2; \
-		echo "  システム音声(相手)のキャプチャは、安定した署名が無いと無音で失敗するため、無署名では組み立てません。" >&2; \
-		echo "  次の手順で Apple Development 証明書を作成してください (無料の Apple ID で可):" >&2; \
-		echo "    1. Xcode を開き、メニューの Xcode > Settings... > Accounts で Apple ID を追加する" >&2; \
-		echo "    2. 追加したアカウントを選び、Manage Certificates... > 左下の + > Apple Development を選ぶ" >&2; \
-		echo "    3. もう一度このコマンドを実行する" >&2; \
-		echo "  作成できたかの確認: security find-identity -v -p codesigning" >&2; \
+		count=$$(security find-identity -v -p codesigning | grep -c -E 'Apple Development|Developer ID Application'); \
+		if [ "$$count" -gt 0 ]; then \
+			echo "エラー: 証明書は見つかりましたが、どれもテスト署名に失敗しました。" >&2; \
+			echo "  チームを抜けた・役割が変わったなどで失効した証明書が残っている可能性があります。" >&2; \
+			echo "  次の手順で確認してください:" >&2; \
+			echo "    1. security find-identity -v -p codesigning で一覧を確認する" >&2; \
+			echo "    2. Xcode > Settings... > Accounts のチーム一覧で「自分の名前 (Personal Team)」を選び、" >&2; \
+			echo "       Manage Certificates... > 左下の + > Apple Development で作り直す" >&2; \
+			echo "    3. もう一度このコマンドを実行する" >&2; \
+		else \
+			echo "エラー: codesigning 用の証明書が見つかりません。" >&2; \
+			echo "  システム音声(相手)のキャプチャは、安定した署名が無いと無音で失敗するため、無署名では組み立てません。" >&2; \
+			echo "  次の手順で Apple Development 証明書を作成してください (無料の Apple ID で可):" >&2; \
+			echo "    1. Xcode を開き、メニューの Xcode > Settings... > Accounts で Apple ID を追加する" >&2; \
+			echo "    2. 追加したアカウントのチーム一覧で「自分の名前 (Personal Team)」を選び、" >&2; \
+			echo "       Manage Certificates... > 左下の + > Apple Development を選ぶ" >&2; \
+			echo "       (会社や他プロジェクトのチームを選ぶと、権限が無い場合に Access Unavailable になる)" >&2; \
+			echo "    3. もう一度このコマンドを実行する" >&2; \
+			echo "  作成できたかの確認: security find-identity -v -p codesigning" >&2; \
+		fi; \
 		exit 1; \
+	fi
+	@if [ -n "$(HEARCAT_IDENTITY)" ] && ! security find-identity -v -p codesigning | grep -q "$(HEARCAT_IDENTITY)"; then \
+		echo "エラー: HEARCAT_IDENTITY で指定された証明書が見つかりません: $(HEARCAT_IDENTITY)" >&2; \
+		echo "  確認: security find-identity -v -p codesigning" >&2; \
+		exit 1; \
+	fi
+	@# どのチームの証明書で署名するかを見えるようにする(複数チーム所属時の切り分け用)。
+	@security find-identity -v -p codesigning | awk -v id="$(IDENTITY)" '$$0 ~ id {sub(/^ *[0-9]+\) */, ""); print "==> 署名に使う証明書: " $$0; exit}'
+	@count=$$(security find-identity -v -p codesigning | grep -c -E 'Apple Development|Developer ID Application'); \
+	if [ "$$count" -gt 1 ] && [ -z "$(HEARCAT_IDENTITY)" ]; then \
+		echo "    (証明書が $$count 件見つかったため、テスト署名が通った最初の 1 件を使います。別の証明書で署名する場合は" ; \
+		echo "     HEARCAT_IDENTITY=<ハッシュ> を付けて実行してください。ハッシュは security find-identity -v -p codesigning で確認)" ; \
 	fi
 
 # Developer ID Application 証明書が無ければフォールバックせずここで止める。
