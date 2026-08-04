@@ -450,7 +450,9 @@ private struct CodeImpactOverlayView: View {
     /// turnsScrollView(ターン履歴)だけで描く。コピーボタンとステータス行が必要な結果本文は
     /// model.codeImpactTurns.last?.result(正本)から読む。
     private func completedView(cli: AgentCLI) -> some View {
-        let question = model.codeImpactQuestion
+        // codeImpactQuestion ではなく表示中の最新ターンの質問を読む。追加質問が失敗した
+        // 直後は codeImpactQuestion が失敗した質問のままで、表示している結果と食い違うため。
+        let question = model.codeImpactTurns.last?.question
         let hasQuestion = !(question ?? "").isEmpty
         let hasReferenceFolder = model.codeImpactActiveReferenceFolder != nil
         let statusText: String
@@ -471,6 +473,9 @@ private struct CodeImpactOverlayView: View {
                 CopyButton { model.codeImpactTurns.last?.result ?? "" }
             }
             turnsScrollView(streaming: false)
+            if let turnError = model.codeImpactTurnError {
+                turnErrorBanner(turnError)
+            }
             // 資料フォルダ未紐付けのまま文字起こしだけで答えた回にだけ、そのまま資料と
             // 照合したい場合の導線を出す。フッターではなく結果の直下に置くのは、
             // 常時出る他の操作ヒントと違い「この回の結果だけに関わる案内」のため。
@@ -485,6 +490,60 @@ private struct CodeImpactOverlayView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 2)
             }
+        }
+    }
+
+    /// 追加質問(または履歴がある状態からの再調査)が失敗したときのバナー。
+    /// 履歴を消す全画面の failedView は履歴が無い初回失敗専用で、履歴があるときは
+    /// このバナーでエラーと再試行だけを最新ターンの下に出す。
+    private func turnErrorBanner(_ error: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(HCFont.style(.caption1, weight: .semibold))
+                .foregroundStyle(HCColor.cinnamon)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(turnErrorTitle)
+                    .font(HCFont.style(.caption1, weight: .semibold))
+                    .foregroundStyle(HCColor.mistWhite)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(error)
+                    .font(HCFont.caption)
+                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("再試行") { retryFailedTurn() }
+                .buttonStyle(.plain)
+                .font(HCFont.caption)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .foregroundStyle(HCColor.cinnamon)
+                .overlay(
+                    HCRadius.shape(HCRadius.chip)
+                        .stroke(HCColor.cinnamonStroke, lineWidth: 1))
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            HCRadius.shape(HCRadius.control)
+                .fill(HCColor.mistDarkSurface))
+        .padding(.top, 8)
+    }
+
+    private var turnErrorTitle: String {
+        let question = model.codeImpactQuestion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !question.isEmpty else { return "調査できませんでした" }
+        return "「\(question)」を調査できませんでした"
+    }
+
+    /// バナーからの再試行。失敗したのが追加質問なら follow-up(直前の結果を踏まえる)として
+    /// 投げ直し、質問なしのダイジェスト再調査ならそのまま投げ直す。
+    private func retryFailedTurn() {
+        let question = model.codeImpactQuestion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if question.isEmpty {
+            model.requestCodeImpactAnalysis(question: nil)
+        } else {
+            model.requestFollowUpCodeImpact(question: question)
         }
     }
 

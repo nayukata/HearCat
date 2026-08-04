@@ -132,6 +132,9 @@ final class AppModel {
     private(set) var codeImpactQuestion: String?
     /// 同じ会議のあいだの Q&A 履歴。追加質問で前のやり取りが画面から消えないよう、完了した調査を積んでいく。
     private(set) var codeImpactTurns: [CodeImpactTurn] = []
+    /// 履歴がある状態で進行中のターンが完了しなかった(失敗した)ときのエラー文言。
+    /// 全画面の失敗表示ではなく会話履歴の下のバナーとして出し、次の調査開始で消す。
+    private(set) var codeImpactTurnError: String?
     @ObservationIgnored private var codeImpactTask: Task<Void, Never>?
     @ObservationIgnored private var codeImpactRequestID: UUID?
     @ObservationIgnored private var codeImpactOverlayController: CodeImpactOverlayController?
@@ -913,7 +916,7 @@ final class AppModel {
         do {
             _ = try codeImpactContext()
         } catch {
-            codeImpactAnalysisState = .failed(error.localizedDescription)
+            failCodeImpactAnalysis(error.localizedDescription, using: cli)
             return
         }
         guard settings.codeImpactConsented else {
@@ -933,11 +936,27 @@ final class AppModel {
         startCodeImpactAnalysis(using: cli)
     }
 
+    /// 調査の中止。分析中でなければ何もしない(中止ボタンの連打や、完了直後に届いた
+    /// 中止で、表示中の状態を壊さないため)。会話履歴があれば completed へ戻して
+    /// 履歴の表示を保ち、履歴の無い初回だけ入力待ちへ戻す。
     func cancelCodeImpactAnalysis() {
         codeImpactTask?.cancel()
         codeImpactTask = nil
         codeImpactRequestID = nil
-        codeImpactAnalysisState = .idle
+        guard case .analyzing(let cli) = codeImpactAnalysisState else { return }
+        codeImpactAnalysisState = codeImpactTurns.isEmpty ? .idle : .completed(cli)
+    }
+
+    /// 進行中のターンが失敗したときの遷移。会話履歴が無ければ従来どおり全画面の失敗表示、
+    /// 履歴があれば会話表示(completed)を保ったまま codeImpactTurnError のバナーで知らせる
+    /// (キャンセル時と同じく、完了済みの履歴を画面から消さないため)。
+    private func failCodeImpactAnalysis(_ message: String, using cli: AgentCLI) {
+        if codeImpactTurns.isEmpty {
+            codeImpactAnalysisState = .failed(message)
+        } else {
+            codeImpactTurnError = message
+            codeImpactAnalysisState = .completed(cli)
+        }
     }
 
     func dismissCodeImpactOverlay() {
@@ -1013,7 +1032,7 @@ final class AppModel {
         do {
             context = try codeImpactContext()
         } catch {
-            codeImpactAnalysisState = .failed(error.localizedDescription)
+            failCodeImpactAnalysis(error.localizedDescription, using: cli)
             return
         }
         codeImpactActiveReferenceFolder = context.referenceFolder
@@ -1035,6 +1054,8 @@ final class AppModel {
         let question = codeImpactQuestion
         codeImpactAnalysisState = .analyzing(cli)
         codeImpactPartialText = ""
+        // 前回の失敗バナーが残っていても、新しい調査を始めた時点で消す。
+        codeImpactTurnError = nil
         codeImpactActivity = nil
         codeImpactSectionOverrides = [:]
         codeImpactTask?.cancel()
@@ -1097,7 +1118,7 @@ final class AppModel {
                 self?.codeImpactAnalysisState = .completed(cli)
             } catch {
                 guard !Task.isCancelled, let self, self.codeImpactRequestID == requestID else { return }
-                self.codeImpactAnalysisState = .failed(error.localizedDescription)
+                self.failCodeImpactAnalysis(error.localizedDescription, using: cli)
             }
             if self?.codeImpactRequestID == requestID {
                 self?.codeImpactTask = nil
