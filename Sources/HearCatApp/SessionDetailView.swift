@@ -49,6 +49,15 @@ struct SessionDetailView: View {
     @State private var currentLineID: TranscriptLine.ID?
     /// 再生に合わせて文字起こしを自動で送るか。手でスクロールした時点で切れる。
     @State private var followsPlayback = true
+    /// 質問応答パネルからのジャンプで、今フェード中にハイライトしている行(currentLineID =
+    /// 再生位置とは独立、再生していなくてもジャンプできる)。収束スクロール・点灯・フェード
+    /// 消灯の一連の演出は RevealCoordinator(LiveSessionView と共有)に委ねる。
+    @State private var revealCoordinator = RevealCoordinator<TranscriptLine.ID>()
+    /// content の ScrollViewReader が持つ proxy。session.id をまたいでもビューは
+    /// 使い回す(header 直下のコメント参照)ため、onAppear で一度だけ取れれば以後も使い回せる。
+    /// body 側の .task(id: session.id) からもジャンプを試したいが、そこは ScrollViewReader の
+    /// スコープの外にあるため、ここに控えて共有する。
+    @State private var scrollProxy: ScrollViewProxy?
 
     private struct ShareNotice: Equatable {
         let message: String
@@ -102,6 +111,11 @@ struct SessionDetailView: View {
         .task(id: session.id) {
             resetForNewSession()
             load(forceNewPlayer: true)
+            // セッション切り替え(質問応答パネルからのジャンプで別セッションへ移った場合を含む)
+            // の直後に、このセッション宛てのジャンプ要求が積まれていれば拾う。scrollProxy は
+            // content 側の onAppear で控えたものを使う(このタスクは ScrollViewReader の
+            // スコープの外にあるため)。
+            revealIfRequested()
         }
         // 成功の合図は用が済んだら消す。失敗は理由が読めるよう残す。
         // 画面を離れた時と次の合図が来た時に、この待機は自動でキャンセルされる。
@@ -137,6 +151,7 @@ struct SessionDetailView: View {
             }
             Spacer()
             summarizeButton
+            codeImpactButton
             if isSummarizing, let agentSummarizeTask {
                 Button("キャンセル") {
                     agentSummarizeTask.cancel()
@@ -163,6 +178,8 @@ struct SessionDetailView: View {
                     model.delete(session)
                     onDelete()
                 }
+                // 一括削除側(BulkDeleteConfirmation)と同じく、Enter で確定できるよう明示する。
+                .keyboardShortcut(.defaultAction)
             } message: {
                 Text(SessionDeletionCopy.message)
             }
@@ -196,7 +213,43 @@ struct SessionDetailView: View {
                     }
                 }
                 .overlay(alignment: .bottom) { resumeFollowButton(proxy) }
+                // proxy はビュー生成のたびに作り直されるが、同じ ScrollView を指すハンドルなので
+                // 1度控えれば以後もそのまま使える。onAppear は(ビューを使い回す都合上)最初に
+                // この画面が現れた時にしか呼ばれないため、直後に revealIfRequested() も試す
+                // (ウィンドウを閉じている状態からのジャンプでは、この初回呼び出しが本番になる)。
+                .onAppear {
+                    scrollProxy = proxy
+                    revealIfRequested()
+                }
+                // ウィンドウを開いたまま(このセッションを表示中のまま)続けてジャンプされた場合。
+                .onChange(of: model.transcriptRevealRequest) {
+                    revealIfRequested()
+                }
         }
+    }
+
+    /// 質問応答パネルの「根拠と補足」からのジャンプ要求を消費する。自分が表示している
+    /// セッション(session.id)宛てでなければ何もしない(ライブ側や、まだこの画面に
+    /// 切り替わっていない他セッションの詳細画面に委ねる)。scrollProxy 未取得や
+    /// transcriptLines 未ロードの間も何もしない(呼び出し元を複数用意しているので、
+    /// 条件が揃ったタイミングのどれかで拾える)。
+    private func revealIfRequested() {
+        guard let proxy = scrollProxy,
+            let request = model.transcriptRevealRequest, request.sessionID == session.id,
+            !transcriptLines.isEmpty
+        else { return }
+        model.transcriptRevealRequest = nil
+
+        // 比較の前に stamp で安定ソートしておく。ファイルは基本的に時刻順で書かれるが、
+        // 将来なんらかの事情で順不同になっても「以降で最初の行」の選択が壊れないようにするため。
+        let stamped = transcriptLines.filter { $0.stamp != nil }.sorted { $0.stamp! < $1.stamp! }
+        guard let target = stamped.first(where: { $0.stamp! >= request.time }) ?? stamped.last
+        else { return }
+
+        // 指定時刻を見せるためのジャンプなので、再生位置への自動追従とは競合させない
+        // (追従が生きていると、次に再生位置が進んだ瞬間にここへスクロールし直されてしまう)。
+        followsPlayback = false
+        revealCoordinator.reveal(target.id, proxy: proxy)
     }
 
     /// 追従を切った後に戻るための唯一の導線。追従できている間は出さない
@@ -295,9 +348,10 @@ struct SessionDetailView: View {
         }
     }
 
-    /// 1行ぶんの文字起こし。録音内の経過時間(再生バーと同じ物差し)を出し、
-    /// クリックで録音のその位置から再生する。ファイル内の実時刻は表示しない
-    /// (再生位置と対応づかない表示には意味がないため)。
+    /// 1行ぶんの文字起こし。行頭には録音内の経過時間(分:秒。再生バーと同じ物差し)を出し、
+    /// クリックで録音のその位置から再生する。ファイル内の壁時計時刻(stamp)は表示しない。
+    /// 表示の単位は、ライブ画面・質問応答パネルの根拠チップと同じく経過時間で統一する方針
+    /// (壁時計へ寄せた時期もあったが、ユーザーの決定により経過時間へ戻した)。
     @ViewBuilder
     private func transcriptRow(_ line: TranscriptLine) -> some View {
         if let offset = line.offset {
@@ -329,6 +383,7 @@ struct SessionDetailView: View {
                 }
             }
             .modifier(CurrentLineHighlight(isCurrent: line.id == currentLineID))
+            .modifier(RevealHighlight(isRevealed: line.id == revealCoordinator.revealedID))
             .id(line.id)
         } else {
             Text(line.body)
@@ -433,6 +488,23 @@ struct SessionDetailView: View {
                 }
                 Button("キャンセル", role: .cancel) {}
             }
+        }
+    }
+
+    /// この会話について AI に質問するパネルを開くボタン。エージェント CLI(claude/codex)を
+    /// 1つも検出できていなければ、押しても何もできないので出さない
+    /// (summarizeButton の availableAgentCLIs 判定と同じパターン)。
+    @ViewBuilder
+    private var codeImpactButton: some View {
+        if !availableAgentCLIs.isEmpty {
+            let hasTranscript = !(transcript?.isEmpty ?? true)
+            Button {
+                model.openCodeImpactPanel(for: session)
+            } label: {
+                Label("質問", systemImage: "questionmark.bubble")
+            }
+            .disabled(!hasTranscript)
+            .help(hasTranscript ? "この会話について AI に質問します" : "文字起こしがありません")
         }
     }
 
@@ -763,8 +835,10 @@ struct PlayerView: View {
     }
 }
 
-/// 録音内の経過時間の表示。再生バーと文字起こしの行で同じ物差し・同じ見た目にする。
-private func formatPlaybackTime(_ time: TimeInterval) -> String {
+/// 経過時間(分:秒)の表示書式。再生バー(PlayerView)・文字起こしの行(transcriptRow)・
+/// ライブ画面(LiveSessionView.elapsedLabel)が、同じ物差し・同じ見た目にするためにこれを共有する
+/// (private にしない理由: LiveSessionView.swift からも呼ぶため)。
+func formatPlaybackTime(_ time: TimeInterval) -> String {
     let seconds = Int(time.rounded())
     return String(format: "%d:%02d", seconds / 60, seconds % 60)
 }

@@ -726,6 +726,10 @@ private struct BulkDeleteConfirmation: ViewModifier {
             Button(
                 SessionDeletionCopy.confirmButton(count: targets.count),
                 role: .destructive, action: onConfirm)
+                // 破壊ボタンは既定では Return が割り当てられず、Enter を押しても
+                // ビープ音だけになる。キーボードで確定したい要望により明示的に既定にする
+                // (Esc のキャンセルは confirmationDialog の標準挙動のまま)。
+                .keyboardShortcut(.defaultAction)
         } message: {
             Text(SessionDeletionCopy.message)
         }

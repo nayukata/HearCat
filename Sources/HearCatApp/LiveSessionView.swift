@@ -6,6 +6,11 @@ import SwiftUI
 struct LiveSessionView: View {
     let model: AppModel
 
+    /// 質問応答パネルからのジャンプで、今フェード中にハイライトしている行(LiveTimeline.Row.id)。
+    /// 収束スクロール・点灯・フェード消灯の一連の演出は RevealCoordinator
+    /// (SessionDetailView と共有)に委ねる。
+    @State private var revealCoordinator = RevealCoordinator<String>()
+
     var body: some View {
         VStack(spacing: 0) {
             bar
@@ -36,6 +41,18 @@ struct LiveSessionView: View {
             Toggle("文字起こし", isOn: Binding(
                 get: { model.status.transcribing },
                 set: { model.setTranscribing($0) }))
+            if !AgentCLIDetector.shared.availableCLIs.isEmpty {
+                Button {
+                    model.openCodeImpactPanel()
+                } label: {
+                    Image(systemName: "questionmark.bubble")
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("AI に質問")
+                .disabled(!model.status.transcribing)
+            }
             if !model.liveFinals.isEmpty {
                 CopyButton {
                     model.liveFinals.map(TranscriptWriter.line(for:)).joined(separator: "\n")
@@ -53,7 +70,10 @@ struct LiveSessionView: View {
     }
 
     private var transcriptList: some View {
-        ScrollViewReader { proxy in
+        // 行ごとに model.liveSessionStartDate(内部で sessions.first(where:) の線形探索を
+        // 伴う)を呼び直さないよう、行の描画に入る前に 1 回だけ取得して segmentLine へ渡す。
+        let startDate = model.liveSessionStartDate
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if let error = model.status.systemAudioError {
@@ -64,24 +84,64 @@ struct LiveSessionView: View {
                     ForEach(model.liveTimeline.rows) { row in
                         segmentLine(
                             time: row.volatile ? nil : row.time, speaker: row.speaker,
-                            text: row.text, volatile: row.volatile)
+                            text: row.text, volatile: row.volatile,
+                            isRevealed: row.id == revealCoordinator.revealedID,
+                            startDate: startDate)
+                            .id(row.id)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // 開いた瞬間から最新の発話が見えるよう、初期位置は最下部にする。
+            .defaultScrollAnchor(.bottom)
             .onChange(of: model.liveTimeline.rows) {
                 proxy.scrollTo("bottom")
             }
+            // ライブ画面は選択が切り替わるたびに作り直される(履歴側の SessionDetailView と違い
+            // インスタンスを使い回さない)ため、初回表示の時点で既にジャンプ要求が
+            // 積まれている場合(履歴が閉じている状態からのジャンプ)は onAppear で拾える。
+            .onAppear { revealIfRequested(proxy: proxy) }
+            // 既にライブ画面を表示中に続けてジャンプされた場合。
+            .onChange(of: model.transcriptRevealRequest) { revealIfRequested(proxy: proxy) }
         }
     }
 
-    private func segmentLine(time: Date?, speaker: String, text: String, volatile: Bool) -> some View {
+    /// 質問応答パネルの「根拠と補足」からのジャンプ要求を消費する。ライブ対象
+    /// (sessionID == MainWindow.liveID)宛てでなければ何もしない(過去セッション側の
+    /// SessionDetailView に委ねる)。
+    private func revealIfRequested(proxy: ScrollViewProxy) {
+        guard let request = model.transcriptRevealRequest, request.sessionID == MainWindow.liveID
+        else { return }
+        model.transcriptRevealRequest = nil
+
+        // 認識中(volatile)の行は確定した時刻を持たず、比較の対象にならない。rows の並びは
+        // 「席が固定」の都合で必ずしも時刻順ではないため、比較の前に time で安定ソートしておく
+        // (SessionDetailView の stamp ソートと同じ理由: 選択が並び順に左右されないようにする)。
+        let finalized = model.liveTimeline.rows.filter { !$0.volatile }.sorted { $0.time < $1.time }
+        guard
+            let target = finalized.first(where: {
+                TranscriptWriter.timeString(from: $0.time) >= request.time
+            }) ?? finalized.last
+        else { return }
+
+        revealCoordinator.reveal(target.id, proxy: proxy)
+    }
+
+    private func segmentLine(
+        time: Date?, speaker: String, text: String, volatile: Bool, isRevealed: Bool,
+        startDate: Date?
+    ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(time.map { "[" + $0.formatted(date: .omitted, time: .standard) + "]" } ?? "認識中")
+            // 表示は経過時間(分:秒)に統一する(履歴詳細・質問応答パネルの根拠チップと同じ物差し)。
+            // 以前はここも壁時計(HH:mm:ss)を出していたが、履歴詳細だけ経過時間のままだったため
+            // 面によって単位が食い違い、「ジャンプ先がズレて見える」混乱を招いた。
+            Text(elapsedLabel(for: time, startDate: startDate))
                 .font(HCFont.timecode)
                 .foregroundStyle(.white.opacity(0.34))
+                // 幅 66 は元々 "[HH:mm:ss]"(10 文字)を収める値だった。経過時間の最長想定
+                // "999:59" 程度(6 文字、"認識中" と同程度)はそれより短いため、そのまま流用できる。
                 .frame(width: 66, alignment: time == nil ? .center : .leading)
             SpeakerChip(speaker: speaker)
             if volatile {
@@ -95,6 +155,26 @@ struct LiveSessionView: View {
                     .textSelection(.enabled)
             }
         }
+        // 質問応答パネルからのジャンプ先を、一時的な背景色でフェードイン→フェードアウトさせる
+        // (SessionDetailView と共有する RevealHighlight。RevealCoordinator.swift のコメント
+        // どおり、opacity は SessionDetailView 側の 0.22 に統一済み)。
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .modifier(RevealHighlight(isRevealed: isRevealed))
+    }
+
+    /// 行頭に出す経過時間のラベル。time が nil(認識中の行)ならそのまま「認識中」。
+    /// formatPlaybackTime は SessionDetailView.swift 側の共有関数(同じ書式にするため)。
+    /// startDate は呼び出し元(transcriptList)が model.liveSessionStartDate を行の描画前に
+    /// 1 回だけ取得して渡す(内部で sessions.first(where:) の線形探索を伴うため)。
+    /// 開始時刻が引けない(セッション開始直後の一瞬、sessions のキャッシュがまだ追いついて
+    /// いない場合など)は、壁時計へフォールバックせず "--:--" にする
+    /// (単位が面によって混在すると、今回の「ズレて見える」不具合と同種の混乱を再発するため)。
+    private func elapsedLabel(for time: Date?, startDate: Date?) -> String {
+        guard let time else { return "認識中" }
+        guard let startDate else { return "--:--" }
+        let elapsed = max(0, time.timeIntervalSince(startDate))
+        return formatPlaybackTime(elapsed)
     }
 }
 

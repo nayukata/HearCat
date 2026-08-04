@@ -33,6 +33,7 @@ struct CopyButton: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
+        .pointingHandOnHover()
         .help("コピー")
     }
 }

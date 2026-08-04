@@ -65,11 +65,14 @@ enum HCFont {
         }
     }
 
-    private static func cascaded(_ base: NSFont, weight: NSFont.Weight) -> Font {
-        let descriptor = base.fontDescriptor.addingAttributes([
+    private static func cascadedDescriptor(_ base: NSFont, weight: NSFont.Weight) -> NSFontDescriptor {
+        base.fontDescriptor.addingAttributes([
             .cascadeList: [NSFontDescriptor(fontAttributes: [.name: notoName(for: weight)])]
         ])
-        return Font(NSFont(descriptor: descriptor, size: base.pointSize) ?? base)
+    }
+
+    private static func cascaded(_ base: NSFont, weight: NSFont.Weight) -> Font {
+        Font(NSFont(descriptor: cascadedDescriptor(base, weight: weight), size: base.pointSize) ?? base)
     }
 
     static func system(size: CGFloat, weight: NSFont.Weight = .regular) -> Font {
@@ -79,6 +82,15 @@ enum HCFont {
     /// SwiftUI の .caption 等と同じ大きさを保ったままカスケードを効かせる。
     static func style(_ textStyle: NSFont.TextStyle, weight: NSFont.Weight = .regular) -> Font {
         system(size: NSFont.preferredFont(forTextStyle: textStyle).pointSize, weight: weight)
+    }
+
+    /// AppKit のビュー(NSTextView 等)を SwiftUI 側の style(_:weight:) と同じ大きさ・
+    /// カスケード指定で描画したい場合に使う。CodeImpactOverlay の複数行入力欄
+    /// (NSTextView ベース)がプレースホルダ・本文のフォントをここから取る。
+    static func nsFont(forTextStyle textStyle: NSFont.TextStyle, weight: NSFont.Weight = .regular) -> NSFont {
+        let base = NSFont.systemFont(
+            ofSize: NSFont.preferredFont(forTextStyle: textStyle).pointSize, weight: weight)
+        return NSFont(descriptor: cascadedDescriptor(base, weight: weight), size: base.pointSize) ?? base
     }
 
     /// 数字だけ等幅(タイムスタンプ用)。日本語はカスケードで Noto に落ちる。
@@ -273,6 +285,26 @@ extension ButtonStyle where Self == HCSecondaryButtonStyle {
     /// Form 内の LabeledContent(ラベル + 値の 1 行構造)に収めるコンパクト版。
     /// pill 高さがラベルの高さに揃うので、行の中央整列が崩れない。
     static var hcSecondaryCompact: HCSecondaryButtonStyle { HCSecondaryButtonStyle(compact: true) }
+}
+
+/// 押せる要素にホバーで `NSCursor.pointingHand` を出す共通実装。
+/// NSCursor.push/pop はスタック型のため、hover の開始と終了を必ず対にして呼ぶ
+/// (もともと CodeImpactOverlay.swift のタイムスタンプチップで個別実装していたパターンを、
+/// 他の押せる要素にも展開するため切り出した)。
+/// `disabled: true` の間はカーソルを変えない(無効化中のボタンに指カーソルを出さないため。
+/// 呼び出し側で `.disabled(_:)` と同じ条件を渡すこと)。
+extension View {
+    /// 押せる要素にリンクのポインタ(指カーソル)を出す。ユーザーの大半は Web の
+    /// メンタルモデル(押せる = 指カーソル)を持ち込むため、リンク風・ボタン形を問わず
+    /// 押せる要素へ一律に適用する(macOS 純正の「ボタンは矢印」の作法は、検討のうえ
+    /// メンタルモデル優先で不採用にした)。
+    /// onHover + NSCursor.push/pop の旧実装は、アプリが非アクティブな間(非アクティブ
+    /// パネルの主な利用状況)に AppKit が即座にカーソルを戻すため機能しなかった。
+    /// pointerStyle はシステム管理のためキーウィンドウでなくても効く。
+    /// `disabled` は呼び出し側のボタンの無効状態と揃えて渡す(既定 false)。
+    func pointingHandOnHover(disabled: Bool = false) -> some View {
+        pointerStyle(disabled ? .default : .link)
+    }
 }
 
 /// HearCat のブランドマーク(猫の横顔)。原本は design/brand/hearcat-logo.svg。

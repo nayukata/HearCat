@@ -17,7 +17,7 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleSession: "セッション開始/停止"
         case .toggleRecording: "録音オン/オフ"
         case .toggleTranscribing: "文字起こしオン/オフ"
-        case .analyzeCodeImpact: "会議内容を関連資料と照合"
+        case .analyzeCodeImpact: "会話について AI に質問"
         case .openHistory: "履歴ウィンドウを開く"
         case .openSettings: "設定を開く"
         }

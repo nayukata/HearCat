@@ -25,7 +25,10 @@ enum AgentCodeImpactStream {
     private static let timeout: TimeInterval = 300
     /// 「unknown option」等での段階的フォールバックを含めても、合計の実行回数を
     /// この値までに制限する(組み合わせ次第で再実行が連鎖しても無限にしないため)。
-    private static let maxAttempts = 3
+    /// フォールバックの判定材料(includePartialMessages / includeSettingSources /
+    /// includeTools / resumeSessionID)が 4 種類あるため、単純な直列の組み合わせでも
+    /// 3 では足りないケースがあり得る分だけ余裕を持たせている。
+    private static let maxAttempts = 4
     /// textDelta をまとめて通知する間隔。トークン単位で大量に届くため、そのまま
     /// 都度 UI へ流すと更新が過密になる。
     private static let textDeltaFlushInterval: TimeInterval = 0.12
@@ -35,6 +38,10 @@ enum AgentCodeImpactStream {
     private struct AttemptConfig {
         var includePartialMessages: Bool
         var includeSettingSources: Bool
+        /// --tools を付けるか。古い claude CLI が --tools 自体を知らない場合に限り false へ落とす
+        /// (unknown option フォールバック)。false の間はツール制限が効かなくなるため、
+        /// この経路に落ちたことが分かるよう arguments() 側でコメントしている。
+        var includeTools: Bool
         var resumeSessionID: String?
     }
 
@@ -46,8 +53,19 @@ enum AgentCodeImpactStream {
     }
 
     /// - Parameters:
-    ///   - transcript: 未加工の文字起こし全体。AgentCodeImpactAnalyzer.recentTranscript で
-    ///     直近部分に切ってから標準入力へ渡す(analyze() と同じ扱い)。
+    ///   - transcript: 未加工の文字起こし全体。継続しない(または差分を渡せない)場合は
+    ///     AgentCodeImpactAnalyzer.recentTranscript で直近部分に切ってから標準入力へ渡す
+    ///     (analyze() と同じ扱い)。
+    ///   - incrementalTranscript: 呼び出し側(AppModel)が resumeSessionID との継続を前提に
+    ///     あらかじめ計算した差分(前回送信済み位置以降)。nil なら「差分は使わず transcript の
+    ///     全量を渡す」の合図(新規会話・送信済み位置が不明・異常時など)。空文字列は
+    ///     「差分計算はできたが前回以降に新しい発話が無かった」を表し、そのまま空で送る。
+    ///     resumeSessionID が nil の場合(新規会話)は無視する。
+    ///   - question / previousResult: プロンプト組み立て用。継続の有無・差分の有無に応じた
+    ///     resumeNote の出し分けは、この関数の中で AgentCodeImpactAnalyzer.buildPrompt に
+    ///     都度渡す(呼び出し側で 1 度だけ組んで固定しない)。段階的フォールバックで
+    ///     resumeSessionID を落として再実行する際に、標準入力とプロンプトの継続状態を
+    ///     必ず一致させるため(差分文字列を新規会話に渡す事故を防ぐ)。
     ///   - resumeSessionID: 継続したい claude セッション ID。nil なら新規会話。
     ///   - onEvent: ストリーム中の通知。@Sendable(バックグラウンドの読み取りキューから呼ぶ)。
     /// - Returns: 抽出済み Markdown と、今回判明したセッション ID(セッションが尽きて
@@ -55,8 +73,10 @@ enum AgentCodeImpactStream {
     static func run(
         model: String?,
         transcript: String,
+        incrementalTranscript: String?,
         referenceFolder: String?,
-        prompt: String,
+        question: String?,
+        previousResult: String?,
         resumeSessionID: String?,
         onEvent: @escaping @Sendable (CodeImpactStreamEvent) -> Void
     ) async throws -> (result: String, sessionID: String?) {
@@ -68,36 +88,66 @@ enum AgentCodeImpactStream {
         // 紐付けている場合でも、フォルダが移動・削除されていれば AgentSummarizer.execute と
         // 同じ扱い: cwd 指定と --allowedTools を諦めて続行する(照合の入口である
         // codeImpactContext() で存在確認済みだが、実行までの間に消える可能性はゼロではないため
-        // 二重に見る)。
+        // 二重に見る)。プロンプト内の hasReferenceFolder もこの検証後の値に揃え、
+        // 「資料を読める」と言いながら --allowedTools を渡していない、という食い違いを防ぐ。
         let validatedReferenceFolder: String? = {
             guard let referenceFolder else { return nil }
             var isDirectory: ObjCBool = false
             let exists = FileManager.default.fileExists(atPath: referenceFolder, isDirectory: &isDirectory)
             return exists && isDirectory.boolValue ? referenceFolder : nil
         }()
+        let hasReferenceFolder = validatedReferenceFolder != nil
 
-        let trimmedTranscript = AgentCodeImpactAnalyzer.recentTranscript(from: transcript)
+        let fullTranscript = AgentCodeImpactAnalyzer.recentTranscript(from: transcript)
 
         var config = AttemptConfig(
             includePartialMessages: true,
             includeSettingSources: true,
+            includeTools: true,
             resumeSessionID: resumeSessionID)
         var attempts = 0
         var lastDiagnostics = ""
         var lastExitCode: Int32 = -1
 
         while attempts < maxAttempts {
+            // キャンセル済みなら新しい attempt(プロセス起動)を始めない。起動直前の
+            // キャンセルは onCancel 側の isRunning ガードが受け持ち、ここは再試行の隙間で
+            // 届いたキャンセルを拾う。
+            try Task.checkCancellation()
             attempts += 1
             if attempts > 1 { onEvent(.reset) }
 
+            // 標準入力とプロンプトの継続状態は、この attempt の config.resumeSessionID から
+            // 都度導出する。fallback で resumeSessionID を落とした次の attempt では
+            // isResumingAttempt が false になり、自動的に全量 + 非継続プロンプトへ切り替わる。
+            let isResumingAttempt = config.resumeSessionID != nil
+            let stdinTranscript: String
+            let continuity: AgentCodeImpactAnalyzer.TranscriptContinuity
+            if isResumingAttempt {
+                if let incrementalTranscript {
+                    stdinTranscript = incrementalTranscript
+                    let isEmpty = incrementalTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    continuity = isEmpty ? .resumedNoDelta : .resumedWithDelta
+                } else {
+                    stdinTranscript = fullTranscript
+                    continuity = .resumedFullResend
+                }
+            } else {
+                stdinTranscript = fullTranscript
+                continuity = .fresh
+            }
+            let prompt = AgentCodeImpactAnalyzer.buildPrompt(
+                question: question, previousResult: previousResult, continuity: continuity,
+                hasReferenceFolder: hasReferenceFolder)
+
             let arguments = arguments(
                 prompt: prompt, model: model, config: config,
-                hasReferenceFolder: validatedReferenceFolder != nil)
+                hasReferenceFolder: hasReferenceFolder)
 
             let outcome = try await runOnce(
                 binaryPath: binaryPath,
                 arguments: arguments,
-                transcript: trimmedTranscript,
+                transcript: stdinTranscript,
                 referenceFolder: validatedReferenceFolder,
                 onEvent: onEvent)
 
@@ -108,7 +158,10 @@ enum AgentCodeImpactStream {
                     throw AgentSummarizeError.unexpectedOutput(
                         excerpt: AgentSummarizer.excerpt(from: outcome.diagnostics))
                 }
-                guard let formatted = AgentSummarizer.extractMarkdown(resultText) else {
+                // 質問応答は要約と違い、「## 」見出しから書き始めない応答(本文から書き始めて
+                // 途中に「## 根拠と補足」だけが続く等)もそのまま本文として表示したいため、
+                // 厳格な extractMarkdown ではなく緩い extractCodeImpactMarkdown を使う。
+                guard let formatted = AgentSummarizer.extractCodeImpactMarkdown(resultText) else {
                     throw AgentSummarizeError.unexpectedOutput(
                         excerpt: AgentSummarizer.excerpt(from: resultText))
                 }
@@ -137,13 +190,19 @@ enum AgentCodeImpactStream {
             case .fallbackToText:
                 onEvent(.reset)
                 onEvent(.activity("従来方式で調査中…"))
+                // 非ストリーミング(AgentSummarizer.execute)は --resume を持たないため、
+                // 継続は完全に切れる。標準入力は全量、プロンプトも非継続用に組み直す
+                // (直前の attempt が差分プロンプトを使っていた場合でも、ここで必ず上書きする)。
                 let text = try await AgentSummarizer.execute(
                     using: .claude,
-                    input: trimmedTranscript,
+                    input: fullTranscript,
                     referenceFolder: referenceFolder,
-                    prompt: prompt,
+                    prompt: AgentCodeImpactAnalyzer.buildPrompt(
+                        question: question, previousResult: previousResult, continuity: .fresh,
+                        hasReferenceFolder: hasReferenceFolder),
                     outputPrefix: "code-impact-stream-fallback",
-                    model: model)
+                    model: model,
+                    extraction: AgentSummarizer.extractCodeImpactMarkdown)
                 return (text, nil)
             }
         }
@@ -153,7 +212,7 @@ enum AgentCodeImpactStream {
     }
 
     /// 診断出力(stderr + stdout)から、次に何を変えて再実行すべきかを決める。
-    /// 上から順に判定し、最初に当てはまったものを採用する(設計メモの 1〜4 と対応)。
+    /// 上から順に判定し、最初に当てはまったものを採用する(設計メモの 1〜5 と対応)。
     private static func nextFallback(diagnostics: String, config: AttemptConfig) -> FallbackDecision? {
         let lower = diagnostics.lowercased()
 
@@ -182,7 +241,16 @@ enum AgentCodeImpactStream {
             return .retry(next)
         }
 
-        // 4. --resume 付きの実行が失敗(セッション期限切れ等)。原因の切り分けはせず、
+        // 4. --tools を知らない古い claude。この経路に落ちるとツール制限そのものが効かなくなるが、
+        //    --allowedTools(資料フォルダありの場合のみ)は残っているので、無条件に何でも
+        //    使えるわけではない(権限プロンプトの追加は防げても、禁止はできない旧来の状態に戻るだけ)。
+        if config.includeTools, lower.contains("unknown option"), lower.contains("--tools") {
+            var next = config
+            next.includeTools = false
+            return .retry(next)
+        }
+
+        // 5. --resume 付きの実行が失敗(セッション期限切れ等)。原因の切り分けはせず、
         //    resume を付けていて失敗した、というだけで一度だけ resume 無しに落とす。
         if config.resumeSessionID != nil {
             var next = config
@@ -212,6 +280,14 @@ enum AgentCodeImpactStream {
         // referenceFolder が無ければ許可ツールのフラグ自体を渡さない(AgentSummarizer.execute と同じ)。
         if hasReferenceFolder {
             args += ["--allowedTools", "Read", "Grep", "Glob"]
+        }
+        // --allowedTools は許可ルールの「追加」であり、他のツールを禁止しない。
+        // --setting-sources で読み込むプロジェクト設定(資料フォルダ側の .claude/settings.json 等)に
+        // Bash 等の許可があれば、それだけで通ってしまう。利用可能なツールそのものを固定するのは
+        // --tools の役目なので、読み取り専用ツールだけに絞る(資料フォルダが無ければ Read すら
+        // 与えず、文字起こしだけで答えさせる設計に合わせて全ツールを無効化する)。
+        if config.includeTools {
+            args += ["--tools", hasReferenceFolder ? "Read,Grep,Glob" : ""]
         }
         if config.includeSettingSources {
             args += ["--setting-sources", "project"]
@@ -342,6 +418,11 @@ enum AgentCodeImpactStream {
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
             }
         } onCancel: {
+            // キャンセルはプロセス起動前(Task が既にキャンセル済みだと、このハンドラは
+            // 登録と同時に即実行される)や終了後にも届く。未起動の Process への terminate() は
+            // NSInvalidArgumentException でアプリごと落ちるため(送信直後の即キャンセルで
+            // 実クラッシュあり)、起動して動いている間だけシグナルを送る。
+            guard process.isRunning else { return }
             process.terminate()
         }
     }

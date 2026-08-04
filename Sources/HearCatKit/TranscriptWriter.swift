@@ -28,23 +28,52 @@ public struct TranscriptLine: Identifiable, Sendable {
 /// 形式の知識が書き手と読み手で食い違わないよう、同じファイルに置く。
 public enum TranscriptParser {
     public static func lines(from text: String, sessionStart: Date) -> [TranscriptLine] {
-        let comps = Calendar.current.dateComponents(
-            [.hour, .minute, .second], from: sessionStart)
-        let startSec = (comps.hour ?? 0) * 3600 + (comps.minute ?? 0) * 60 + (comps.second ?? 0)
         return bodyLines(from: text).enumerated().map { index, line in
             guard let (stamp, body) = split(line) else {
                 return TranscriptLine(
                     id: index, stamp: nil, body: line, speaker: nil, text: line, offset: nil)
             }
             let (speaker, spoken) = splitSpeaker(body)
-            let parts = stamp.split(separator: ":").compactMap { Int($0) }
-            var offset = parts[0] * 3600 + parts[1] * 60 + parts[2] - startSec
-            // 行の時刻は時分秒だけなので、日をまたいだセッションでは開始より小さく見える。
-            if offset < 0 { offset += 24 * 3600 }
+            // 行の時刻は時分秒だけなので、日をまたいだセッションでは開始より小さく見える
+            // (allowDayCrossing: true で 24 時間補正する)。
+            let offset = offsetSeconds(
+                forWallClock: stamp, sessionStart: sessionStart, allowDayCrossing: true)
             return TranscriptLine(
                 id: index, stamp: stamp, body: body, speaker: speaker, text: spoken,
-                offset: TimeInterval(offset))
+                offset: offset.map(TimeInterval.init))
         }
+    }
+
+    /// "HH:mm:ss" または "HH:mm" の壁時計表記(AI が本文中に引用する場合など秒無しもある)を、
+    /// sessionStart を基準にした経過秒に変換する。時 0-23、分秒 0-59 の範囲外、または
+    /// パースできない場合は nil。
+    ///
+    /// allowDayCrossing が true の場合、経過が負(壁時計だけでは分からない日またぎで、
+    /// stamp が sessionStart より小さく見える場合)は 24 時間を足して補正する
+    /// (lines(from:sessionStart:) が文字起こしファイルの全行を必ずどれかの offset へ
+    /// 解決する必要があるため)。false の場合は経過が負なら nil を返す
+    /// (CodeImpactResultView.elapsedTimeString が使う、チップ表示のためのベストエフォートな
+    /// 変換で、自信が持てない時は壁時計表記のまま出す方が安全なため、日またぎ補正はしない)。
+    public static func offsetSeconds(
+        forWallClock stamp: String, sessionStart: Date, allowDayCrossing: Bool
+    ) -> Int? {
+        let parts = stamp.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 2 || parts.count == 3,
+            (0..<24).contains(parts[0]), (0..<60).contains(parts[1]),
+            parts.count < 3 || (0..<60).contains(parts[2])
+        else { return nil }
+        let stampSeconds = parts[0] * 3600 + parts[1] * 60 + (parts.count == 3 ? parts[2] : 0)
+
+        let comps = Calendar.current.dateComponents(
+            [.hour, .minute, .second], from: sessionStart)
+        let startSeconds = (comps.hour ?? 0) * 3600 + (comps.minute ?? 0) * 60 + (comps.second ?? 0)
+
+        var offset = stampSeconds - startSeconds
+        if offset < 0 {
+            guard allowDayCrossing else { return nil }
+            offset += 24 * 3600
+        }
+        return offset
     }
 
     /// 「話者: 発言」を話者と発言に分ける。既知の話者ラベルで始まる行だけを対象にする
@@ -147,9 +176,17 @@ public actor TranscriptWriter {
     /// ファイルに書く行の書式。ライブ画面のコピー機能が、まだファイルに書かれていない
     /// 確定分を同じ形式で複製するためにも参照する(書式の知識を1箇所にまとめる)。
     public static func line(for segment: TranscriptSegment) -> String {
+        "[\(timeString(from: segment.timestamp))] \(segment.speaker): \(segment.text)"
+    }
+
+    /// "HH:mm:ss"(en_US_POSIX)で時刻を文字列化する。line(for:) が書く時刻表記と同じ書式にする
+    /// ことで、他画面(LiveSessionView など)がファイル内の時刻表記とそのまま文字列比較できる
+    /// ようにする。actor(TranscriptWriter)をまたいで呼ばれるため、DateFormatter は共有せず
+    /// 呼び出しごとに作る。
+    public static func timeString(from date: Date) -> String {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         f.locale = Locale(identifier: "en_US_POSIX")
-        return "[\(f.string(from: segment.timestamp))] \(segment.speaker): \(segment.text)"
+        return f.string(from: date)
     }
 }

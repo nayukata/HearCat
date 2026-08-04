@@ -21,6 +21,18 @@ struct CodeImpactTurn: Identifiable {
     let result: String
 }
 
+/// 質問応答パネルの「根拠と補足」内のタイムスタンプから、履歴側の文字起こしの該当時刻へ
+/// ジャンプしてほしいという一方向リクエスト。mainWindowSelectionRequest と同じ「受け取った側が
+/// 消費して nil に戻す」方式(SessionDetailView / LiveSessionView 側が、自分の表示している
+/// セッションと sessionID が一致する時だけ消費する)。
+/// time は "HH:MM:SS"(AppModel.revealTranscript が "HH:MM" 指定を補ってから積む)。
+/// タプルではなく struct にしているのは、SwiftUI の onChange(of:) が Equatable を要求するため
+/// (素のタプルは == 演算子は使えても Equatable 適合そのものは持たない)。
+struct TranscriptRevealRequest: Equatable {
+    let sessionID: String
+    let time: String
+}
+
 /// セッション開始時にどのグループへ入れるかの指示。
 /// - auto: カレンダーの予定名と履歴から推測し、推測できなければ未分類にする。
 /// - explicit: 呼び出し側(ホットキーのグループ選択画面など)が確定した値。nil は未分類。
@@ -122,6 +134,10 @@ final class AppModel {
     /// 開始/停止処理の実行中。パネルのボタン連打で二重開始しないよう UI を無効化する。
     private(set) var busy = false
 
+    /// 質問パネル(関連資料との照合)の対象。nil ならライブ(進行中の会議)、非 nil なら
+    /// その過去セッションのディレクトリパス(status.sessionDirectory と同じ形式)。
+    /// パネルの表示(ヘッダーの対象名)に使うため観測可能にする。
+    private(set) var codeImpactTargetDirectory: String?
     /// 進行中の会議と関連コードを照合した結果。専用オーバーレイだけが表示する。
     private(set) var codeImpactAnalysisState: CodeImpactAnalysisState = .idle
     /// いま調査対象になっている質問。ホットキー・メニューからの初回調査(質問なし)なら nil、
@@ -140,6 +156,12 @@ final class AppModel {
     /// codeImpactSessionID がどのセッションディレクトリのものかの記録。
     /// 会議が変わった(= セッションディレクトリが変わった)ら両方リセットする。
     @ObservationIgnored private var codeImpactSessionDirectory: String?
+    /// claude セッションを継続する際、直近の成功実行時点で標準入力へ渡した transcript
+    /// 全文の文字数。次回の追加質問はこの位置以降だけを差分として送る
+    /// (AgentCodeImpactAnalyzer.incrementalTranscript)。codeImpactSessionID と同じ
+    /// タイミング(対象切替・セッションディレクトリ変更)でリセットする。nil は
+    /// 「送信済み位置が不明」を意味し、その場合は全量を渡し直す。
+    @ObservationIgnored private var codeImpactSentTranscriptLength: Int?
     /// 結果内のファイルパスをクリックで開くために、いま表示中の調査が使った資料フォルダを覚えておく。
     private(set) var codeImpactActiveReferenceFolder: String?
     /// 未分類のまま録音中のセッションは資料フォルダに紐付くグループへ動かせないため、
@@ -155,6 +177,11 @@ final class AppModel {
     /// ビューの実体が変わっても開閉が引き継がれるよう、ビューの @State ではなくここに持つ。
     /// 新しい調査の開始時にクリアする。
     var codeImpactSectionOverrides: [String: Bool] = [:]
+    /// ChoicesView(AI からの選択肢確認 UI)で選択中の回答。入力欄が空のまま Enter を
+    /// 押しても選んだ回答を送れるよう、選択肢の選択状態と入力欄の submit() を橋渡しする
+    /// (ChoicesView 参照)。通常オプションを選べば label、「その他」なら入力テキストの
+    /// trim、未選択・空・ChoicesView が isInteractive でない間は nil。
+    var codeImpactPendingChoiceAnswer: String?
 
     /// 入力レベル(RMS)。メニューバーのパネルにメーターとして出す。
     private(set) var micLevel: Float = 0
@@ -206,6 +233,9 @@ final class AppModel {
     /// MainWindow へ「この選択にしてほしい」と伝えるための一方向リクエスト。
     /// MainWindow が受け取ったら nil に戻す(ウィンドウを開き直しても再送されないように)。
     var mainWindowSelectionRequest: String?
+    /// SessionDetailView / LiveSessionView へ「この時刻の行を表示してほしい」と伝えるための
+    /// 一方向リクエスト。revealTranscript(atTime:) が積み、対象の画面が消費したら nil に戻す。
+    var transcriptRevealRequest: TranscriptRevealRequest?
     /// 直前に終了したセッションの ID。停止直後、ライブ画面からその詳細へ
     /// 自然に遷移させるために MainWindow が参照する。
     private(set) var lastEndedSessionID: String?
@@ -879,12 +909,44 @@ final class AppModel {
 
     // MARK: - 進行中の会議を関連資料と照合する
 
-    /// ホットキーとメニューバーの共通入口。オーバーレイを開くだけで、調査は開始しない
-    /// (何を調べるかは入力欄からユーザーが決める。開いた瞬間に空のダイジェスト調査が
-    /// 走る旧挙動は、質問ファーストの UX に変えた際に廃止した)。
-    /// 調査中・結果表示中ならその画面を前面へ戻す。開いた時点で使えない状態
-    /// (文字起こし停止中など)だけは先に知らせる。
-    func openCodeImpactPanel() {
+    /// 質問パネルの実効対象ディレクトリ。過去対象ならそのディレクトリ、ライブ対象なら
+    /// 進行中セッションのディレクトリ(無ければ nil)。会議切り替わり判定・対象切り替え判定は
+    /// 両方ともここを基準にする。
+    private var effectiveCodeImpactDirectory: String? {
+        codeImpactTargetDirectory ?? status.sessionDirectory
+    }
+
+    /// パネルヘッダーに出す対象セッションの表示名。過去対象のときだけ非 nil を返す
+    /// (ライブはヘッダー側で従来どおりの文言のままにする)。
+    var codeImpactTargetSessionName: String? {
+        guard let targetDirectory = codeImpactTargetDirectory,
+            let session = sessions.first(where: { $0.directory.path == targetDirectory })
+        else { return nil }
+        return session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name
+    }
+
+    /// 質問パネルの対象を切り替える。実効対象ディレクトリが実際に変わる場合だけ、
+    /// 進行中の調査をキャンセルし Q&A 履歴などをクリアする。実効対象が変わらないなら
+    /// 何もリセットしない(同じセッションのボタンを連打しても、進行中の調査や
+    /// 完了済みスレッドが消えないようにするため)。
+    private func switchCodeImpactTarget(to newTarget: String?) {
+        let previousEffective = effectiveCodeImpactDirectory
+        codeImpactTargetDirectory = newTarget
+        guard effectiveCodeImpactDirectory != previousEffective else { return }
+        cancelCodeImpactAnalysis()
+        codeImpactTurns = []
+        codeImpactQuestion = nil
+        codeImpactSessionID = nil
+        codeImpactSessionDirectory = nil
+        codeImpactSentTranscriptLength = nil
+        codeImpactPartialText = ""
+        codeImpactActivity = nil
+        codeImpactSectionOverrides = [:]
+    }
+
+    /// 対象切り替え直後、いま使える状態かどうかをパネルへ反映する共通処理。
+    /// openCodeImpactPanel() と openCodeImpactPanel(for:) の両方から呼ぶ。
+    private func presentCodeImpactPanelAfterTargetSwitch() {
         showCodeImpactOverlay()
         switch codeImpactAnalysisState {
         case .idle, .failed:
@@ -898,6 +960,30 @@ final class AppModel {
         case .requiresConsent, .analyzing, .completed:
             break
         }
+    }
+
+    /// ホットキーとメニューバーの共通入口。オーバーレイを開くだけで、調査は開始しない
+    /// (何を調べるかは入力欄からユーザーが決める。開いた瞬間に空のダイジェスト調査が
+    /// 走る旧挙動は、質問ファーストの UX に変えた際に廃止した)。
+    /// 調査中・結果表示中ならその画面を前面へ戻す。開いた時点で使えない状態
+    /// (文字起こし停止中など)だけは先に知らせる。
+    /// 対象は常にライブへ切り替える(過去対象からホットキーで戻った場合に、
+    /// 前の対象のスレッドが残ったままにならないように)。
+    func openCodeImpactPanel() {
+        switchCodeImpactTarget(to: nil)
+        presentCodeImpactPanelAfterTargetSwitch()
+    }
+
+    /// 履歴画面からの入口。対象セッションが今まさにライブ中のものと同じなら、
+    /// ライブ扱いとして openCodeImpactPanel() に委譲する(二重の対象表現を作らないため)。
+    /// それ以外は対象をそのセッションへ切り替えてパネルを出す。
+    func openCodeImpactPanel(for session: SessionInfo) {
+        guard session.directory.path != status.sessionDirectory else {
+            openCodeImpactPanel()
+            return
+        }
+        switchCodeImpactTarget(to: session.directory.path)
+        presentCodeImpactPanelAfterTargetSwitch()
     }
 
     /// 調査の開始(オーバーレイの送信・再試行・紐付け後の再開から呼ばれる)。
@@ -934,10 +1020,24 @@ final class AppModel {
     }
 
     func cancelCodeImpactAnalysis() {
+        // キャンセル前の状態から使用中の CLI を取り出しておく(過去ターンがある場合、
+        // .idle に落とすとパネルがターン履歴ごと初期表示に戻ってしまうため、
+        // 履歴があるときは .completed へ戻して会話の続きとして表示し続ける)。
+        let cli: AgentCLI? = {
+            if case .analyzing(let cli) = codeImpactAnalysisState { return cli }
+            if case .completed(let cli) = codeImpactAnalysisState { return cli }
+            return nil
+        }()
         codeImpactTask?.cancel()
         codeImpactTask = nil
         codeImpactRequestID = nil
-        codeImpactAnalysisState = .idle
+        codeImpactPartialText = ""
+        codeImpactActivity = nil
+        if let cli, !codeImpactTurns.isEmpty {
+            codeImpactAnalysisState = .completed(cli)
+        } else {
+            codeImpactAnalysisState = .idle
+        }
     }
 
     func dismissCodeImpactOverlay() {
@@ -946,14 +1046,22 @@ final class AppModel {
 
     /// 資料フォルダ未紐付けのまま調べた結果(完了表示の下の導線、または過去の失敗表示)から、
     /// その場で資料フォルダを選んで照合をやり直す。セッションがグループ所属ならそのグループへ
-    /// 紐付け、未分類なら新規グループを作らずこの会議だけの一時紐付け
+    /// 紐付け、未分類なら新規グループを作らずこの会議(または過去セッション)だけの一時紐付け
     /// (codeImpactReferenceFolderOverride)にする(録音中のセッションはディレクトリを
-    /// 移動できないため)。question は codeImpactQuestion を読む。
+    /// 移動できないため。過去セッションも、この画面から動かす必要はないので同じ扱いにする)。
+    /// question は codeImpactQuestion を読む。
     func linkReferenceFolderForCodeImpact() {
-        guard status.active, status.transcribing, let sessionDirectory = status.sessionDirectory,
+        let sessionDirectory: String?
+        if let targetDirectory = codeImpactTargetDirectory {
+            sessionDirectory = targetDirectory
+        } else {
+            // ライブ対象は文字起こし中でなければ調査自体ができないため、従来どおり要求する。
+            sessionDirectory = (status.active && status.transcribing) ? status.sessionDirectory : nil
+        }
+        guard let sessionDirectory,
             let session = SessionStore.list().first(where: { $0.directory.path == sessionDirectory })
         else {
-            // ここに来るはずのボタンは進行中のセッションでしか出ないが、念のため
+            // ここに来るはずのボタンは調査が使える対象でしか出ないが、念のため
             // 崩れていた場合は通常の調査要求に任せて、そちらのエラー表示に委ねる。
             requestCodeImpactAnalysis(question: codeImpactQuestion)
             return
@@ -1018,12 +1126,13 @@ final class AppModel {
         }
         codeImpactActiveReferenceFolder = context.referenceFolder
 
-        // 会議(セッションディレクトリ)が変わっていたら、前の会議の claude セッションを
-        // 引き継がない。同じ会議のあいだは維持し、--resume で会話を続ける。
-        if status.sessionDirectory != codeImpactSessionDirectory {
+        // 対象(会議、または過去セッション)が変わっていたら、前の対象の claude セッションを
+        // 引き継がない。同じ対象のあいだは維持し、--resume で会話を続ける。
+        if effectiveCodeImpactDirectory != codeImpactSessionDirectory {
             codeImpactSessionID = nil
-            codeImpactSessionDirectory = status.sessionDirectory
-            // 会議が変われば Q&A 履歴も前の会議のものなので持ち越さない。
+            codeImpactSessionDirectory = effectiveCodeImpactDirectory
+            codeImpactSentTranscriptLength = nil
+            // 対象が変われば Q&A 履歴も前の対象のものなので持ち越さない。
             codeImpactTurns = []
         }
 
@@ -1047,15 +1156,25 @@ final class AppModel {
                 case .claude:
                     // claude だけストリーミング + セッション継続の経路を使う。
                     let resumeSessionID = self?.codeImpactSessionID
-                    let prompt = AgentCodeImpactAnalyzer.buildPrompt(
-                        question: question, previousResult: previousResult,
-                        isResuming: resumeSessionID != nil,
-                        hasReferenceFolder: context.referenceFolder != nil)
+                    let sentTranscriptLength = self?.codeImpactSentTranscriptLength
+                    // 差分が使えるのは、継続中(resumeSessionID あり)かつ送信済み位置が
+                    // 分かっていて、かつ今回読んだ transcript がその位置より短くなっていない
+                    // (ファイルの巻き戻り等の異常が無い)場合だけ。それ以外は nil を渡し、
+                    // AgentCodeImpactStream 側で全量渡し直しにフォールバックさせる。
+                    let incrementalTranscript: String? = {
+                        guard resumeSessionID != nil, let sentTranscriptLength,
+                            context.transcript.count >= sentTranscriptLength
+                        else { return nil }
+                        return AgentCodeImpactAnalyzer.incrementalTranscript(
+                            from: context.transcript, sentLength: sentTranscriptLength)
+                    }()
                     let stream = try await AgentCodeImpactStream.run(
                         model: model,
                         transcript: context.transcript,
+                        incrementalTranscript: incrementalTranscript,
                         referenceFolder: context.referenceFolder,
-                        prompt: prompt,
+                        question: question,
+                        previousResult: previousResult,
                         resumeSessionID: resumeSessionID
                     ) { event in
                         // readabilityHandler の背景キューから呼ばれるため、self を直接は
@@ -1080,6 +1199,13 @@ final class AppModel {
                     result = stream.result
                     if let sessionID = stream.sessionID {
                         self?.codeImpactSessionID = sessionID
+                        // 継続が生きたまま成功したときだけ、今回読んだ transcript の文字数を
+                        // 「送信済み位置」として前進させる。次回の追加質問はこの続きだけを送る。
+                        self?.codeImpactSentTranscriptLength = context.transcript.count
+                    } else {
+                        // 継続が切れて非ストリーミングへ落ちた(次回は新規会話になる)ので、
+                        // 送信済み位置は意味を持たない。
+                        self?.codeImpactSentTranscriptLength = nil
                     }
                 case .codex:
                     // codex はストリーミング/セッション継続の対象外。従来どおり一括実行。
@@ -1107,8 +1233,15 @@ final class AppModel {
     }
 
     private func codeImpactContext() throws -> (transcript: String, referenceFolder: String?) {
-        guard status.active, status.transcribing, let sessionDirectory = status.sessionDirectory else {
-            throw CodeImpactContextError.inactive
+        let sessionDirectory: String
+        if let targetDirectory = codeImpactTargetDirectory {
+            // 過去対象は文字起こし中かどうかを問わない。セッションが引ければ調べられる。
+            sessionDirectory = targetDirectory
+        } else {
+            guard status.active, status.transcribing, let liveDirectory = status.sessionDirectory else {
+                throw CodeImpactContextError.inactive
+            }
+            sessionDirectory = liveDirectory
         }
         guard let session = SessionStore.list().first(where: { $0.directory.path == sessionDirectory }) else {
             throw CodeImpactContextError.sessionNotFound
@@ -1330,6 +1463,64 @@ final class AppModel {
         }
         openWindowAction("main")
         bringToFrontLater { AppModel.shared.mainWindow }
+    }
+
+    /// 質問応答パネルの「根拠と補足」内のタイムスタンプから呼ばれる、履歴側へのジャンプの入口。
+    /// time は "HH:MM:SS" か "HH:MM"("HH:MM" は ":00" を補ってから積む。以後の比較はどこも
+    /// "HH:MM:SS" の文字列比較でよくなる)。
+    ///
+    /// 対象セッションは、質問パネルの対象(codeImpactTargetDirectory)と同じものを使う:
+    /// 非 nil ならその過去セッション、nil ならライブ。質問パネルは「いま何について聞いているか」
+    /// を codeImpactTargetDirectory で表しているため、ジャンプ先もそれに従うのが自然
+    /// (パネルを開いたまま対象を切り替えても、直前に見ていた回答のタイムスタンプは
+    /// その時点の対象のものなので食い違わない)。
+    ///
+    /// 対象セッションが見つからない、またはライブが既に終了している(status.sessionDirectory が
+    /// 無い)場合は何もしない。パネル側は表示中の回答から呼ぶだけなので、ここで
+    /// エラー表示までは持たない。
+    @MainActor
+    func revealTranscript(atTime time: String) {
+        let normalizedTime = Self.normalizedRevealTime(time)
+        if let targetDirectory = codeImpactTargetDirectory {
+            guard let session = sessions.first(where: { $0.directory.path == targetDirectory })
+            else { return }
+            showHistory(selecting: session.id)
+            transcriptRevealRequest = TranscriptRevealRequest(sessionID: session.id, time: normalizedTime)
+        } else {
+            // ライブは「今まさに進行中」であることが前提。停止済みなら status.sessionDirectory は
+            // 残っていても status.active は false になるため、そちらで判定する
+            // (codeImpactContext() が同じ対象の解決に active を使っているのと合わせる)。
+            guard status.active, status.sessionDirectory != nil else { return }
+            showHistory(selecting: MainWindow.liveID)
+            transcriptRevealRequest = TranscriptRevealRequest(sessionID: MainWindow.liveID, time: normalizedTime)
+        }
+    }
+
+    /// "HH:MM" を "HH:MM:SS" に補う("00" 秒扱い)。既に "HH:MM:SS" ならそのまま返す。
+    /// それ以外の想定外の形式もそのまま返す(受け取り側は単に一致しないだけで、クラッシュはしない)。
+    private static func normalizedRevealTime(_ time: String) -> String {
+        time.split(separator: ":", omittingEmptySubsequences: false).count == 2 ? "\(time):00" : time
+    }
+
+    /// 指定したセッションディレクトリの開始時刻。sessions(refreshSessions() でキャッシュ済みの
+    /// 一覧)から引く。ライブ画面の経過時間表示(LiveSessionView)と、質問応答パネルの根拠チップの
+    /// 経過時間変換表示(CodeImpactOverlay)の両方が、ディレクトリ→開始時刻の解決をここに
+    /// 一本化する。sessions にまだ載っていない(セッション開始直後のごく一瞬など)場合は nil
+    /// (呼び出し側は「変換できない」として元の表記のまま出す)。
+    func sessionStartDate(forDirectory path: String) -> Date? {
+        sessions.first(where: { $0.directory.path == path })?.startDate
+    }
+
+    /// ライブ画面の経過時間表示の基準にする、いま進行中のセッションの開始時刻。
+    var liveSessionStartDate: Date? {
+        status.sessionDirectory.flatMap(sessionStartDate(forDirectory:))
+    }
+
+    /// 質問応答パネルの根拠チップの経過時間表示の基準にする、対象セッションの開始時刻。
+    /// 対象の解決は revealTranscript(atTime:) と同じ考え方(過去 = codeImpactTargetDirectory、
+    /// ライブ = status.sessionDirectory)。
+    var codeImpactTargetSessionStartDate: Date? {
+        effectiveCodeImpactDirectory.flatMap(sessionStartDate(forDirectory:))
     }
 
     func showSettings() {

@@ -272,13 +272,18 @@ enum AgentSummarizer {
 
     /// 要約とコード影響調査で共用する、読み取り専用のエージェント実行経路。
     /// プロンプトと入力だけを呼び出し側から受け取り、CLI ごとの差や制限はここに閉じ込める。
+    ///
+    /// extraction は生の応答から本文を切り出す関数。既定は要約用の厳格な extractMarkdown
+    /// (「## 」で始まらない応答は unexpectedOutput として弾く)。質問応答(code-impact)側は
+    /// 見出し無しの応答も本文として表示したいため、呼び出し元が extractCodeImpactMarkdown を渡す。
     static func execute(
         using cli: AgentCLI,
         input: String,
         referenceFolder: String?,
         prompt: String,
         outputPrefix: String,
-        model: String? = nil
+        model: String? = nil,
+        extraction: (String) -> String? = extractMarkdown
     ) async throws -> String {
         guard let binaryPath = await AgentCLIResolver.resolve(cli) else {
             throw AgentSummarizeError.notInstalled(cli)
@@ -319,9 +324,18 @@ enum AgentSummarizer {
                     process: process, transcript: input,
                     stdinPipe: stdinPipe, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
             } onCancel: {
+                // 未起動・終了後の Process への terminate() は NSInvalidArgumentException で
+                // アプリごと落ちる(AgentCodeImpactStream と同じ穴)。動いている間だけ送る。
+                guard process.isRunning else { return }
                 process.terminate()
             }
         }
+
+        // 段階的フォールバックの状態(古い claude CLI が知らないオプションを 1 つずつ外していく)。
+        // AgentCodeImpactStream ほど分岐は多くないため、ここではループにせず if を直列に並べる
+        // だけに留める(1 種類ごとに 1 回だけ再実行)。
+        var includeSettingSources = true
+        var includeTools = true
 
         let primaryArguments = arguments(
             for: cli,
@@ -329,24 +343,49 @@ enum AgentSummarizer {
             referenceFolder: referenceFolder,
             outputFile: outputFile,
             model: model,
-            includeSettingSources: true)
+            includeSettingSources: includeSettingSources,
+            includeTools: includeTools)
 
         var result = try await runProcess(with: primaryArguments)
 
-        // 古い claude CLI は --setting-sources 自体を知らず「unknown option」で落ちる。
-        // 終了コードが 0 以外で、診断出力にその両方の手がかりが揃っている場合に限り、
-        // 当該オプションを外した引数で一度だけ再実行する(ユーザー設定が漏れ得るのは
-        // この救済ルートに入ったときだけで、通常運用では起きない)。
+        // 古い claude CLI は --tools 自体を知らないことがある(「unknown option」で落ちる)。
+        // arguments() 内で --tools は --setting-sources より前に置いているため、両方とも
+        // 未対応の CLI ではこちらが先に検知される。終了コードが 0 以外で、診断出力に
+        // その両方の手がかりが揃っている場合に限り、当該オプションを外した引数で
+        // 一度だけ再実行する。
         if result.exitCode != 0, cli == .claude {
             let diagnostics = (result.stderr + "\n" + result.stdout).lowercased()
-            if diagnostics.contains("unknown option") && diagnostics.contains("--setting-sources") {
+            if diagnostics.contains("unknown option") && diagnostics.contains("--tools") {
+                includeTools = false
                 let fallbackArguments = arguments(
                     for: cli,
                     prompt: prompt,
                     referenceFolder: referenceFolder,
                     outputFile: outputFile,
                     model: model,
-                    includeSettingSources: false)
+                    includeSettingSources: includeSettingSources,
+                    includeTools: includeTools)
+                result = try await runProcess(with: fallbackArguments)
+            }
+        }
+
+        // 同様に、古い claude CLI は --setting-sources 自体を知らないことがある。上の --tools の
+        // フォールバック後もなお失敗している場合はそちらの結果を引き継いで判定するため、
+        // ここでも改めて result を見る(両方が unknown だった古い CLI でも、--tools →
+        // --setting-sources の順に発覚するので、最終的に両方を外した引数で再実行できる。
+        // ユーザー個人設定が漏れ得るのはこの救済ルートに入ったときだけで、通常運用では起きない)。
+        if result.exitCode != 0, cli == .claude {
+            let diagnostics = (result.stderr + "\n" + result.stdout).lowercased()
+            if diagnostics.contains("unknown option") && diagnostics.contains("--setting-sources") {
+                includeSettingSources = false
+                let fallbackArguments = arguments(
+                    for: cli,
+                    prompt: prompt,
+                    referenceFolder: referenceFolder,
+                    outputFile: outputFile,
+                    model: model,
+                    includeSettingSources: includeSettingSources,
+                    includeTools: includeTools)
                 result = try await runProcess(with: fallbackArguments)
             }
         }
@@ -379,7 +418,7 @@ enum AgentSummarizer {
         guard !trimmedRawOutput.isEmpty else {
             throw AgentSummarizeError.emptyOutput
         }
-        guard let formatted = extractMarkdown(rawOutput) else {
+        guard let formatted = extraction(rawOutput) else {
             throw AgentSummarizeError.unexpectedOutput(excerpt: excerpt(from: trimmedRawOutput))
         }
         return formatted
@@ -391,7 +430,8 @@ enum AgentSummarizer {
         referenceFolder: String?,
         outputFile: URL,
         model: String?,
-        includeSettingSources: Bool
+        includeSettingSources: Bool,
+        includeTools: Bool
     ) -> [String] {
         switch cli {
         case .claude:
@@ -403,6 +443,14 @@ enum AgentSummarizer {
             // (ヘッドレスでは未許可のツールは自動拒否されるため、そのままで安全)。
             if referenceFolder != nil {
                 args += ["--allowedTools", "Read", "Grep", "Glob"]
+            }
+            // --allowedTools は許可ルールの「追加」であり、他のツールを禁止しない。
+            // --setting-sources で読み込むプロジェクト設定(資料フォルダ側の .claude/settings.json 等)に
+            // Bash 等の許可があれば、それだけで通ってしまう。利用可能なツールそのものを固定するのは
+            // --tools の役目なので、読み取り専用ツールだけに絞る(資料フォルダが無ければ Read すら
+            // 与えず、文字起こしだけで答えさせる設計に合わせて全ツールを無効化する)。
+            if includeTools {
+                args += ["--tools", referenceFolder != nil ? "Read,Grep,Glob" : ""]
             }
             if includeSettingSources {
                 // ユーザー個人の Claude Code 設定(~/.claude/settings.json の
@@ -503,14 +551,27 @@ enum AgentSummarizer {
         return trimmed.count > 300 ? String(trimmed.prefix(300)) + "…" : trimmed
     }
 
-    /// 本文は「## 概要」で始まる想定。前置きが混ざっていたら最初の「## 」以降だけを採用する。
-    /// 「## 」自体が見つからない場合は、指示した Markdown 形式で返ってきていないとみなし nil を返す
-    /// (呼び出し側で unexpectedOutput として扱う)。
-    /// AgentCodeImpactStream からも使うため internal。
+    /// 要約専用。本文は「## 概要」で始まる想定。前置きが混ざっていたら最初の「## 」以降だけを
+    /// 採用する。「## 」自体が見つからない場合は、指示した Markdown 形式で返ってきていないとみなし
+    /// nil を返す(呼び出し側で unexpectedOutput として扱う)。
+    /// 質問応答(code-impact)は、見出し無しで本文から書き始めた応答も本文として表示したいため、
+    /// この関数ではなく extractCodeImpactMarkdown を使うこと(呼び出し元を間違えると、本文だけが
+    /// 前置き扱いで丸ごと切り捨てられる)。
     static func extractMarkdown(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let range = trimmed.range(of: "## ") else { return nil }
         return String(trimmed[range.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 質問応答(code-impact)専用の緩い整形。要約と違い、応答が「## 」見出しで始まっていなくても
+    /// 前置き扱いで切り捨てず、trim した全文をそのまま本文として返す。CodeImpactResultView は
+    /// 見出し前の本文を「無題セクション」として常時表示できるため、ここで削っても得はない
+    /// (実害: 本文 + 「## 根拠と補足」だけの応答で、extractMarkdown を使うと本文ごと消えていた)。
+    /// trim して空になる場合だけ nil を返す(呼び出し側で unexpectedOutput として扱う)。
+    /// AgentCodeImpactStream からも使うため internal。
+    static func extractCodeImpactMarkdown(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// unexpectedOutput の抜粋。改行を空白へ畳み、先頭 120 文字までに切り詰める。

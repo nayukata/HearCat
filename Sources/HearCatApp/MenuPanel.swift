@@ -284,7 +284,7 @@ struct MenuPanel: View {
             Button {
                 model.openCodeImpactPanel()
             } label: {
-                Label("会議内容を関連資料と照合", systemImage: "text.magnifyingglass")
+                Label("会話について AI に質問", systemImage: "text.magnifyingglass")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.hcSecondary)

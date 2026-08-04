@@ -673,9 +673,9 @@ struct SettingsView: View {
                         get: { settings.codeImpactAgentModels[settings.codeImpactAgent] ?? "" },
                         set: { settings.codeImpactAgentModels[settings.codeImpactAgent] = $0 }))
             } header: {
-                Text("関連資料との照合")
+                Text("会話について質問")
             } footer: {
-                settingsFooter("会議中にホットキーを押すと、AI がここまでの文字起こしと、あらかじめ紐付けた資料フォルダの中身を見比べ、話の背景や食い違いがないかを確認します。資料は読み取るだけで書き換えません。ホットキーを押した時だけ動きます。空欄なら Claude や Codex 側の設定を使います。")
+                settingsFooter("ホットキーや履歴画面から開くパネルで、AI が文字起こしを読んで質問に答えます。資料フォルダを紐付けたグループでは、資料の中身とも照合します。資料は読み取るだけで書き換えません。質問した時だけ動きます。空欄なら Claude や Codex 側の設定を使います。")
             }
 
             Section {

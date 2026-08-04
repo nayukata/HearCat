@@ -71,3 +71,16 @@ enum FloatingPanel {
             y: visible.maxY - panel.frame.height - margin)
     }
 }
+
+extension NSScreen {
+    /// マウスカーソルのある画面(取得できなければメイン画面)。ホットキーで自分から呼ぶ
+    /// パネル(CodeImpactOverlayController)や、呼び出し元のウィンドウが分からないファイル
+    /// パネル(FilePanel)など、「呼んだ瞬間の注意が向いている画面」に出したい場面で使う
+    /// 共通ヘルパー(元は各所に同じ NSEvent.mouseLocation + NSScreen.screens.first の
+    /// スニペットが重複していた)。
+    @MainActor
+    static var hcScreenWithMouse: NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main
+    }
+}
