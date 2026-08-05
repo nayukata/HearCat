@@ -200,6 +200,10 @@ struct SettingsView: View {
         .onAppear {
             refreshInputDevices()
             refreshCodexModelOptions()
+            // モデル欄が空欄(プレースホルダ「CLI の設定を使用」)のまま放置されないよう、
+            // ここで一度埋める。codexModelOptions を読み終えた直後でないと、
+            // config.toml に既定値が無い環境でキャッシュ側の候補を拾えない。
+            fillCodexModelDefaultsIfEmpty()
             // システム設定や CLI 側で変えられていても、開いた時点の実状態に合わせる。
             launchAtLogin = LoginItem.isEnabled
         }
@@ -653,7 +657,7 @@ struct SettingsView: View {
                         for: cli,
                         binding: Binding(
                             get: { settings.summaryAgentModels[cli] ?? "" },
-                            set: { settings.summaryAgentModels[cli] = $0 }))
+                            set: { settings.summaryAgentModels[cli] = modelWrite(for: cli, newValue: $0) }))
                 }
             } header: {
                 Text("自動要約")
@@ -667,11 +671,17 @@ struct SettingsView: View {
                         Text(cli.displayName).tag(cli)
                     }
                 }
+                // codex に切り替えた直後、モデル欄が空欄(プレースホルダ)のまま残らないようにする。
+                // claude に切り替えた時は何もしない(claude の既定は CLI 側の個人設定に依存するため)。
+                .onChange(of: settings.codeImpactAgent) { _, newValue in
+                    if newValue == .codex { fillCodexModelDefaultsIfEmpty() }
+                }
                 agentModelField(
                     for: settings.codeImpactAgent,
                     binding: Binding(
                         get: { settings.codeImpactAgentModels[settings.codeImpactAgent] ?? "" },
-                        set: { settings.codeImpactAgentModels[settings.codeImpactAgent] = $0 }))
+                        set: { settings.codeImpactAgentModels[settings.codeImpactAgent] =
+                            modelWrite(for: settings.codeImpactAgent, newValue: $0) }))
             } header: {
                 Text("会話について質問")
             } footer: {
@@ -745,7 +755,7 @@ struct SettingsView: View {
                     // 同意ダイアログが出るまでは選択を反映しない(バインディングも更新しない)。
                     pendingAutoSummaryEngine = next
                 } else {
-                    settings.autoSummaryEngine = next
+                    applyAutoSummaryEngine(next)
                 }
             })
         let onDeviceAvailable = OnDeviceModel.unavailableReason() == nil
@@ -791,7 +801,7 @@ struct SettingsView: View {
         ) { engine in
             Button("続ける") {
                 settings.agentSummaryConsented = true
-                settings.autoSummaryEngine = engine
+                applyAutoSummaryEngine(engine)
                 pendingAutoSummaryEngine = nil
             }
             Button("キャンセル", role: .cancel) {
@@ -805,6 +815,15 @@ struct SettingsView: View {
     private var selectedAutoSummaryCLI: AgentCLI? {
         guard let engine = settings.autoSummaryEngine else { return nil }
         return AgentCLI(summaryEngine: engine)
+    }
+
+    /// 自動要約エンジンを実際に確定させる(同意ダイアログを経た場合・経ない場合の両方から呼ぶ)。
+    /// codex に変わった時だけモデル欄を埋める(claude はここで埋めない。挙動を変えないスコープ)。
+    private func applyAutoSummaryEngine(_ next: SummaryEngine?) {
+        settings.autoSummaryEngine = next
+        if let next, AgentCLI(summaryEngine: next) == .codex {
+            fillCodexModelDefaultsIfEmpty()
+        }
     }
 
     /// モデル入力欄。用途ごとに保存先が違う(要約用と照合用)ため、
@@ -860,6 +879,61 @@ struct SettingsView: View {
         codexModelOptions = cache.models
             .filter { $0.visibility == "list" }
             .map { AgentModelOption(value: $0.slug, label: $0.displayName) }
+    }
+
+    /// codex 欄への書き込みで、空文字が確定した時だけ既定値に置き換える。claude はそのまま
+    /// 空文字を許す(claude の既定は CLI 側の個人設定に依存するため、勝手に埋めると
+    /// 実行モデルが変わってしまう。今回のスコープ外)。何か入っている書き込みはそのまま通す。
+    private func modelWrite(for cli: AgentCLI, newValue: String) -> String {
+        guard cli == .codex, newValue.isEmpty else { return newValue }
+        return resolvedCodexDefaultModel() ?? newValue
+    }
+
+    /// summaryAgentModels[.codex] / codeImpactAgentModels[.codex] が空文字のままなら、
+    /// 解決できた既定値で埋める。「モデルなしはありえない」という要望に応える処理で、
+    /// 既に何か入っていれば上書きしない(ユーザーが選んだ値を勝手に変えない)。
+    /// 解決できなければ何もしない(従来どおり空欄 + プレースホルダ「CLI の設定を使用」)。
+    private func fillCodexModelDefaultsIfEmpty() {
+        guard let defaultModel = resolvedCodexDefaultModel(), !defaultModel.isEmpty else { return }
+        if (settings.summaryAgentModels[.codex] ?? "").isEmpty {
+            settings.summaryAgentModels[.codex] = defaultModel
+        }
+        if (settings.codeImpactAgentModels[.codex] ?? "").isEmpty {
+            settings.codeImpactAgentModels[.codex] = defaultModel
+        }
+    }
+
+    /// codex の既定モデルを解決する。優先順:
+    /// 1. ~/.codex/config.toml のトップレベル `model = "..."` (実際に codex CLI 本体が
+    ///    今使っている値なので、この欄の「既定」に最も近い)。
+    /// 2. 無ければ codexModelOptions(models_cache.json)の先頭。models_cache.json は
+    ///    priority 順に並んでいるため、先頭が実質的な既定候補になる。
+    /// 3. どちらも無ければ nil。codex 未導入・キャッシュ未取得の環境で存在しないモデル名を
+    ///    発明しない(nil の間は呼び出し側が従来どおり空欄のままにする)。
+    private func resolvedCodexDefaultModel() -> String? {
+        if let fromConfig = Self.codexDefaultModelFromConfig(), !fromConfig.isEmpty {
+            return fromConfig
+        }
+        return codexModelOptions.first?.value
+    }
+
+    /// ~/.codex/config.toml のトップレベルテーブルにある `model = "..."` 行を読む。
+    /// config.toml は codex CLI 自身が書き込む TOML で、完全なパーサを書くほどの構造は
+    /// 必要ないため、行単位の正規表現で `model` キーだけを拾う。`[profile.xxx]` のような
+    /// テーブル見出し行に達したらそこで走査を止める(プロファイル別の model は既定値ではなく、
+    /// トップレベルの model と意味が違うため混同しない)。
+    private static func codexDefaultModelFromConfig() -> String? {
+        let configURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/config.toml")
+        guard let contents = try? String(contentsOf: configURL, encoding: .utf8) else { return nil }
+        for rawLine in contents.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") { break }
+            guard let match = line.firstMatch(of: /^model\s*=\s*"([^"]*)"/) else { continue }
+            let value = String(match.1)
+            return value.isEmpty ? nil : value
+        }
+        return nil
     }
 
     /// 入力デバイスの一覧を取得し直す。動的な抜き差し監視はスコープ外なので、
