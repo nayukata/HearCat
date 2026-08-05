@@ -148,6 +148,9 @@ final class AppModel {
     private(set) var codeImpactQuestion: String?
     /// 同じ会議のあいだの Q&A 履歴。追加質問で前のやり取りが画面から消えないよう、完了した調査を積んでいく。
     private(set) var codeImpactTurns: [CodeImpactTurn] = []
+    /// 履歴がある状態で進行中のターンが完了しなかった(失敗した)ときのエラー文言。
+    /// 全画面の失敗表示ではなく会話の流れの中に出し、次の調査開始で消す。
+    private(set) var codeImpactTurnError: String?
     @ObservationIgnored private var codeImpactTask: Task<Void, Never>?
     @ObservationIgnored private var codeImpactRequestID: UUID?
     @ObservationIgnored private var codeImpactOverlayController: CodeImpactOverlayController?
@@ -999,7 +1002,7 @@ final class AppModel {
         do {
             _ = try codeImpactContext()
         } catch {
-            codeImpactAnalysisState = .failed(error.localizedDescription)
+            failCodeImpactAnalysis(error.localizedDescription, using: cli)
             return
         }
         guard settings.codeImpactConsented else {
@@ -1033,10 +1036,24 @@ final class AppModel {
         codeImpactRequestID = nil
         codeImpactPartialText = ""
         codeImpactActivity = nil
+        // 対象切り替え(switchCodeImpactTarget)経由でも呼ばれるため、失敗表示も一緒に片づける。
+        codeImpactTurnError = nil
         if let cli, !codeImpactTurns.isEmpty {
             codeImpactAnalysisState = .completed(cli)
         } else {
             codeImpactAnalysisState = .idle
+        }
+    }
+
+    /// 進行中のターンが失敗したときの遷移。会話履歴が無ければ従来どおり全画面の失敗表示、
+    /// 履歴があれば会話表示(completed)を保ったまま codeImpactTurnError で会話内に知らせる
+    /// (キャンセル時と同じく、完了済みの履歴を画面から消さないため)。
+    private func failCodeImpactAnalysis(_ message: String, using cli: AgentCLI) {
+        if codeImpactTurns.isEmpty {
+            codeImpactAnalysisState = .failed(message)
+        } else {
+            codeImpactTurnError = message
+            codeImpactAnalysisState = .completed(cli)
         }
     }
 
@@ -1121,7 +1138,7 @@ final class AppModel {
         do {
             context = try codeImpactContext()
         } catch {
-            codeImpactAnalysisState = .failed(error.localizedDescription)
+            failCodeImpactAnalysis(error.localizedDescription, using: cli)
             return
         }
         codeImpactActiveReferenceFolder = context.referenceFolder
@@ -1144,6 +1161,8 @@ final class AppModel {
         let question = codeImpactQuestion
         codeImpactAnalysisState = .analyzing(cli)
         codeImpactPartialText = ""
+        // 前回の失敗表示が残っていても、新しい調査を始めた時点で消す。
+        codeImpactTurnError = nil
         codeImpactActivity = nil
         codeImpactSectionOverrides = [:]
         codeImpactTask?.cancel()
@@ -1223,7 +1242,7 @@ final class AppModel {
                 self?.codeImpactAnalysisState = .completed(cli)
             } catch {
                 guard !Task.isCancelled, let self, self.codeImpactRequestID == requestID else { return }
-                self.codeImpactAnalysisState = .failed(error.localizedDescription)
+                self.failCodeImpactAnalysis(error.localizedDescription, using: cli)
             }
             if self?.codeImpactRequestID == requestID {
                 self?.codeImpactTask = nil

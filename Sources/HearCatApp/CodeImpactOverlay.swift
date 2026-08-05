@@ -421,6 +421,17 @@ private struct CodeImpactOverlayView: View {
                                 isLatest: true, cli: cli)
                                 .id(Self.streamingTurnAnchorID)
                         }
+                        // 進行中のターンが失敗したとき、失敗した質問のバブルとエラーを
+                        // 会話の続きとして描く(失敗のたびに履歴ごと全画面表示へ
+                        // 切り替わらないように。履歴が無い初回失敗だけ failedView が出る)。
+                        if let turnError = model.codeImpactTurnError {
+                            if !model.codeImpactTurns.isEmpty {
+                                Rectangle().fill(HCColor.mistDivider).frame(height: 1)
+                                    .padding(.vertical, 12)
+                            }
+                            questionBubble(for: model.codeImpactQuestion)
+                            turnErrorRow(turnError)
+                        }
                         // 新しい質問の送信直後に下端へ寄せるための着地点(高さ 1 の透明ビュー)。
                         // ストリーミング中の追従自体は defaultScrollAnchor(.bottom) が担う。
                         Color.clear.frame(height: 1).id(Self.bottomAnchorID)
@@ -618,6 +629,54 @@ private struct CodeImpactOverlayView: View {
                 .foregroundStyle(HCColor.mistWhiteDim)
             Spacer()
             CopyButton { result }
+        }
+    }
+
+    /// 進行中のターンが失敗したときに、会話の流れの中(失敗した質問バブルの直下)へ出す
+    /// エラー行。履歴ごと消える全画面の failedView は履歴が無い初回失敗専用で、
+    /// 履歴があるときはこの行でエラーと再試行だけを示す。
+    private func turnErrorRow(_ error: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(HCFont.style(.caption1, weight: .semibold))
+                .foregroundStyle(HCColor.cinnamon)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("調査できませんでした")
+                    .font(HCFont.style(.caption1, weight: .semibold))
+                    .foregroundStyle(HCColor.mistWhite)
+                Text(error)
+                    .font(HCFont.caption)
+                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("再試行") { retryFailedTurn() }
+                .buttonStyle(.plain)
+                .font(HCFont.caption)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .foregroundStyle(HCColor.cinnamon)
+                .overlay(
+                    HCRadius.shape(HCRadius.chip)
+                        .stroke(HCColor.cinnamonStroke, lineWidth: 1))
+                .pointingHandOnHover()
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            HCRadius.shape(HCRadius.control)
+                .fill(HCColor.mistDarkSurface))
+        .padding(.top, 8)
+    }
+
+    /// 会話内エラーからの再試行。失敗したのが追加質問なら follow-up(直前の結果を踏まえる)
+    /// として投げ直し、質問なしのダイジェスト再調査ならそのまま投げ直す。
+    private func retryFailedTurn() {
+        let question = model.codeImpactQuestion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if question.isEmpty {
+            model.requestCodeImpactAnalysis(question: nil)
+        } else {
+            model.requestFollowUpCodeImpact(question: question)
         }
     }
 
