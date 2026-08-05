@@ -67,6 +67,8 @@ enum AgentCodeImpactStream {
     ///     都度渡す(呼び出し側で 1 度だけ組んで固定しない)。段階的フォールバックで
     ///     resumeSessionID を落として再実行する際に、標準入力とプロンプトの継続状態を
     ///     必ず一致させるため(差分文字列を新規会話に渡す事故を防ぐ)。
+    ///   - decisionContext: 「決まったことの記録」への索引添付(AgentCodeImpactAnalyzer.buildPrompt
+    ///     参照)。質問が無ければ buildPrompt 側で使われない。
     ///   - resumeSessionID: 継続したい claude セッション ID。nil なら新規会話。
     ///   - onEvent: ストリーム中の通知。@Sendable(バックグラウンドの読み取りキューから呼ぶ)。
     /// - Returns: 抽出済み Markdown と、今回判明したセッション ID(セッションが尽きて
@@ -78,6 +80,7 @@ enum AgentCodeImpactStream {
         referenceFolder: String?,
         question: String?,
         previousResult: String?,
+        decisionContext: String?,
         resumeSessionID: String?,
         onEvent: @escaping @Sendable (CodeImpactStreamEvent) -> Void
     ) async throws -> (result: String, sessionID: String?) {
@@ -139,7 +142,7 @@ enum AgentCodeImpactStream {
             }
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: continuity,
-                hasReferenceFolder: hasReferenceFolder)
+                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext)
 
             let arguments = arguments(
                 prompt: prompt, model: model, config: config,
@@ -200,7 +203,7 @@ enum AgentCodeImpactStream {
                     referenceFolder: referenceFolder,
                     prompt: AgentCodeImpactAnalyzer.buildPrompt(
                         question: question, previousResult: previousResult, continuity: .fresh,
-                        hasReferenceFolder: hasReferenceFolder),
+                        hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext),
                     outputPrefix: "code-impact-stream-fallback",
                     model: model,
                     extraction: AgentSummarizer.extractCodeImpactMarkdown)

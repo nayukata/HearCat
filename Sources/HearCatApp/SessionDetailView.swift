@@ -3,6 +3,13 @@ import HearCatKit
 import HearCatSummarize
 import SwiftUI
 import UniformTypeIdentifiers
+import os
+
+/// 決定事項ログ(decisions.json)の読み書き失敗を残すための内部ログ。要約の相乗り抽出側
+/// (AppModel.swift の decisionExtractionLogger)とは別カテゴリにする(取り込み時の失敗と、
+/// この画面での閲覧・検品操作の失敗は原因が別なので、ログ上でも分けて追える方がよい)。
+private let decisionInspectionLogger = Logger(
+    subsystem: SessionStore.bundleIdentifier, category: "decision-inspection")
 
 /// 過去セッションの詳細。文字起こしの閲覧、録音の再生、要約の生成、削除ができる。
 struct SessionDetailView: View {
@@ -58,6 +65,12 @@ struct SessionDetailView: View {
     /// body 側の .task(id: session.id) からもジャンプを試したいが、そこは ScrollViewReader の
     /// スコープの外にあるため、ここに控えて共有する。
     @State private var scrollProxy: ScrollViewProxy?
+    /// この会議で決まった・変わったこと(検品ブロック)の表示行。所属グループが無い、
+    /// このセッション由来のエントリが1件も無い、decisions.json が壊れている、のいずれかで
+    /// 空のまま(見出しだけの空ブロックは出さない)。
+    @State private var decisionRows: [DecisionRow] = []
+    /// 「内容を修正…」で開くシートの対象。nil でない間だけ出る。
+    @State private var editingDecision: DecisionRow?
 
     private struct ShareNotice: Equatable {
         let message: String
@@ -129,6 +142,11 @@ struct SessionDetailView: View {
         // 書かれていないことがある。refreshSessions のたびに読み直して追従する。
         .onChange(of: model.sessionsVersion) { load(forceNewPlayer: false) }
         .onDisappear { player?.teardown() }
+        .sheet(item: $editingDecision) { row in
+            DecisionEditSheet(row: row) { newText in
+                updateDecision(row, newText: newText)
+            }
+        }
     }
 
     private var header: some View {
@@ -286,6 +304,17 @@ struct SessionDetailView: View {
                             ? "exclamationmark.triangle" : "checkmark.circle")
                         .foregroundStyle(shareNotice.isError ? .orange : .secondary)
                 }
+                if !decisionRows.isEmpty {
+                    GroupBox {
+                        DecisionBlockView(
+                            rows: decisionRows,
+                            onJump: { jumpToTranscript(offsetSeconds: $0) },
+                            onEdit: { editingDecision = $0 },
+                            onRemove: { removeDecision($0) })
+                    } label: {
+                        Text("この会議で決まった・変わったこと")
+                    }
+                }
                 if let summary {
                     GroupBox {
                         SummaryView(markdown: summary)
@@ -406,6 +435,8 @@ struct SessionDetailView: View {
         // 実行中のエージェント要約は止めない(生成は AppModel 側で走り続ける)。
         // この画面から離れた以上キャンセル UI は出せないので、参照だけ外す。
         agentSummarizeTask = nil
+        decisionRows = []
+        editingDecision = nil
     }
 
     /// forceNewPlayer が false の再読込(sessionsVersion 変化時)では、再生中に
@@ -424,6 +455,74 @@ struct SessionDetailView: View {
             player?.teardown()
             player = SessionPlayer(audioURL: audioURL, otherURL: session.audioOtherURL)
         }
+        loadDecisions()
+    }
+
+    /// 検品ブロックの表示行を、所属グループの decisions.json から作り直す。
+    /// 所属グループが無いセッションにはそもそも記録先が無いので空のまま。
+    /// ファイルが壊れている場合も、画面をエラーで塞がず空のまま(ログにだけ残す)。
+    private func loadDecisions() {
+        guard let folder = session.folder else {
+            decisionRows = []
+            return
+        }
+        do {
+            let log = try DecisionLogStore.load(folder: folder)
+            decisionRows = DecisionRow.rows(
+                from: log, sessionDirectoryName: session.directory.lastPathComponent)
+        } catch {
+            decisionInspectionLogger.error(
+                "decisions.json の読み込みに失敗: \(error.localizedDescription, privacy: .public)")
+            decisionRows = []
+        }
+    }
+
+    /// 「内容を修正…」の保存。書き込みに失敗しても画面は塞がず、ログにだけ残す
+    /// (このシートの操作は要約の再生成でいつでも復元できる軽い操作という位置づけのため)。
+    private func updateDecision(_ row: DecisionRow, newText: String) {
+        guard let folder = session.folder else { return }
+        do {
+            try DecisionLogStore.updateEntryText(
+                folder: folder, sessionDirectoryName: session.directory.lastPathComponent,
+                topicID: row.topicID, newText: newText)
+        } catch {
+            decisionInspectionLogger.error(
+                "決定事項の修正に失敗: \(error.localizedDescription, privacy: .public)")
+        }
+        loadDecisions()
+    }
+
+    /// 「記録に残さない」。確認ダイアログは出さない(要約の再生成でいつでも復元できるため)。
+    /// 行が消えること自体が視覚的なフィードバックになる。
+    private func removeDecision(_ row: DecisionRow) {
+        guard let folder = session.folder else { return }
+        do {
+            try DecisionLogStore.removeEntries(
+                folder: folder, sessionDirectoryName: session.directory.lastPathComponent,
+                topicID: row.topicID)
+        } catch {
+            decisionInspectionLogger.error(
+                "決定事項の削除に失敗: \(error.localizedDescription, privacy: .public)")
+        }
+        loadDecisions()
+    }
+
+    /// 検品ブロックの時刻チップから文字起こしの該当位置へ移動する。録音があれば
+    /// transcriptRow の時刻チップと同じ「その位置から再生」に、録音が無ければ
+    /// 質問応答パネルからのジャンプと同じ「収束スクロール + 一時ハイライト」に倣う
+    /// (このセッション由来のエントリしか出さないブロックなので、time は必ず
+    /// このセッション内の経過秒として解釈できる)。
+    private func jumpToTranscript(offsetSeconds: Int) {
+        let offset = TimeInterval(offsetSeconds)
+        if let player, player.hasAudio {
+            followsPlayback = true
+            player.playFrom(offset)
+            return
+        }
+        guard let proxy = scrollProxy,
+            let lineID = transcriptLineID(at: offset, in: transcriptLines)
+        else { return }
+        revealCoordinator.reveal(lineID, proxy: proxy)
     }
 
     private func summarize() async {
@@ -712,19 +811,20 @@ private struct PlaybackTracker: View {
         Color.clear
             .frame(width: 0, height: 0)
             .onChange(of: player.currentTime, initial: true) {
-                let id = Self.lineID(at: player.currentTime, in: lines)
+                let id = transcriptLineID(at: player.currentTime, in: lines)
                 if id != currentLineID { currentLineID = id }
             }
     }
+}
 
-    /// 指定の再生位置にあたる行。その位置までに始まった最後の行を選ぶ。
-    /// 最初の発話より前(頭出し直後など)は、どの行でもないので nil。
-    /// offset が nil の行(旧形式ヘッダーの混入時のみ)は選ばれない。
-    private static func lineID(
-        at time: TimeInterval, in lines: [TranscriptLine]
-    ) -> TranscriptLine.ID? {
-        lines.last { ($0.offset ?? .infinity) <= time }?.id
-    }
+/// 指定の経過秒にあたる行。その位置までに始まった最後の行を選ぶ。最初の発話より前
+/// (頭出し直後など)は、どの行でもないので nil。offset が nil の行(旧形式ヘッダーの
+/// 混入時のみ)は選ばれない。再生位置の追従(PlaybackTracker)と検品ブロックの時刻ジャンプ
+/// (jumpToTranscript)が、この「経過秒→行」の規則を共有するための切り出し。
+private func transcriptLineID(
+    at time: TimeInterval, in lines: [TranscriptLine]
+) -> TranscriptLine.ID? {
+    lines.last { ($0.offset ?? .infinity) <= time }?.id
 }
 
 /// 要約を生成したエンジンのバッジ。「この要約はどのエンジンが作ったか」を後から見ても
@@ -734,12 +834,7 @@ private struct EngineChip: View {
     let engine: SummaryEngine
 
     var body: some View {
-        Text(engine.displayName)
-            .font(HCFont.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(.quaternary))
+        HCTextChip(text: engine.displayName)
     }
 }
 

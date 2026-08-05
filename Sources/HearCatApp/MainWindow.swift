@@ -55,12 +55,30 @@ struct MainWindow: View {
         return String(payload.dropFirst(folderDragPrefix.count))
     }
 
+    /// グループ選択の選択タグ接頭辞。セッション ID (ディレクトリ名由来) やライブ ID とは
+    /// 形が被らないようにする (folderDragPrefix とは別物: こちらは List の selection、
+    /// 上はドラッグ&ドロップのペイロード)。
+    private static let groupSelectionPrefix = "group:"
+
+    static func groupSelectionTag(_ folder: String) -> String {
+        groupSelectionPrefix + folder
+    }
+
+    private static func groupName(fromSelectionTag tag: String) -> String? {
+        guard tag.hasPrefix(groupSelectionPrefix) else { return nil }
+        return String(tag.dropFirst(groupSelectionPrefix.count))
+    }
+
     var body: some View {
         NavigationSplitView {
             sidebar
         } detail: {
             if selection.contains(Self.liveID), model.status.active {
                 LiveSessionView(model: model)
+            } else if selection.count == 1, let id = selection.first,
+                let folder = Self.groupName(fromSelectionTag: id)
+            {
+                GroupDetailView(model: model, folder: folder, onSelectSession: { select($0) })
             } else if selection.count == 1, let id = selection.first,
                 let session = model.sessions.first(where: { $0.id == id })
             {
@@ -336,18 +354,22 @@ struct MainWindow: View {
     }
 
     /// グループの見出し行。開閉の chevron、フォルダ名、関連フォルダ chip、件数 badge を持つ。
+    /// 行名(chevron 以外の部分)をクリックするとグループ画面を選択する。開閉は chevron の
+    /// クリックだけに限る(以前は行のどこでも開閉できたが、選択と競合するため分離した)。
     /// ドラッグ&ドロップ(並べ替え・セッションの受け入れ)と右クリックメニューはこの行に付く。
     private func folderHeader(_ folder: String, count: Int, hasVisibleChildren: Bool) -> some View {
         HStack(spacing: 6) {
-            Button {
-                withAnimation { toggleCollapsed(folder) }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .rotationEffect(.degrees(collapsedFolders.contains(folder) ? 0 : 90))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .font(HCFont.caption)
+            // Button にしないのは、この行がドラッグ元(.onDrag)でもあり、macOS の List では
+            // ドラッグ元の行内の Button がクリックを受け取れないため。onTapGesture は
+            // ドラッグより優先されるので確実に効く(以前の「行全体クリックで開閉」も
+            // この仕組みで動いていた)。
+            Image(systemName: "chevron.right")
+                .rotationEffect(.degrees(collapsedFolders.contains(folder) ? 0 : 90))
+                .foregroundStyle(.secondary)
+                .font(HCFont.caption)
+                .frame(width: 16, height: 16)
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation { toggleCollapsed(folder) } }
             Label {
                 HStack(spacing: 6) {
                     Text(folder)
@@ -363,9 +385,14 @@ struct MainWindow: View {
             }
         }
         .badge(count)
-        // 行のどこをクリックしても開閉できるようにする (DisclosureGroup 時代と同じ操作感)。
-        // ドラッグは押して動かした時だけ始まるため、クリックでの開閉と両立する。
+        // tag は List の選択ハイライト表示用。ただしドラッグ元の行は List のクリック選択が
+        // 効かないため、実際の選択は下の onTapGesture が selection を直接書いて行う
+        // (接頭辞 group: は folderDragPrefix (ドラッグのペイロード) とは別物)。
+        .tag(Self.groupSelectionTag(folder))
         .contentShape(Rectangle())
+        // 行名クリックでグループ画面を選択する (開閉は chevron 専任)。onTapGesture なのは
+        // 上の chevron と同じ理由 (ドラッグ元の行では List 任せのクリック選択が死ぬため)。
+        .onTapGesture { selection = [Self.groupSelectionTag(folder)] }
         // ドラッグ元は contentShape の後ろに置き、名前ラベルだけでなく行のどこからでも
         // 掴めるようにする。onDrag なのは、draggable(_:preview:) がログ上ドロップ判定を
         // 一切発火させなかったため (プレビュー付き draggable はペイロード登録が壊れる疑い)。
@@ -383,7 +410,6 @@ struct MainWindow: View {
                 .foregroundStyle(HCColor.mistWhite)
                 .fixedSize()
         }
-        .onTapGesture { withAnimation { toggleCollapsed(folder) } }
         .contextMenu {
             Button("グループ名を変更…") {
                 folderRenameText = folder

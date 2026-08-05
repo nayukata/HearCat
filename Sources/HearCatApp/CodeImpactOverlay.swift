@@ -585,12 +585,20 @@ private struct CodeImpactOverlayView: View {
     ) -> some View {
         let isInteractive = isChoicesInteractive(turnID: turnID, isLatest: isLatest)
         if let turnID {
-            let sections = CodeImpactSectionsCache.shared.sections(for: turnID) {
-                CodeImpactResultView.parseSections(from: result)
+            let parsed = CodeImpactSectionsCache.shared.parsed(for: turnID) {
+                // ```decision-history フェンスの抽出は parseSections より前に行う。フェンスを
+                // 取り除いた本文だけを渡すことで、フェンスの生 JSON が通常のセクション本文に
+                // 紛れ込まないようにする(choices は逆にセクション解析後に抜き出しているが、
+                // decision-history はプロンプト側で単独フェンス・単一箇所出力を約束しているため
+                // 前処理のほうが単純で、かつ HearCatKit 側でテストできる)。
+                let extraction = DecisionHistoryFence.extractFirst(from: result)
+                return CodeImpactSectionsCache.Parsed(
+                    sections: CodeImpactResultView.parseSections(from: extraction.body),
+                    decisionHistoryPrompt: extraction.prompt)
             }
             CodeImpactResultView(
-                sections: sections, model: model, turnIndex: turnIndex,
-                isInteractive: isInteractive)
+                sections: parsed.sections, decisionHistoryPrompt: parsed.decisionHistoryPrompt,
+                model: model, turnIndex: turnIndex, isInteractive: isInteractive)
         } else {
             CodeImpactResultView(
                 result: result, model: model, turnIndex: turnIndex,
@@ -1070,22 +1078,39 @@ private struct CodeImpactResultView: View {
     /// パース済みの sections を渡す(下の sections: init)ため、ここでの再パースは
     /// 進行中のターン(ストリーミングの断片)だけで起きる。
     private let sections: [Section]
+    /// ```decision-history フェンス(経緯回答が該当議題を指定するもの)の抽出結果。
+    /// 非 nil ならタイムラインカード(DecisionHistoryCardsView)を本文の下に描く。
+    /// フェンスの抽出は sections のパースより前に行う(DecisionHistoryFence 参照)ため、
+    /// sections にはフェンスの生 JSON は含まれない。
+    private let decisionHistoryPrompt: DecisionHistoryFence.Prompt?
+    /// ```decision-history フェンスの開始行はあるが閉じていない(ストリーミング途中)。
+    /// 確定ターン(sections: init)はこの状態を経由しないため常に false。
+    private let isDecisionHistoryPending: Bool
 
     init(result: String, model: AppModel, turnIndex: Int, isInteractive: Bool) {
         self.model = model
         self.turnIndex = turnIndex
         self.isInteractive = isInteractive
         self.sessionStartDate = model.codeImpactTargetSessionStartDate
-        self.sections = Self.parseSections(from: result)
+        let extraction = DecisionHistoryFence.extractFirst(from: result)
+        self.sections = Self.parseSections(from: extraction.body)
+        self.decisionHistoryPrompt = extraction.prompt
+        self.isDecisionHistoryPending = extraction.isPending
     }
 
-    /// 確定ターン用: 呼び出し側で既にパース済みの sections を受け取り、再パースを省く。
-    init(sections: [Section], model: AppModel, turnIndex: Int, isInteractive: Bool) {
+    /// 確定ターン用: 呼び出し側(CodeImpactSectionsCache 経由)で既にパース済みの sections と
+    /// decisionHistoryPrompt を受け取り、再パースを省く。
+    init(
+        sections: [Section], decisionHistoryPrompt: DecisionHistoryFence.Prompt?,
+        model: AppModel, turnIndex: Int, isInteractive: Bool
+    ) {
         self.model = model
         self.turnIndex = turnIndex
         self.isInteractive = isInteractive
         self.sessionStartDate = model.codeImpactTargetSessionStartDate
         self.sections = sections
+        self.decisionHistoryPrompt = decisionHistoryPrompt
+        self.isDecisionHistoryPending = false
     }
 
     fileprivate struct Section {
@@ -1292,6 +1317,23 @@ private struct CodeImpactResultView: View {
             ForEach(Array(sectionsWithoutChoices.enumerated()), id: \.offset) { index, section in
                 sectionView(section: section)
                     .padding(.top, index == 0 ? 0 : 8)
+            }
+            if let decisionHistoryPrompt {
+                // 経緯回答のタイムラインカード。AI の文章ではなく decisions.json の記録を
+                // そのまま描く(DecisionHistoryCardsView 参照)。
+                DecisionHistoryCardsView(topicIds: decisionHistoryPrompt.topicIds, model: model)
+                    .padding(.top, sectionsWithoutChoices.isEmpty ? 0 : 18)
+            } else if isDecisionHistoryPending {
+                // カードの生成待ち(```decision-history フェンスの生成中)。choices の
+                // 生成待ちと同じ、場所取りのスピナーだけを出す。
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                    Spacer()
+                }
+                .padding(.vertical, 10)
             }
             ForEach(Array(trailingChoicePrompts.enumerated()), id: \.offset) { index, prompt in
                 ChoicesView(prompt: prompt, model: model, isInteractive: isInteractive)
@@ -2022,21 +2064,26 @@ private struct ChoicesView: View {
     }
 }
 
-/// 確定ターンのパース結果(CodeImpactResultView.Section)のキャッシュ。ストリーミング中
-/// (120ms ごと)の再描画では、進行中のターン以外は結果文字列が変わらないため、
-/// 過去ターンぶんの CodeImpactResultView.init → parseSections を毎回やり直す必要はない。
+/// 確定ターンのパース結果のキャッシュ。ストリーミング中(120ms ごと)の再描画では、
+/// 進行中のターン以外は結果文字列が変わらないため、過去ターンぶんの
+/// DecisionHistoryFence.extractFirst → parseSections を毎回やり直す必要はない。
 /// turn.id(UUID)をキーに持つだけの単純な Dictionary(要素数は高々数十件なので、
 /// ResolvedPathCache のように NSCache に任せるほどの規模ではない)。
 @MainActor
 private final class CodeImpactSectionsCache {
     static let shared = CodeImpactSectionsCache()
 
-    private var storage: [UUID: [CodeImpactResultView.Section]] = [:]
+    /// sections(```choices 等を含むセクション本文)と decisionHistoryPrompt
+    /// (```decision-history フェンスの抽出結果)は同じ1回のパースで確定するため、セットで持つ。
+    struct Parsed {
+        let sections: [CodeImpactResultView.Section]
+        let decisionHistoryPrompt: DecisionHistoryFence.Prompt?
+    }
+
+    private var storage: [UUID: Parsed] = [:]
 
     /// 既にパース済みならそれを返し、無ければ parse() の結果を格納してから返す。
-    func sections(
-        for turnID: UUID, parse: () -> [CodeImpactResultView.Section]
-    ) -> [CodeImpactResultView.Section] {
+    func parsed(for turnID: UUID, parse: () -> Parsed) -> Parsed {
         if let cached = storage[turnID] { return cached }
         let parsed = parse()
         storage[turnID] = parsed

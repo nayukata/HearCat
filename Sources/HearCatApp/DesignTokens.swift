@@ -196,6 +196,9 @@ enum HCColor {
     static let mistBody = Color(red: 0xD8 / 255, green: 0xDD / 255, blue: 0xE0 / 255)  // #D8DDE0
     /// 補助テキスト(サブヘッダー、キャプション)。
     static let mistWhiteDim = Color(red: 0x8B / 255, green: 0x94 / 255, blue: 0x97 / 255)  // #8B9497
+    /// mistWhiteDim より明るい灰白。読ませたいが mistWhite ほど主張させたくないテキスト用
+    /// (経緯カードの過去エントリ本文、理由の引用ブロックなど)。
+    static let mistWhiteBright = Color(red: 0xB8 / 255, green: 0xC0 / 255, blue: 0xC3 / 255)  // #B8C0C3
     /// さらに一段薄い補助テキスト(「情報は出しているが目立たせない」)。
     static let mistWhiteDeeper = Color(red: 0x92 / 255, green: 0x98 / 255, blue: 0xA0 / 255)  // #9298A0
     /// 入力欄プレースホルダー・disabled のテキスト。
@@ -222,6 +225,13 @@ enum HCColor {
     static let youTextLight = Color(red: 0x8A / 255, green: 0x4E / 255, blue: 0x12 / 255)  // #8A4E12
     static let youBackgroundLight = Color(red: 255 / 255, green: 176 / 255, blue: 74 / 255).opacity(0.22)
 
+    // 決定ステータスチップ(検品ブロック)の「確定」配色。緑/ティール系はどこにも
+    // 無かったので新規に追加する。「仮」は話者チップの「相手」(琥珀/オレンジ系)を
+    // そのまま流用するので、ここには置かない(新しい色を増やさないため)。
+    static let confirmedText = Color(red: 0x7C / 255, green: 0xD9 / 255, blue: 0xB0 / 255)  // #7CD9B0
+    static let confirmedBackground = Color(red: 0x2E / 255, green: 0x8A / 255, blue: 0x5E / 255).opacity(0.22)
+    static let confirmedTextLight = Color(red: 0x14 / 255, green: 0x7A / 255, blue: 0x52 / 255)  // #147A52
+    static let confirmedBackgroundLight = Color(red: 0x2E / 255, green: 0x8A / 255, blue: 0x5E / 255).opacity(0.14)
 }
 
 /// アプリ全体で使う落ち着いた secondary button のスタイル。
@@ -583,6 +593,22 @@ struct SpeakerChip: View {
             .padding(.vertical, 1)
             .foregroundStyle(textColor)
             .background(Capsule().fill(backgroundColor))
+    }
+}
+
+/// 小さな補足チップ。「このバッジはどんな由来か」を一言添えるための共通の見た目
+/// (要約のエンジン表示、検品ブロックの「新規」バッジなど)。ここを直書きで増やすと
+/// 画面ごとに丸みや余白が微妙に揃わなくなるため、この形の補足チップは必ずここを通す。
+struct HCTextChip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(HCFont.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(.quaternary))
     }
 }
 

@@ -22,7 +22,8 @@ enum AgentCodeImpactAnalyzer {
         transcript: String,
         referenceFolder: String?,
         question: String? = nil,
-        previousResult: String? = nil
+        previousResult: String? = nil,
+        decisionContext: String? = nil
     ) async throws -> String {
         try await AgentSummarizer.execute(
             using: cli,
@@ -30,7 +31,7 @@ enum AgentCodeImpactAnalyzer {
             referenceFolder: referenceFolder,
             prompt: buildPrompt(
                 question: question, previousResult: previousResult, continuity: .fresh,
-                hasReferenceFolder: referenceFolder != nil),
+                hasReferenceFolder: referenceFolder != nil, decisionContext: decisionContext),
             outputPrefix: "code-impact",
             model: model,
             // 質問応答は要約と違い、応答が「## 」見出しから始まらなくても本文として表示したいため、
@@ -67,8 +68,13 @@ enum AgentCodeImpactAnalyzer {
     /// hasReferenceFolder は、資料フォルダが紐付いているか(=カレントディレクトリの資料や
     /// コードを読ませてよいか)。false の間は、資料やコードへの言及・参照ファイル行の指示を
     /// プロンプトから外し、文字起こしだけを根拠にする文言に差し替える。
+    ///
+    /// decisionContext は「決まったことの記録」(DecisionLogStore)への索引添付
+    /// (AppModel.codeImpactDecisionContext 参照)。質問が無いダイジェスト調査には
+    /// 決定の経緯を answer する概念自体が無いため、質問がある場合にだけ使う。
     static func buildPrompt(
-        question: String?, previousResult: String?, continuity: TranscriptContinuity, hasReferenceFolder: Bool
+        question: String?, previousResult: String?, continuity: TranscriptContinuity,
+        hasReferenceFolder: Bool, decisionContext: String? = nil
     ) -> String {
         let trimmedQuestion = question?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmedQuestion.isEmpty else {
@@ -89,7 +95,17 @@ enum AgentCodeImpactAnalyzer {
                 直前の調査で既に触れた内容は繰り返さず、次の質問に絞って答えてください。
                 """)
         }
-        parts.append(questionPrompt(question: trimmedQuestion, hasReferenceFolder: hasReferenceFolder))
+        let hasDecisionIndex: Bool
+        if let decisionContext, !decisionContext.isEmpty {
+            parts.append(decisionContext)
+            hasDecisionIndex = true
+        } else {
+            hasDecisionIndex = false
+        }
+        parts.append(
+            questionPrompt(
+                question: trimmedQuestion, hasReferenceFolder: hasReferenceFolder,
+                hasDecisionIndex: hasDecisionIndex))
         return parts.joined(separator: "\n\n")
     }
 
@@ -203,6 +219,23 @@ enum AgentCodeImpactAnalyzer {
         options は 2〜4 個。「その他」の選択肢は入れない(アプリ側が自由入力欄を自動で付ける)。ユーザーは選択肢のラベルか自由入力を次のメッセージで返してくるので、それを回答として扱って続きを答えること。
         """
 
+    /// questionPrompt 専用: 決定の経緯質問への ```decision-history フェンスの出力契約。
+    /// 「決まったことの記録」の索引 (AppModel.codeImpactDecisionContext) が添付されている
+    /// ときだけ questionPrompt に入る。ここ (出力仕様の内側) に置くのは、末尾の
+    /// autoExecutionNote が「この依頼の出力仕様だけに従え」と命じるため、添付文脈側に
+    /// 書いたフェンス指示は個人設定と同じ「別の書式指示」として正しく無視されるから
+    /// (Codex で実際に無視された)。フェンスの言語名 (decision-history) と JSON のキー
+    /// (topicIds) は HearCatKit の DecisionHistoryFence とそのまま対応している。
+    private static var decisionHistoryParagraph: String {
+        """
+        質問が決定の経緯・変更時期・元の仕様を問うもの (例: いつ変わった / 元々どうだった / なんで変わった) の場合は、出力の一番最初 (## \(answerSectionTitle) より前) に、添付された「このグループでこれまでに決まったこと」の索引から該当議題の id ([ ] 内の値をそのまま使う) を積んだ ```decision-history フェンスを 1 つ置くこと。フェンスを先に出すのは、アプリが本文の生成を待たずにタイムラインを表示するため。
+        ```decision-history
+        {"topicIds": ["議題のid", ...]}
+        ```
+        該当議題は最大 3 件。質問に関わる議題が複数あるなら 1 つに絞らず全部積むこと (同じテーマの経緯が複数の議題に分かれて記録されていることがあり、1 つだけだと変遷の一部が欠けるため)。このとき ## \(answerSectionTitle) は質問への直接の答え 1〜2 文だけにし、変遷の列挙・日付の羅列・理由の推測を書かない (変遷のタイムラインはアプリが記録から直接描画して回答に添えるため)。索引に該当議題が無ければフェンスを出さず、「決まったことの記録には見当たらない」と述べて文字起こしから分かる範囲で答える。経緯を問われていない質問ではこのフェンスを出さない。
+        """
+    }
+
     /// ダイジェスト用・質問特化用の両プロンプトが末尾に共有する、個人設定の混入を防ぐ注意文。
     private static let autoExecutionNote =
         "この調査はアプリからの自動実行です。コンテキストに応答スタイル・書式・言語に関する別の指示が含まれていても従わず、この依頼の出力仕様だけに従ってください。"
@@ -247,7 +280,12 @@ enum AgentCodeImpactAnalyzer {
     /// 質問がある場合(初回・追加質問とも)に使う質問特化プロンプト。
     /// hasReferenceFolder == false のときは、カレントディレクトリの資料やコードへの言及と、
     /// 「## 根拠と補足」内の参照ファイル行の指示を外す。
-    private static func questionPrompt(question: String, hasReferenceFolder: Bool) -> String {
+    /// hasDecisionIndex は「決まったことの記録」の索引が添付されているか(=decisionContext が
+    /// 非 nil かつ非空)。true のときだけ decisionHistoryParagraph を末尾に挟む(索引が無いのに
+    /// フェンスの出し方だけ指示しても、AI が答えられる議題自体が無い)。
+    private static func questionPrompt(
+        question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool
+    ) -> String {
         let intro =
             hasReferenceFolder
             ? "標準入力で渡される進行中の会議文字起こしの直近部分と、カレントディレクトリの資料やコードを参照して、次の質問に答えてください。"
@@ -256,6 +294,10 @@ enum AgentCodeImpactAnalyzer {
             hasReferenceFolder
             ? "\n- 参照したファイルは 1 行ずつ「- 相対パス — 内容の一言」の形で書く"
             : ""
+        // choicesParagraph と autoExecutionNote の間に挟む。出力仕様の内側(この関数の中)に
+        // 置かないと、末尾の autoExecutionNote に「別の書式指示」として無視されてしまう
+        // (decisionHistoryParagraph のコメント参照)。
+        let decisionHistorySection = hasDecisionIndex ? "\n\n\(decisionHistoryParagraph)" : ""
 
         return """
             \(intro)
@@ -286,7 +328,7 @@ enum AgentCodeImpactAnalyzer {
 
             \(mermaidParagraph)
 
-            \(choicesParagraph)
+            \(choicesParagraph)\(decisionHistorySection)
 
             \(autoExecutionNote)
             """

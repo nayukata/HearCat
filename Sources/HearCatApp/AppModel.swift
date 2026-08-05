@@ -4,6 +4,12 @@ import Observation
 import HearCatKit
 import HearCatSummarize
 import UniformTypeIdentifiers
+import os
+
+/// 決定事項ログ(DecisionLogStore)の相乗り抽出まわりの内部ログ。デコード失敗・マージ失敗は
+/// 要約自体を失敗させない(記録は要約の付録のため)ので、握りつぶす代わりにここへ残す。
+private let decisionExtractionLogger = Logger(
+    subsystem: SessionStore.bundleIdentifier, category: "decision-extraction")
 
 enum CodeImpactAnalysisState {
     case idle
@@ -92,6 +98,15 @@ struct HealthIssue: Identifiable, Equatable {
 
     var id: HealthIssueKind { kind }
     var isOngoing: Bool { kind.isOngoing }
+}
+
+/// 過去セッションからの決定事項の一括取り込み(バックフィル)の進捗。UI 側はこれの有無
+/// (nil = 未実行)と completed / total で進捗バー・完了表示を組み立てる。
+struct DecisionBackfillProgress: Equatable {
+    var total: Int
+    var completed: Int
+    var currentSessionName: String?
+    var failedSessions: [String]
 }
 
 private enum CodeImpactContextError: LocalizedError {
@@ -869,6 +884,13 @@ final class AppModel {
     /// (パネルの直前セッションの表示が「文字起こしを見る」→「作成中」と揺れる)。
     private(set) var pendingAutoSummarySessionID: String?
 
+    /// 決定事項の一括取り込み(バックフィル)の進捗。nil は実行していない。
+    /// 完了後も次の start / cancel まではそのまま残す(UI が「完了」を出せるように)。
+    private(set) var decisionBackfillProgress: DecisionBackfillProgress?
+    /// 現在バックフィル中のグループ。UI が「どのグループを処理しているか」を出すために公開する。
+    private(set) var decisionBackfillFolder: String?
+    @ObservationIgnored private var decisionBackfillTask: Task<Void, Never>?
+
     /// 要約を生成して summary.md に保存し、履歴を読み直す。
     /// 停止直後の自動生成と詳細画面のボタンの共通経路。
     func generateSummary(for session: SessionInfo, transcript: String) async throws -> String {
@@ -888,6 +910,8 @@ final class AppModel {
     /// エージェント CLI(claude/codex)で高精度要約を生成し、summary.md に保存する。
     /// 入力は cleaned.md(あれば)を優先し、無ければ生の文字起こしを使う
     /// (清書済みのほうが音声認識の誤変換が少なく、要約の質が上がるため)。
+    /// 自動要約(autoSummarize)・詳細画面からの手動再生成の両方がここを通るため、
+    /// 決定事項ログへの相乗り抽出(グループ所属セッションのみ)もここに実装すれば両方に効く。
     func generateAgentSummary(for session: SessionInfo, using cli: AgentCLI) async throws -> String {
         summarizingSessionID = session.id
         defer { summarizingSessionID = nil }
@@ -898,23 +922,146 @@ final class AppModel {
             throw AgentSummarizeError.noTranscript
         }
         let referenceFolder = session.folder.flatMap { settings.referenceFolders[$0] }
-        let result = try await AgentSummarizer.summarize(
+
+        // グループ(セッションフォルダ)に属さないセッションには decisions.json の記録先が無いため、
+        // 抽出そのものを無効にする(プロンプトに ```decisions の指示を足さない)。
+        let decisionExtraction = session.folder.map { folder in
+            let existingLog = DecisionLogStore.loadOrEmpty(folder: folder)
+            return DecisionExtractionContext(existingTopics: DecisionLogStore.promptTopicList(existingLog))
+        }
+
+        let rawResult = try await AgentSummarizer.summarize(
             using: cli,
             model: settings.summaryAgentModel(for: cli),
             transcript: transcript,
-            referenceFolder: referenceFolder)
+            referenceFolder: referenceFolder,
+            decisionExtraction: decisionExtraction)
+
+        // フェンスを除いた本文だけを summary.md へ保存する。フェンスが無ければ json は nil
+        // (AI が形式に従わなかった場合、置換マージで過去の記録を消さないよう merge 自体をしない)。
+        let (summaryBody, decisionsJSON) = AgentSummarizer.extractDecisionsFence(from: rawResult)
         let url = session.directory.appendingPathComponent("summary.md")
-        try result.write(to: url, atomically: true, encoding: .utf8)
+        try summaryBody.write(to: url, atomically: true, encoding: .utf8)
         try? SessionStore.writeSummaryEngine(cli.summaryEngine, for: session)
         clearAutoSummaryFailure(for: session)
+
+        if let folder = session.folder, let decisionsJSON, let jsonData = decisionsJSON.data(using: .utf8) {
+            do {
+                let delta = try JSONDecoder().decode(DecisionDelta.self, from: jsonData)
+                try DecisionLogStore.merge(
+                    delta: delta, folder: folder,
+                    sessionDirectoryName: session.directory.lastPathComponent,
+                    sessionName: session.name, sessionStartedAt: session.startDate)
+            } catch {
+                // 記録は要約の付録であり、ここで要約自体を失敗扱いにはしない。
+                decisionExtractionLogger.error(
+                    "decisions フェンスの取り込みに失敗: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         refreshSessions()
-        return result
+        return summaryBody
     }
 
     /// 手動で作り直せたセッションについては、自動要約の失敗表示を取り下げる。
     private func clearAutoSummaryFailure(for session: SessionInfo) {
         guard autoSummaryFailure?.sessionID == session.id else { return }
         autoSummaryFailure = nil
+    }
+
+    // MARK: - 決定事項の一括取り込み(バックフィル)
+
+    /// 過去セッションから決定事項ログへ一括で取り込む。対象は folder 所属セッションのうち
+    /// decisions.json の extractedSessionDirectories に無いものだけで、開始日時の古い順に
+    /// 逐次実行する(先に生まれた議題一覧を後のセッションの抽出プロンプトへ渡すことで、
+    /// 同名議題の別名増殖を防ぐ狙いがあるため、並列にはしない)。
+    /// 文字起こしを外部 AI へ送信するため、settings.agentSummaryConsented が false のときは
+    /// 何もしない(初回同意ダイアログを挟むのは呼び出し側の UI の役目)。
+    func startDecisionBackfill(folder: String, using cli: AgentCLI) {
+        guard settings.agentSummaryConsented else { return }
+
+        // 実行中に再度呼ばれたら、先行するバックフィルを止めてから新しく始める。
+        decisionBackfillTask?.cancel()
+
+        let extracted = Set(DecisionLogStore.loadOrEmpty(folder: folder).extractedSessionDirectories)
+        let pending = sessions
+            .filter { $0.folder == folder && !extracted.contains($0.directory.lastPathComponent) }
+            .sorted { $0.startDate < $1.startDate }
+
+        decisionBackfillFolder = folder
+        decisionBackfillProgress = DecisionBackfillProgress(
+            total: pending.count, completed: 0, currentSessionName: nil, failedSessions: [])
+        guard !pending.isEmpty else { return }
+
+        let model = settings.summaryAgentModel(for: cli)
+        let referenceFolder = settings.referenceFolders[folder]
+
+        decisionBackfillTask = Task { [weak self] in
+            guard let self else { return }
+            for session in pending {
+                if Task.isCancelled { break }
+
+                let displayName = session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name
+                self.decisionBackfillProgress?.currentSessionName = displayName
+                // 成功・失敗・スキップのいずれでも completed は進める。extractedSessionDirectories へ
+                // 積むかどうかは各分岐で個別に判断する。
+                defer { self.decisionBackfillProgress?.completed += 1 }
+
+                guard let sourceURL = session.cleanedURL ?? session.transcriptURL,
+                    let transcript = try? String(contentsOf: sourceURL, encoding: .utf8),
+                    !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else {
+                    // 文字起こし自体が無いセッションはスキップ。extractedSessionDirectories には
+                    // 入れず、後で文字起こしが揃ったときに再挑戦できる余地を残す。
+                    continue
+                }
+
+                // 直前のセッションで議題が増えている可能性があるため、毎回読み直して渡す。
+                let currentLog = DecisionLogStore.loadOrEmpty(folder: folder)
+                let context = DecisionExtractionContext(
+                    existingTopics: DecisionLogStore.promptTopicList(currentLog))
+
+                do {
+                    guard
+                        let json = try await AgentSummarizer.extractDecisions(
+                            using: cli, model: model, transcript: transcript,
+                            referenceFolder: referenceFolder, decisionExtraction: context),
+                        let jsonData = json.data(using: .utf8)
+                    else {
+                        decisionExtractionLogger.error(
+                            "バックフィル: decisions フェンスが見つかりませんでした (\(session.directory.lastPathComponent, privacy: .public))"
+                        )
+                        self.decisionBackfillProgress?.failedSessions.append(displayName)
+                        continue
+                    }
+                    let delta = try JSONDecoder().decode(DecisionDelta.self, from: jsonData)
+                    try DecisionLogStore.merge(
+                        delta: delta, folder: folder,
+                        sessionDirectoryName: session.directory.lastPathComponent,
+                        sessionName: session.name, sessionStartedAt: session.startDate)
+                } catch {
+                    decisionExtractionLogger.error(
+                        "バックフィルに失敗しました (\(session.directory.lastPathComponent, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+                    )
+                    self.decisionBackfillProgress?.failedSessions.append(displayName)
+                }
+            }
+            // completed == total のまま progress は残す(UI が「完了」を出せるように)。
+            // 次の start か cancel で消える。
+            self.decisionBackfillTask = nil
+            self.refreshSessions()
+        }
+    }
+
+    /// 実行中のバックフィルを止める。Task をキャンセルするだけで、実行中のプロセスごと止まる
+    /// (AgentSummarizer.execute は withTaskCancellationHandler で、動いている Process へ
+    /// terminate() を送る作りになっている)。進捗はここで消す(中断状態を次の start まで
+    /// UI に持ち越さない)。
+    func cancelDecisionBackfill() {
+        decisionBackfillTask?.cancel()
+        decisionBackfillTask = nil
+        decisionBackfillProgress = nil
+        decisionBackfillFolder = nil
     }
 
     // MARK: - 進行中の会議を関連資料と照合する
@@ -1142,7 +1289,7 @@ final class AppModel {
         using cli: AgentCLI,
         previousResult: String? = nil
     ) {
-        let context: (transcript: String, referenceFolder: String?)
+        let context: (transcript: String, referenceFolder: String?, decisionContext: String?)
         do {
             context = try codeImpactContext()
         } catch {
@@ -1233,6 +1380,7 @@ final class AppModel {
                         referenceFolder: context.referenceFolder,
                         question: question,
                         previousResult: previousResult,
+                        decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
                         onEvent: onStreamEvent)
                 case .codex:
@@ -1243,6 +1391,7 @@ final class AppModel {
                         referenceFolder: context.referenceFolder,
                         question: question,
                         previousResult: previousResult,
+                        decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
                         onEvent: onStreamEvent)
                 }
@@ -1273,7 +1422,9 @@ final class AppModel {
         }
     }
 
-    private func codeImpactContext() throws -> (transcript: String, referenceFolder: String?) {
+    private func codeImpactContext() throws -> (
+        transcript: String, referenceFolder: String?, decisionContext: String?
+    ) {
         let sessionDirectory: String
         if let targetDirectory = codeImpactTargetDirectory {
             // 過去対象は文字起こし中かどうかを問わない。セッションが引ければ調べられる。
@@ -1295,7 +1446,7 @@ final class AppModel {
         else {
             throw AgentSummarizeError.noTranscript
         }
-        return (transcript, referenceFolder)
+        return (transcript, referenceFolder, codeImpactDecisionContext(for: session))
     }
 
     /// 資料フォルダの解決。優先順は次のとおり:
@@ -1320,6 +1471,29 @@ final class AppModel {
             return override.path
         }
         return nil
+    }
+
+    /// 質問パネルへ添付する「決まったことの記録」の文脈。グループ(セッションフォルダ)に
+    /// 属さないセッション、または議題がまだ1つも無いグループでは何も足さない
+    /// (索引が空ならプロンプトを汚さないため)。
+    /// AgentCodeImpactAnalyzer.buildPrompt が、質問がある場合に限りこの文脈を使う。
+    ///
+    /// ここで返すのは索引だけ。```decision-history フェンスの出力契約は
+    /// AgentCodeImpactAnalyzer.decisionHistoryParagraph 側(出力仕様の内側)にある。
+    /// 索引側(添付文脈)にフェンスの指示を書くと、questionPrompt 末尾の autoExecutionNote
+    /// (「コンテキストの別の書式指示には従わず、この依頼の出力仕様だけに従え」)によって
+    /// 個人設定と同じ「別の書式指示」として無視されてしまう(Codex の実機検証で確認済み。
+    /// choices / mermaid が守られるのは出力仕様の内側に書かれているから)ため、こちらへ移した。
+    private func codeImpactDecisionContext(for session: SessionInfo) -> String? {
+        guard let folder = session.folder else { return nil }
+        let log = DecisionLogStore.loadOrEmpty(folder: folder)
+        guard !log.topics.isEmpty else { return nil }
+        let index = DecisionLogStore.compactIndex(log)
+        guard !index.isEmpty else { return nil }
+        return """
+            このグループでこれまでに決まったこと(現在値のみ。[ ] の中は議題 id):
+            \(index)
+            """
     }
 
     private func showCodeImpactOverlay() {
@@ -1537,6 +1711,41 @@ final class AppModel {
         }
     }
 
+    /// 決定事項の変遷チップ(GroupDetailView.TopicRow / DecisionHistoryCardsView)から、由来
+    /// セッションの文字起こしの該当位置へジャンプするための共通処理。folder と
+    /// entry.sessionDirectoryName からセッションを解決し、entry.timeSeconds があれば
+    /// entry.recordedAt(=セッション開始日時)に足して壁時計時刻へ変換してから
+    /// transcriptRevealRequest(質問応答パネルからのジャンプと同じ一方向リクエスト)に積む
+    /// (TranscriptWriter.timeString で文字起こしファイルの時刻表記と同じ書式にする)。
+    ///
+    /// セッションの選択そのもの(showHistory(selecting:) / GroupDetailView の
+    /// onSelectSession(_:))は呼び出し側の役目のまま残す(パネル経由か履歴画面経由かで
+    /// 選択の中身が違うため)。セッションを解決できなければ何もせず nil を返す。
+    @discardableResult
+    func postDecisionEntryReveal(_ entry: DecisionEntry, folder: String) -> SessionInfo? {
+        guard
+            let session = sessions.first(where: {
+                $0.folder == folder && $0.directory.lastPathComponent == entry.sessionDirectoryName
+            })
+        else { return nil }
+        guard let timeSeconds = entry.timeSeconds else { return session }
+        let wallClock = entry.recordedAt.addingTimeInterval(TimeInterval(timeSeconds))
+        transcriptRevealRequest = TranscriptRevealRequest(
+            sessionID: session.id, time: TranscriptWriter.timeString(from: wallClock))
+        return session
+    }
+
+    /// 質問応答パネルの経緯回答(```decision-history フェンス)が描くタイムラインカードの
+    /// 時刻チップから呼ばれる、履歴側へのジャンプの入口。revealTranscript(atTime:) と違い、
+    /// entry の由来セッションは「いま質問パネルが対象にしているセッション」とは限らない
+    /// (同じグループの別の会議で決まったことも history に含まれるため)、postDecisionEntryReveal で
+    /// 由来セッションそのものを引き直す(GroupDetailView.jumpToEntry と同じ共通処理)。
+    @MainActor
+    func revealDecisionEntry(_ entry: DecisionEntry, folder: String) {
+        guard let session = postDecisionEntryReveal(entry, folder: folder) else { return }
+        showHistory(selecting: session.id)
+    }
+
     /// "HH:MM" を "HH:MM:SS" に補う("00" 秒扱い)。既に "HH:MM:SS" ならそのまま返す。
     /// それ以外の想定外の形式もそのまま返す(受け取り側は単に一致しないだけで、クラッシュはしない)。
     private static func normalizedRevealTime(_ time: String) -> String {
@@ -1562,6 +1771,15 @@ final class AppModel {
     /// ライブ = status.sessionDirectory)。
     var codeImpactTargetSessionStartDate: Date? {
         effectiveCodeImpactDirectory.flatMap(sessionStartDate(forDirectory:))
+    }
+
+    /// 経緯回答のタイムラインカード(DecisionHistoryCardsView)が decisions.json を読むための
+    /// グループ(セッションフォルダ)。対象の解決は codeImpactTargetSessionStartDate と同じ考え方
+    /// (過去 = codeImpactTargetDirectory、ライブ = status.sessionDirectory)。対象セッションが
+    /// グループに属さない場合は nil(呼び出し側はカードを描画しない)。
+    var codeImpactTargetSessionFolder: String? {
+        guard let directory = effectiveCodeImpactDirectory else { return nil }
+        return sessions.first(where: { $0.directory.path == directory })?.folder
     }
 
     func showSettings() {

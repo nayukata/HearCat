@@ -40,7 +40,7 @@ enum AgentCodexImpactStream {
     private static let maxAttempts = 2
 
     /// - Parameters: AgentCodeImpactStream.run と同じ意味(claude 版のドキュメント参照)。
-    ///   incrementalTranscript・resumeSessionID の扱いも同一。
+    ///   incrementalTranscript・resumeSessionID・decisionContext の扱いも同一。
     /// - Returns: 抽出済み Markdown と、今回判明したセッション ID(resume・fresh とも失敗して
     ///   非ストリーミングへ落ちた場合は nil)。
     static func run(
@@ -50,6 +50,7 @@ enum AgentCodexImpactStream {
         referenceFolder: String?,
         question: String?,
         previousResult: String?,
+        decisionContext: String?,
         resumeSessionID: String?,
         onEvent: @escaping @Sendable (CodeImpactStreamEvent) -> Void
     ) async throws -> (result: String, sessionID: String?) {
@@ -109,7 +110,7 @@ enum AgentCodexImpactStream {
 
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: continuity,
-                hasReferenceFolder: hasReferenceFolder)
+                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext)
 
             let arguments = arguments(
                 prompt: prompt, model: model, resumeSessionID: resumeSessionIDForAttempt,
@@ -170,7 +171,7 @@ enum AgentCodexImpactStream {
             referenceFolder: referenceFolder,
             prompt: AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: .fresh,
-                hasReferenceFolder: hasReferenceFolder),
+                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext),
             outputPrefix: "code-impact-stream-fallback",
             model: model,
             extraction: AgentSummarizer.extractCodeImpactMarkdown)
