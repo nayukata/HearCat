@@ -322,11 +322,14 @@ private struct CodeImpactOverlayView: View {
     }
 
     /// 進行中ターンの本文位置に出す進捗行(3 点ドットのアニメーション + 状況テキスト + 中止ボタン)。
-    /// claude はストリーミングで部分テキストが届くため、届くまでの間はこの行が本文の代わりになり、
-    /// 届き始めてからはこの行を残したまま下に本文を続ける(turnView 参照)。codex は
-    /// partialText が常に空のままなので、完了するまでこの行だけが出続ける。
-    /// model.codeImpactActivity(ツール利用の進捗、例「Read: AppModel.swift」)が届いている間は
-    /// ドットの右に小さく添える。届いていない間はドットだけを出す(固定文言は出さない)。
+    /// claude・codex とも同じ partialText を経由してストリーミングで本文が届くため、
+    /// 届くまでの間はこの行が本文の代わりになり、届き始めてからはこの行を残したまま
+    /// 下に本文を続ける(turnView 参照)。codex は claude の文字単位のデルタと違い、
+    /// codex CLI 自体は 1 メッセージをまとめて返すが、AgentCodexImpactStream 内の
+    /// TypewriterEmitter がそれを一定のペースに分け直して partialText へ流し込むため、
+    /// 見た目の届き方(少しずつ本文が伸びていく感じ)は claude と揃っている。
+    /// model.codeImpactActivity(ツール利用の進捗、例「Read: AppModel.swift」「実行: ...」)が
+    /// 届いている間はドットの右に小さく添える。届いていない間はドットだけを出す(固定文言は出さない)。
     private func progressRow(thinking: Bool) -> some View {
         // 行頭は質問バブルの内側パディング(12)と同じだけ下げる。ドットが左端に
         // 張り付くと吹き出しや本文の字面と揃わず浮いて見えるため。

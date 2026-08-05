@@ -154,10 +154,17 @@ final class AppModel {
     @ObservationIgnored private var codeImpactTask: Task<Void, Never>?
     @ObservationIgnored private var codeImpactRequestID: UUID?
     @ObservationIgnored private var codeImpactOverlayController: CodeImpactOverlayController?
-    /// claude の会話セッション ID(--resume で継続する)。同じ会議のあいだだけ持ち回す。
+    /// claude/codex の会話セッション ID(--resume / exec resume で継続する)。
+    /// 同じ会議のあいだだけ持ち回す。
     @ObservationIgnored private var codeImpactSessionID: String?
+    /// codeImpactSessionID がどの CLI(claude/codex)で作られたセッションかの記録。
+    /// 質問パネルは会話の途中でエンジンを切り替えられるため、これが無いと片方のエンジンの
+    /// セッション ID をもう片方の --resume / exec resume に渡してしまう
+    /// (実害: 資料フォルダの有無で挙動が変わるのと同種の事故を、エンジン跨ぎでも起こす)。
+    /// codeImpactSessionID と同じタイミングでリセットする。
+    @ObservationIgnored private var codeImpactSessionEngine: AgentCLI?
     /// codeImpactSessionID がどのセッションディレクトリのものかの記録。
-    /// 会議が変わった(= セッションディレクトリが変わった)ら両方リセットする。
+    /// 会議が変わった(= セッションディレクトリが変わった)ら全てリセットする。
     @ObservationIgnored private var codeImpactSessionDirectory: String?
     /// claude セッションを継続する際、直近の成功実行時点で標準入力へ渡した transcript
     /// 全文の文字数。次回の追加質問はこの位置以降だけを差分として送る
@@ -940,6 +947,7 @@ final class AppModel {
         codeImpactTurns = []
         codeImpactQuestion = nil
         codeImpactSessionID = nil
+        codeImpactSessionEngine = nil
         codeImpactSessionDirectory = nil
         codeImpactSentTranscriptLength = nil
         codeImpactPartialText = ""
@@ -1143,14 +1151,22 @@ final class AppModel {
         }
         codeImpactActiveReferenceFolder = context.referenceFolder
 
-        // 対象(会議、または過去セッション)が変わっていたら、前の対象の claude セッションを
-        // 引き継がない。同じ対象のあいだは維持し、--resume で会話を続ける。
+        // 対象(会議、または過去セッション)が変わっていたら、前の対象の claude/codex セッションを
+        // 引き継がない。同じ対象のあいだは維持し、--resume / exec resume で会話を続ける。
         if effectiveCodeImpactDirectory != codeImpactSessionDirectory {
             codeImpactSessionID = nil
+            codeImpactSessionEngine = nil
             codeImpactSessionDirectory = effectiveCodeImpactDirectory
             codeImpactSentTranscriptLength = nil
             // 対象が変われば Q&A 履歴も前の対象のものなので持ち越さない。
             codeImpactTurns = []
+        } else if let sessionEngine = codeImpactSessionEngine, sessionEngine != cli {
+            // 対象は同じだが、保存済みセッション ID は別エンジンで作られたもの。
+            // 質問パネルはターンの途中でエンジンを切り替えられるため、ここで引き継ぐと
+            // 片方のエンジンのセッション ID をもう片方の --resume / exec resume に渡してしまう。
+            // Q&A 履歴(codeImpactTurns)はエンジンをまたいで会話の記録として残してよいので消さない。
+            codeImpactSessionID = nil
+            codeImpactSentTranscriptLength = nil
         }
 
         // ここでは settings.codeImpactAgent へは書かない。
@@ -1170,71 +1186,77 @@ final class AppModel {
         codeImpactRequestID = requestID
         codeImpactTask = Task { [weak self] in
             do {
-                let result: String
+                // claude・codex とも、ストリーミング + セッション継続(--resume / exec resume)の
+                // 経路を使う。cli ごとの実行そのものの差は AgentCodeImpactStream /
+                // AgentCodexImpactStream 側に閉じ込めてあり、ここでは選ぶだけにする。
+                let resumeSessionID = self?.codeImpactSessionID
+                let sentTranscriptLength = self?.codeImpactSentTranscriptLength
+                // 差分が使えるのは、継続中(resumeSessionID あり)かつ送信済み位置が
+                // 分かっていて、かつ今回読んだ transcript がその位置より短くなっていない
+                // (ファイルの巻き戻り等の異常が無い)場合だけ。それ以外は nil を渡し、
+                // ストリーミング側で全量渡し直しにフォールバックさせる。
+                let incrementalTranscript: String? = {
+                    guard resumeSessionID != nil, let sentTranscriptLength,
+                        context.transcript.count >= sentTranscriptLength
+                    else { return nil }
+                    return AgentCodeImpactAnalyzer.incrementalTranscript(
+                        from: context.transcript, sentLength: sentTranscriptLength)
+                }()
+                let onStreamEvent: @Sendable (CodeImpactStreamEvent) -> Void = { event in
+                    // readabilityHandler の背景キューから呼ばれるため、self を直接は
+                    // 使わず(@Sendable クロージャに MainActor 型を捕まえないため)、
+                    // MainActor 上で shared 経由で状態を更新する。
+                    Task { @MainActor in
+                        let model = AppModel.shared
+                        guard model.codeImpactRequestID == requestID else { return }
+                        switch event {
+                        case .sessionID(let id):
+                            model.codeImpactSessionID = id
+                            model.codeImpactSessionEngine = cli
+                        case .textDelta(let text):
+                            model.codeImpactPartialText += text
+                        case .activity(let text):
+                            model.codeImpactActivity = text
+                        case .reset:
+                            model.codeImpactPartialText = ""
+                            model.codeImpactActivity = nil
+                        }
+                    }
+                }
+                let stream: (result: String, sessionID: String?)
                 switch cli {
                 case .claude:
-                    // claude だけストリーミング + セッション継続の経路を使う。
-                    let resumeSessionID = self?.codeImpactSessionID
-                    let sentTranscriptLength = self?.codeImpactSentTranscriptLength
-                    // 差分が使えるのは、継続中(resumeSessionID あり)かつ送信済み位置が
-                    // 分かっていて、かつ今回読んだ transcript がその位置より短くなっていない
-                    // (ファイルの巻き戻り等の異常が無い)場合だけ。それ以外は nil を渡し、
-                    // AgentCodeImpactStream 側で全量渡し直しにフォールバックさせる。
-                    let incrementalTranscript: String? = {
-                        guard resumeSessionID != nil, let sentTranscriptLength,
-                            context.transcript.count >= sentTranscriptLength
-                        else { return nil }
-                        return AgentCodeImpactAnalyzer.incrementalTranscript(
-                            from: context.transcript, sentLength: sentTranscriptLength)
-                    }()
-                    let stream = try await AgentCodeImpactStream.run(
+                    stream = try await AgentCodeImpactStream.run(
                         model: model,
                         transcript: context.transcript,
                         incrementalTranscript: incrementalTranscript,
                         referenceFolder: context.referenceFolder,
                         question: question,
                         previousResult: previousResult,
-                        resumeSessionID: resumeSessionID
-                    ) { event in
-                        // readabilityHandler の背景キューから呼ばれるため、self を直接は
-                        // 使わず(@Sendable クロージャに MainActor 型を捕まえないため)、
-                        // MainActor 上で shared 経由で状態を更新する。
-                        Task { @MainActor in
-                            let model = AppModel.shared
-                            guard model.codeImpactRequestID == requestID else { return }
-                            switch event {
-                            case .sessionID(let id):
-                                model.codeImpactSessionID = id
-                            case .textDelta(let text):
-                                model.codeImpactPartialText += text
-                            case .activity(let text):
-                                model.codeImpactActivity = text
-                            case .reset:
-                                model.codeImpactPartialText = ""
-                                model.codeImpactActivity = nil
-                            }
-                        }
-                    }
-                    result = stream.result
-                    if let sessionID = stream.sessionID {
-                        self?.codeImpactSessionID = sessionID
-                        // 継続が生きたまま成功したときだけ、今回読んだ transcript の文字数を
-                        // 「送信済み位置」として前進させる。次回の追加質問はこの続きだけを送る。
-                        self?.codeImpactSentTranscriptLength = context.transcript.count
-                    } else {
-                        // 継続が切れて非ストリーミングへ落ちた(次回は新規会話になる)ので、
-                        // 送信済み位置は意味を持たない。
-                        self?.codeImpactSentTranscriptLength = nil
-                    }
+                        resumeSessionID: resumeSessionID,
+                        onEvent: onStreamEvent)
                 case .codex:
-                    // codex はストリーミング/セッション継続の対象外。従来どおり一括実行。
-                    result = try await AgentCodeImpactAnalyzer.analyze(
-                        using: cli,
+                    stream = try await AgentCodexImpactStream.run(
                         model: model,
                         transcript: context.transcript,
+                        incrementalTranscript: incrementalTranscript,
                         referenceFolder: context.referenceFolder,
                         question: question,
-                        previousResult: previousResult)
+                        previousResult: previousResult,
+                        resumeSessionID: resumeSessionID,
+                        onEvent: onStreamEvent)
+                }
+                let result = stream.result
+                if let sessionID = stream.sessionID {
+                    self?.codeImpactSessionID = sessionID
+                    self?.codeImpactSessionEngine = cli
+                    // 継続が生きたまま成功したときだけ、今回読んだ transcript の文字数を
+                    // 「送信済み位置」として前進させる。次回の追加質問はこの続きだけを送る。
+                    self?.codeImpactSentTranscriptLength = context.transcript.count
+                } else {
+                    // 継続が切れて非ストリーミングへ落ちた(次回は新規会話になる)ので、
+                    // 送信済み位置は意味を持たない。
+                    self?.codeImpactSentTranscriptLength = nil
                 }
                 guard !Task.isCancelled, self?.codeImpactRequestID == requestID else { return }
                 // 失敗・キャンセルでは積まない。ここに来た時点で成功が確定している。

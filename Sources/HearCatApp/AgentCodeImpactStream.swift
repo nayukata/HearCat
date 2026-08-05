@@ -19,8 +19,9 @@ enum CodeImpactStreamEvent: Sendable {
 
 /// claude CLI での「関連資料との照合」ストリーミング実行。
 /// 要約と共用の AgentSummarizer.execute(非ストリーミング)は変えず、
-/// このファイルに専用の実行経路を閉じ込める。codex はストリーミング/セッション継続の
-/// 対象外(呼び出し側が従来の AgentCodeImpactAnalyzer.analyze を使う)。
+/// このファイルに専用の実行経路を閉じ込める。codex 版は AgentCodexImpactStream に
+/// 分けている(NDJSON のスキーマが claude と全く異なり、この 1 つの enum に
+/// 混ぜると分岐が読みにくくなるため)。
 enum AgentCodeImpactStream {
     private static let timeout: TimeInterval = 300
     /// 「unknown option」等での段階的フォールバックを含めても、合計の実行回数を
@@ -507,7 +508,8 @@ enum AgentCodeImpactStream {
 /// 途中で途切れることがあるため、改行が来るまで内部バッファに溜める。
 /// 呼び出しは同一 Pipe の readabilityHandler(単一の背景キュー)からのみだが、
 /// 型としては複数キューから呼ばれても壊れないようロックで守っておく。
-private final class NDJSONLineSplitter: @unchecked Sendable {
+/// claude・codex どちらも stdout に NDJSON を流すため、AgentCodexImpactStream からも使う。
+final class NDJSONLineSplitter: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: Data())
 
     func append(_ chunk: Data) -> [String] {
