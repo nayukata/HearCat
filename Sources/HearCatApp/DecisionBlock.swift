@@ -167,11 +167,11 @@ struct DecisionStatusChip: View {
 
     var body: some View {
         Text(status.displayName)
-            .font(HCFont.style(.subheadline, weight: .bold))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 1)
+            .font(HCFont.style(.subheadline, weight: .semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
             .foregroundStyle(colors.text)
-            .background(Capsule().fill(colors.background))
+            .background(HCRadius.shape(HCRadius.chip).fill(colors.background))
     }
 }
 

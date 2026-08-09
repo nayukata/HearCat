@@ -1,62 +1,121 @@
 import HearCatKit
 import SwiftUI
 
-/// 決定の変遷(history)を縦のレール+点で描くタイムライン本体。GroupDetailView の議題展開
-/// (TopicRow.historySection)と、質問応答パネルの経緯回答カード(DecisionHistoryCardsView)の
-/// 両方から使う共有部品。
+/// 決定の変遷(history)を、新しい順に並べた肉球の足あとで描くタイムライン本体。
+/// GroupDetailView の議題展開(TopicRow.historySection)と、質問応答パネルの経緯回答カード
+/// (DecisionHistoryCardsView)の両方から使う共有部品。
 ///
-/// 点・レール・強調(最新=cinnamon+光彩+太字、過去=薄色)の描き方は共通だが、色調は
-/// 呼び出し元ごとに違う: GroupDetailView はシステム配色に追従する Color.primary/.secondary、
-/// 質問応答パネルは常時ダーク面の HCColor.mistWhite 系(CodeImpactOverlay.swift の他の要素と
-/// 同じ理由で、パネルは colorScheme を問わず常にダーク面として描く)。そのため色は呼び出し元
-/// から渡す。メタ行(セッション名・日付・時刻チップ等)の内容も呼び出し元ごとに違う
-/// (一覧は縦を揃える MM/dd、パネルは「7月27日」+ 理由の引用風ブロック)ため、@ViewBuilder で委ねる。
+/// 開いた瞬間に現在地が分かることを優先し、history(recordedAt 昇順)を反転して最新を
+/// 先頭(index 0)に置く。足あと・破線レール・強調(最新=cinnamon+光彩+「いまここ」ラベル、
+/// 過去=cinnamonDim)の描き方は共通だが、本文の文字色は呼び出し元ごとに違う:
+/// GroupDetailView はシステム配色に追従する Color.primary/.secondary、質問応答パネルは
+/// 常時ダーク面の HCColor.mistWhite 系(CodeImpactOverlay.swift の他の要素と同じ理由で、
+/// パネルは colorScheme を問わず常にダーク面として描く)。そのため文字色は呼び出し元から渡す。
+/// メタ行(セッション名・日付・時刻チップ等)の内容も呼び出し元ごとに違う(一覧は縦を揃える
+/// MM/dd、パネルは「7月27日」+ 理由の引用風ブロック)ため、@ViewBuilder で委ねる。
 struct DecisionTimelineView<Meta: View>: View {
     let history: [DecisionEntry]
     let currentTextColor: Color
     let pastTextColor: Color
-    /// 点(過去版)とレールの塗りに使う地色。過去版の点は0.22、レールは0.14の不透明度で
-    /// 使う(GroupDetailView の元の値を維持)。
-    let mutedColor: Color
     @ViewBuilder let meta: (DecisionEntry) -> Meta
 
     var body: some View {
+        let reversed = Array(history.reversed())
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(history.enumerated()), id: \.offset) { index, entry in
-                row(entry, isCurrent: index == history.count - 1, isLast: index == history.count - 1)
+            ForEach(Array(reversed.enumerated()), id: \.offset) { index, entry in
+                row(entry, isCurrent: index == 0, isLast: index == reversed.count - 1)
             }
         }
     }
 
     private func row(_ entry: DecisionEntry, isCurrent: Bool, isLast: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            dot(isCurrent: isCurrent, isLast: isLast)
+            pawPrint(isCurrent: isCurrent, isLast: isLast, isManual: entry.isManual)
             VStack(alignment: .leading, spacing: 4) {
-                Text(entry.text)
-                    .font(HCFont.callout)
-                    .fontWeight(isCurrent ? .semibold : .regular)
-                    .foregroundStyle(isCurrent ? currentTextColor : pastTextColor)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(entry.text)
+                        .font(HCFont.callout)
+                        .fontWeight(isCurrent ? .semibold : .regular)
+                        .foregroundStyle(isCurrent ? currentTextColor : pastTextColor)
+                    if isCurrent {
+                        Text("いまここ")
+                            .font(HCFont.style(.caption1, weight: .bold))
+                            .kerning(0.5)
+                            .foregroundStyle(HCColor.cinnamon)
+                    }
+                }
                 meta(entry)
             }
             .padding(.bottom, isLast ? 0 : 14)
         }
     }
 
-    private func dot(isCurrent: Bool, isLast: Bool) -> some View {
+    /// `isManual`(`entry.origin == .manual`、会話の外での手動記録)の足あとは塗りつぶさず
+    /// 輪郭線だけで描く。「塗り = 会話から抽出、輪郭線だけ = 会話の外」を色を増やさずに
+    /// 描き分けるための表現(色は現在地/過去の区別と同じものをそのまま使う)。
+    private func pawPrint(isCurrent: Bool, isLast: Bool, isManual: Bool) -> some View {
         VStack(spacing: 0) {
-            Circle()
-                .fill(isCurrent ? HCColor.cinnamon : mutedColor.opacity(0.22))
-                .frame(width: 8, height: 8)
-                .shadow(color: isCurrent ? HCColor.cinnamon.opacity(0.6) : .clear, radius: 3)
+            Group {
+                if isManual {
+                    PawPrintShape()
+                        .stroke(
+                            isCurrent ? HCColor.cinnamon : HCColor.cinnamonDim,
+                            lineWidth: 1.2)
+                } else {
+                    PawPrintShape()
+                        .fill(isCurrent ? HCColor.cinnamon : HCColor.cinnamonDim)
+                }
+            }
+            .frame(width: 13, height: 13)
+            .shadow(color: isCurrent ? HCColor.cinnamon.opacity(0.6) : .clear, radius: 3)
             if !isLast {
-                Rectangle()
-                    .fill(mutedColor.opacity(0.14))
-                    .frame(width: 1)
+                VerticalDashedRailShape()
+                    .stroke(
+                        HCColor.cinnamon.opacity(0.35),
+                        style: StrokeStyle(lineWidth: 1, dash: [3, 4])
+                    )
+                    .frame(width: 13)
                     .frame(maxHeight: .infinity)
             }
         }
-        .frame(width: 8)
+        .frame(width: 13)
         .padding(.top, 4)
+    }
+}
+
+/// 足あとの間を繋ぐ破線レール。マーカー列の中央(x = rect.midX)に、割り当てられた高さいっぱいの
+/// 縦線を引く。実線ではなく破線にして、足あとが霧の中に点々と続く印象を出す。
+struct VerticalDashedRailShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        return path
+    }
+}
+
+/// 肉球マーク。単位矩形(0〜1)に対して、下半分の楕円パッドと上の指3つの円を描く。
+/// 足あとが霧の中に点々と続く印象をレールの破線と合わせて出すための形なので、
+/// 指の位置・パッドの大きさは仕様上の固定値であり、サイズによって配置を変えない。
+struct PawPrintShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addEllipse(in: ellipseRect(center: CGPoint(x: 0.5, y: 0.69), rx: 0.29, ry: 0.24, in: rect))
+        for center in [
+            CGPoint(x: 0.21, y: 0.33), CGPoint(x: 0.5, y: 0.23), CGPoint(x: 0.79, y: 0.33),
+        ] {
+            path.addEllipse(in: ellipseRect(center: center, rx: 0.12, ry: 0.12, in: rect))
+        }
+        return path
+    }
+
+    private func ellipseRect(center: CGPoint, rx: CGFloat, ry: CGFloat, in rect: CGRect) -> CGRect {
+        CGRect(
+            x: rect.minX + (center.x - rx) * rect.width,
+            y: rect.minY + (center.y - ry) * rect.height,
+            width: rx * 2 * rect.width,
+            height: ry * 2 * rect.height
+        )
     }
 }
 
@@ -76,15 +135,6 @@ struct DecisionHistoryCardsView: View {
     /// 再評価されるため、読み込みそのものは .task(id:) 側でだけ行い、body では参照するだけにする。
     @State private var log: DecisionLog?
 
-    /// パネルの本文に馴染む「7月27日」形式。GroupDetailView の一覧(MM/dd、縦揃え優先)とは
-    /// 用途が違うため、ここだけ別のフォーマッタを持つ。
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "M月d日"
-        formatter.locale = Locale(identifier: "ja_JP")
-        return formatter
-    }()
-
     /// .task(id:) の再読み込みトリガー。議題一覧か、質問パネルの対象セッションが属する
     /// グループが変わったときだけ読み直す。
     private struct LoadKey: Equatable {
@@ -96,14 +146,19 @@ struct DecisionHistoryCardsView: View {
         // model.codeImpactTargetSessionFolder は body 評価ごとに1回だけ読む
         // (以前は if 節と .task の両方で読んでいて二重に呼んでいた)。
         let folder = model.codeImpactTargetSessionFolder
-        Group {
+        VStack(alignment: .leading, spacing: 0) {
+            // 読み込み前(log == nil)は下の条件分岐が何も描かず、全体が EmptyView に
+            // 畳まれると .task が発火しない(MenuPanel のブリーフカードでも起きた
+            // 「初期状態が空 → task 不発 → 永久に空」の自己ロック)。それを避けるため、
+            // 大きさ0の実体を常に1つ置いて task の足場にする。
+            Color.clear.frame(width: 0, height: 0)
             if let folder, let log {
                 let topics = topicIds.compactMap { id in log.topics.first(where: { $0.id == id }) }
                 if !topics.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(topics, id: \.id) { topic in
                             DecisionHistoryCard(
-                                topic: topic, dateFormatter: Self.dateFormatter,
+                                topic: topic,
                                 onJump: { entry in model.revealDecisionEntry(entry, folder: folder) })
                         }
                     }
@@ -119,7 +174,6 @@ struct DecisionHistoryCardsView: View {
 /// 経緯回答カード1件(議題1件ぶん)。見出し(議題名+現在の状態チップ)+ タイムライン。
 private struct DecisionHistoryCard: View {
     let topic: DecisionTopic
-    let dateFormatter: DateFormatter
     let onJump: (DecisionEntry) -> Void
 
     var body: some View {
@@ -135,8 +189,7 @@ private struct DecisionHistoryCard: View {
             }
             DecisionTimelineView(
                 history: topic.history,
-                currentTextColor: HCColor.mistWhite, pastTextColor: HCColor.mistWhiteDim,
-                mutedColor: HCColor.mistWhite
+                currentTextColor: HCColor.mistWhite, pastTextColor: HCColor.mistWhiteDim
             ) { entry in
                 meta(entry)
             }
@@ -146,11 +199,13 @@ private struct DecisionHistoryCard: View {
         .background(HCRadius.shape(HCRadius.control).fill(HCColor.mistDarkSurface))
     }
 
-    /// 内容の下に添える部分: 理由(あれば)の引用ブロック + セッション名・日付・時刻チップのメタ行。
-    /// 「言い出し」は表示しない(記録データの by 自体は残すが、画面には出さない判断)。
+    /// 内容の下に添える部分: 理由(あれば)の引用ブロック + メタ行(entry.sourceLabel・日付・
+    /// 時刻チップ)。「言い出し」は表示しない(記録データの by 自体は残すが、画面には出さない判断)。
+    /// 手動記録は reason が「どこで決まったか」であって変更理由ではないため、引用ブロックには出さず
+    /// entry.sourceLabel 側に委ねる(理由の二重表示を避ける)。
     private func meta(_ entry: DecisionEntry) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let reason = entry.reason, !reason.isEmpty {
+            if !entry.isManual, let reason = entry.reason, !reason.isEmpty {
                 reasonBlock(reason)
             }
             metaRow(entry)
@@ -176,11 +231,12 @@ private struct DecisionHistoryCard: View {
         }
     }
 
-    /// セッション名・日付・時刻チップ(あれば)を並べる行。
+    /// entry.sourceLabel・日付・時刻チップ(あれば)を並べる行。ラベル文言の規則は
+    /// entry.sourceLabel(DecisionTimelineView.swift 末尾の拡張)側を参照。
     private func metaRow(_ entry: DecisionEntry) -> some View {
         HStack(spacing: 4) {
-            Text(entry.sessionName.isEmpty ? SessionRow.untitledPlaceholder : entry.sessionName)
-            Text(dateFormatter.string(from: entry.recordedAt))
+            Text(entry.sourceLabel)
+            Text(HCDate.body.string(from: entry.recordedAt))
             if let timeSeconds = entry.timeSeconds {
                 Button(formatPlaybackTime(TimeInterval(timeSeconds))) { onJump(entry) }
                     .buttonStyle(.plain)
@@ -192,5 +248,20 @@ private struct DecisionHistoryCard: View {
         }
         .font(HCFont.caption)
         .foregroundStyle(HCColor.mistWhiteDim)
+    }
+}
+
+extension DecisionEntry {
+    /// メタ行に出す「どこから来た記録か」。会話由来はセッション名(空文字なら
+    /// SessionRow.untitledPlaceholder)、手動記録は「手動で記録」(過去データで
+    /// reason が残っていればその文言をそのまま出す)。SessionRow(View 準拠で
+    /// MainActor 分離)の文言を参照するため、この計算プロパティ自体も @MainActor にする。
+    @MainActor
+    var sourceLabel: String {
+        if isManual {
+            guard let reason, !reason.isEmpty else { return "手動で記録" }
+            return reason
+        }
+        return sessionName.isEmpty ? SessionRow.untitledPlaceholder : sessionName
     }
 }

@@ -312,7 +312,7 @@ struct SessionDetailView: View {
                             onEdit: { editingDecision = $0 },
                             onRemove: { removeDecision($0) })
                     } label: {
-                        Text("この会議で決まった・変わったこと")
+                        Text("この会話で決まった・変わったこと")
                     }
                 }
                 if let summary {

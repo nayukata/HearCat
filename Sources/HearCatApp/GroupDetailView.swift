@@ -38,6 +38,9 @@ struct GroupDetailView: View {
     @State private var backfillMenuAnchor: NSView?
     @State private var backfillMenuActionHandler = MenuActionHandler()
 
+    /// TopicRow の手動記録ボタンから開くシートの対象。
+    @State private var manualConfirmTarget: ManualEntrySheetTarget?
+
     private var groupSessions: [SessionInfo] {
         model.sessions.filter { $0.folder == folder }.sorted { $0.startDate > $1.startDate }
     }
@@ -81,6 +84,11 @@ struct GroupDetailView: View {
                 model.startDecisionBackfill(folder: folder, using: cli)
             }
             Button("キャンセル", role: .cancel) {}
+        }
+        .sheet(item: $manualConfirmTarget) { target in
+            ManualConfirmSheet(topic: target.topic) { text in
+                try appendManualEntry(topicID: target.topic.id, text: text, status: .confirmed)
+            }
         }
     }
 
@@ -247,7 +255,7 @@ struct GroupDetailView: View {
         ContentUnavailableView(
             "まだ記録がありません",
             systemImage: "list.bullet.rectangle",
-            description: Text("会議を Claude / Codex で要約するか、下のボタンで過去の会議から取り込めます。"))
+            description: Text("会話を Claude / Codex で要約するか、下のボタンで過去の会話から取り込めます。"))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -260,10 +268,17 @@ struct GroupDetailView: View {
                         .padding(.top, 20)
                         .frame(maxWidth: .infinity, alignment: .center)
                 } else {
-                    if !result.recentlyMoved.isEmpty {
-                        section(title: "最近の会議で動いた", topics: result.recentlyMoved)
+                    let recentlyMovedIDs = Set(result.recentlyMoved.map(\.id))
+                    let hasRecentlyMoved = !result.recentlyMoved.isEmpty
+                    if hasRecentlyMoved {
+                        section(title: "前回の会話で決まった・変わったこと", topics: result.recentlyMoved)
                     }
-                    section(title: "すべての議題 — 最近動いた順", topics: result.sorted)
+                    // 上のセクションと同じ議題を下に重複させないため、recentlyMoved に
+                    // 含まれる議題を除外する(DecisionLog.filterTopics 側は変えず View 側で除く)。
+                    let rest = result.sorted.filter { !recentlyMovedIDs.contains($0.id) }
+                    if !rest.isEmpty {
+                        section(title: hasRecentlyMoved ? "そのほかの議題" : "すべての議題", topics: rest)
+                    }
                 }
             }
             .padding()
@@ -282,7 +297,8 @@ struct GroupDetailView: View {
                         isExpanded: expandedTopicIDs.contains(topic.id),
                         onToggleExpand: { toggleExpanded(topic.id) },
                         onJump: { jumpToEntry($0) },
-                        onToggleArchive: { toggleArchive(topic) })
+                        onToggleArchive: { toggleArchive(topic) },
+                        onManualConfirm: { manualConfirmTarget = ManualEntrySheetTarget(topic: topic) })
                     if topic.id != topics.last?.id {
                         Divider()
                     }
@@ -340,7 +356,7 @@ struct GroupDetailView: View {
                     Button {
                         presentBackfillMenu()
                     } label: {
-                        Label("過去の会議から取り込む (\(pending) 件)", systemImage: "tray.and.arrow.down")
+                        Label("過去の会話から取り込む (\(pending) 件)", systemImage: "tray.and.arrow.down")
                     }
                     .buttonStyle(.hcSecondary)
                     .disabled(availableAgentCLIs.isEmpty)
@@ -349,7 +365,7 @@ struct GroupDetailView: View {
                             ? "Claude または Codex が見つかりません" : "")
                     .background(MenuAnchorView(anchor: $backfillMenuAnchor))
                 } else {
-                    Label("過去の会議は取り込み済み", systemImage: "checkmark.circle")
+                    Label("過去の会話は取り込み済み", systemImage: "checkmark.circle")
                         .foregroundStyle(.secondary)
                         .font(HCFont.callout)
                 }
@@ -416,6 +432,84 @@ struct GroupDetailView: View {
         guard let session = model.postDecisionEntryReveal(entry, folder: folder) else { return }
         onSelectSession(session.id)
     }
+
+    /// 「決まった…」シートの確定。会話の外(Slack・PR レビュー等)で決着した内容を、
+    /// DecisionEntry.origin == .manual のエントリとして追加する。失敗はログに残したうえで
+    /// 呼び出し元(シート)へ投げ返し、シート側でメッセージとして出す(黙って失敗させない)。
+    private func appendManualEntry(
+        topicID: String, text: String, status: DecisionStatus
+    ) throws {
+        do {
+            try DecisionLogStore.appendManualEntry(
+                folder: folder, topicId: topicID, text: text, status: status)
+        } catch {
+            groupDetailLogger.error(
+                "手動記録の追加に失敗: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        reloadDecisions()
+    }
+}
+
+/// TopicRow の手動記録ボタンから開くシートの対象。DecisionTopic は Identifiable ではないため、
+/// .sheet(item:) に渡す薄いラッパー。
+private struct ManualEntrySheetTarget: Identifiable {
+    let topic: DecisionTopic
+    var id: String { topic.id }
+}
+
+/// 「決まった…」シート。会話の外で決着した内容を、その場で手動記録する。
+/// DecisionEditSheet(DecisionBlock.swift)と同じ「見出し + 入力 + 右下ボタン列」の構成に倣う。
+private struct ManualConfirmSheet: View {
+    let topic: DecisionTopic
+    let onSave: (_ text: String) throws -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+    @State private var errorMessage: String?
+
+    init(topic: DecisionTopic, onSave: @escaping (_ text: String) throws -> Void) {
+        self.topic = topic
+        self.onSave = onSave
+        _text = State(initialValue: topic.current?.text ?? "")
+    }
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(topic.title)
+                .font(HCFont.headline)
+            TextField("内容", text: $text, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(3...6)
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(HCFont.caption)
+                    .foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button("キャンセル") { dismiss() }
+                    .buttonStyle(.hcSecondary)
+                Button("確定") {
+                    do {
+                        try onSave(trimmedText)
+                        dismiss()
+                    } catch {
+                        errorMessage = "記録できませんでした。もう一度お試しください。"
+                    }
+                }
+                .buttonStyle(.hcPrimary)
+                .disabled(trimmedText.isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 420)
+    }
 }
 
 /// 状態フィルタ・アーカイブトグルに使う小さなチップボタン。選択中は cinnamon 塗り、
@@ -448,13 +542,7 @@ private struct TopicRow: View {
     let onToggleExpand: () -> Void
     let onJump: (DecisionEntry) -> Void
     let onToggleArchive: () -> Void
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MM/dd"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        return f
-    }()
+    let onManualConfirm: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -490,12 +578,13 @@ private struct TopicRow: View {
                             .frame(width: 48, alignment: .center)
                     }
                     if let recordedAt = topic.current?.recordedAt {
-                        Text(Self.dateFormatter.string(from: recordedAt))
+                        Text(HCDate.list.string(from: recordedAt))
                             .font(HCFont.monospacedDigit(.caption1))
                             .foregroundStyle(.secondary)
                             .frame(width: 40, alignment: .trailing)
                     }
                     archiveButton
+                    manualConfirmButton
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -509,14 +598,15 @@ private struct TopicRow: View {
         .padding(.vertical, 8)
     }
 
-    /// 変遷の鎖(タイムライン)。各版を縦のレール+点で繋ぐ。最後の版(=最新版)はレールを
-    /// 下に伸ばさない。1件しかない議題も同じ様式(点1つ・レール無し)で出す。
+    /// 変遷の鎖(タイムライン)。各版を破線レール+肉球の足あとで繋ぐ。新しい順に並べ、
+    /// 最上段(=最新版)を「いまここ」として強調する。最後の版はレールを下に伸ばさない。
+    /// 1件しかない議題も同じ様式(足あと1つ・レール無し)で出す。
     /// 描画本体は DecisionTimelineView に共通化している(質問応答パネルの経緯回答カードと
     /// 同じ部品。見た目はこの画面のものを正としてそちらへ合わせた)。
     private var historySection: some View {
         DecisionTimelineView(
             history: topic.history,
-            currentTextColor: .primary, pastTextColor: .secondary, mutedColor: .primary
+            currentTextColor: .primary, pastTextColor: .secondary
         ) { entry in
             entryMetaRow(entry)
         }
@@ -524,14 +614,19 @@ private struct TopicRow: View {
         .padding(.top, 6)
     }
 
-    /// 本文の下に分けたメタ行: セッション名・日付(ゼロ埋め等幅)・時刻チップ(既存のジャンプ
-    /// ボタンをそのまま使う)・理由(あれば「— 理由」で同じ行に添える)。
+    /// 本文の下に分けたメタ行: 状態チップ・日付(ゼロ埋め等幅)・entry.sourceLabel・時刻チップ
+    /// (既存のジャンプボタンをそのまま使う)・理由(あれば「— 理由」で同じ行に添える)。
+    /// 手動記録の reason は「どこで決まったか」であって変更理由ではないため、entry.sourceLabel
+    /// (DecisionTimelineView.swift 末尾の拡張)側に委ね、通常の「— 理由」表示とは重複させない。
+    /// timeSeconds も手動記録では常に nil なので、時刻ジャンプは既存の条件分岐のまま自然に出ない。
     private func entryMetaRow(_ entry: DecisionEntry) -> some View {
         HStack(spacing: 4) {
-            Text(entry.sessionName.isEmpty ? SessionRow.untitledPlaceholder : entry.sessionName)
-            Text(Self.dateFormatter.string(from: entry.recordedAt))
+            DecisionStatusChip(status: entry.status)
+            Text(HCDate.list.string(from: entry.recordedAt))
                 .font(HCFont.monospacedDigit(.caption1))
+            Text(entry.sourceLabel)
             if let timeSeconds = entry.timeSeconds {
+                Text("·")
                 Button(formatPlaybackTime(TimeInterval(timeSeconds))) { onJump(entry) }
                     .buttonStyle(.plain)
                     .font(HCFont.timecode)
@@ -539,7 +634,7 @@ private struct TopicRow: View {
                     .pointingHandOnHover()
                     .help("この位置から文字起こしへ移動")
             }
-            if let reason = entry.reason, !reason.isEmpty {
+            if !entry.isManual, let reason = entry.reason, !reason.isEmpty {
                 Text("— \(reason)")
             }
         }
@@ -567,5 +662,24 @@ private struct TopicRow: View {
         .foregroundStyle(.secondary)
         .pointingHandOnHover()
         .help(isArchived ? "アーカイブから戻す" : "アーカイブする")
+    }
+
+    /// 会話の外(Slack・PR レビュー等)で決着した議題を手動で記録する入口。
+    /// DecisionEntry.origin == .manual のエントリを追加する UI はここだけ
+    /// (データ層の DecisionLogStore.appendManualEntry 自体は既に実装済み)。
+    /// archiveButton と同じ「直接ボタン + 24x24pt のクリック判定」の作りに揃える。
+    private var manualConfirmButton: some View {
+        Button {
+            onManualConfirm()
+        } label: {
+            Image(systemName: "checkmark.circle")
+                .imageScale(.small)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .pointingHandOnHover()
+        .help("決まったことを手動で記録")
     }
 }

@@ -36,6 +36,15 @@ public enum DecisionSpeaker: String, Codable, Sendable, Equatable {
     }
 }
 
+/// エントリの由来。値が無い(nil)場合は会話(AI 抽出)由来を表す。既存の decisions.json は
+/// このフィールド自体を持たないため、増やす選択肢は「nil = 会話由来」に固定し、旧ファイルの
+/// デコードが壊れないようにする(会話由来にまで明示の case を振ると、旧 JSON にキーが
+/// 無いだけで判別できてしまうように見えて、実装が「キーの有無」と「値」の二重管理になる)。
+public enum DecisionEntryOrigin: String, Codable, Sendable, Equatable {
+    /// 会話の外(Slack・PR レビュー等)でユーザーが手動で記録したエントリ。
+    case manual
+}
+
 /// 1回の決定の記録。どのセッションの、いつの発言かを保つのは、後から該当箇所へ
 /// ジャンプする・同じセッションの要約を再生成したときに置き換える、の両方に使うため。
 public struct DecisionEntry: Codable, Sendable, Equatable {
@@ -43,21 +52,28 @@ public struct DecisionEntry: Codable, Sendable, Equatable {
     public var status: DecisionStatus
     /// 由来セッションのディレクトリ名。SessionStore が付ける命名と同じもので、
     /// 再抽出時の置換キー(DecisionLogStore.merge 参照)にもなる。
+    /// 手動エントリ(origin == .manual)はどのセッションにも属さないため空文字固定。
     public var sessionDirectoryName: String
     /// 表示用のセッション名。ディレクトリ名は日時混じりで読みにくいため別に持つ。
+    /// 手動エントリは sessionDirectoryName と同じ理由で空文字固定。
     public var sessionName: String
     /// セッションの開始日時。複数セッションをまたいだ履歴の並び順の主キー。
+    /// 手動エントリでは「記録した日時」がそのままこれにあたる。
     public var recordedAt: Date
-    /// セッション内の経過秒。該当発言へのジャンプ用。分からなければ nil。
+    /// セッション内の経過秒。該当発言へのジャンプ用。分からなければ nil。手動エントリは常に nil。
     public var timeSeconds: Int?
+    /// 手動エントリは発言者の切り分けという概念自体が無いため常に nil。
     public var by: DecisionSpeaker?
-    /// 変更理由の一言。新規決定には無いことが多いので任意。
+    /// 変更理由の一言。新規決定には無いことが多いので任意。手動エントリでは
+    /// 「どこで決まったか」(例: "Slack で合意")を入れる想定。
     public var reason: String?
+    /// エントリの由来。nil = 会話由来(既存の抽出フロー)。
+    public var origin: DecisionEntryOrigin?
 
     public init(
         text: String, status: DecisionStatus, sessionDirectoryName: String, sessionName: String,
         recordedAt: Date, timeSeconds: Int? = nil, by: DecisionSpeaker? = nil,
-        reason: String? = nil
+        reason: String? = nil, origin: DecisionEntryOrigin? = nil
     ) {
         self.text = text
         self.status = status
@@ -67,7 +83,11 @@ public struct DecisionEntry: Codable, Sendable, Equatable {
         self.timeSeconds = timeSeconds
         self.by = by
         self.reason = reason
+        self.origin = origin
     }
+
+    /// 会話の外でユーザーが手動記録したエントリかどうか。nil は会話からの抽出を表す。
+    public var isManual: Bool { origin == .manual }
 }
 
 /// 1つの議題と、その決定の変遷。history は常に recordedAt 昇順を保つ約束にする
@@ -189,6 +209,20 @@ extension DecisionLog {
             visibleCount: visible.count, statusCounts: statusCounts,
             filtered: filtered, sorted: sorted, recentlyMoved: recentlyMoved)
     }
+
+    /// メニューパネルの「まだ決まっていないこと」カード用: アーカイブ済みを除き、
+    /// 現在の状態が保留・仮のまま持ち越されている議題を新しい順に返す。
+    /// 「未決」の定義を View 側に散らさないため、判定はここへ一元化する。
+    public func unresolvedTopics() -> [DecisionTopic] {
+        topics
+            .filter { topic in
+                guard topic.archivedAt == nil, let current = topic.current else { return false }
+                return current.status == .pending || current.status == .tentative
+            }
+            .sorted {
+                ($0.current?.recordedAt ?? .distantPast) > ($1.current?.recordedAt ?? .distantPast)
+            }
+    }
 }
 
 // MARK: - AI からの差分(デコード専用)
@@ -275,6 +309,19 @@ public enum DecisionLogStore {
         }
     }
 
+    /// appendManualEntry の失敗。議題が見つからない場合、黙って何もせず返すと
+    /// ユーザーは「記録したつもり」のまま気づけないため、必ず throw する。
+    public enum ManualEntryError: LocalizedError {
+        case topicNotFound(topicId: String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .topicNotFound(let topicId):
+                return "議題が見つかりませんでした: \(topicId)"
+            }
+        }
+    }
+
     private static func directory(forFolder folder: String) -> URL {
         SessionStore.sessionsDirectory
             .appendingPathComponent(SessionStore.storedName(for: folder), isDirectory: true)
@@ -350,11 +397,15 @@ public enum DecisionLogStore {
     /// (積み上げ式にすると、再生成のたびに同じ決定が重複して並んでしまう)。
     ///
     /// 不変条件: 1つの議題(DecisionTopic)の history には、同じ sessionDirectoryName の
-    /// エントリが最大1件しか無い。変遷 UI はこの history を「前回の決定 → 今回の決定」の
-    /// 打ち消し(置き換え)として描くため、同じ会議由来のエントリが2件以上並ぶと、実際には
-    /// 「同じ会議内の複数の言明」でしかないものが「一度合意してすぐ覆した」ように見えてしまう。
-    /// この不変条件は、抽出プロンプト側(decisions フェンスに同じ議題を2回書かない指示)と、
-    /// 下の束ね処理(AI が指示を守れなかった場合の保険)の2段で保っている。
+    /// 会話由来(origin == nil)エントリが最大1件しか無い。変遷 UI はこの history を
+    /// 「前回の決定 → 今回の決定」の打ち消し(置き換え)として描くため、同じ会議由来のエントリが
+    /// 2件以上並ぶと、実際には「同じ会議内の複数の言明」でしかないものが「一度合意してすぐ覆した」
+    /// ように見えてしまう。この不変条件は、抽出プロンプト側(decisions フェンスに同じ議題を
+    /// 2回書かない指示)と、下の束ね処理(AI が指示を守れなかった場合の保険)の2段で保っている。
+    /// 手動エントリ(origin == .manual、DecisionLogStore.appendManualEntry 参照)は
+    /// この不変条件の対象外(会話由来ではなく、sessionDirectoryName も空文字固定で
+    /// 実在のセッションと衝突しない)。以下の置換削除が origin == nil だけを対象にしているのは
+    /// そのため。
     @discardableResult
     public static func merge(
         delta: DecisionDelta, folder: String,
@@ -362,8 +413,13 @@ public enum DecisionLogStore {
     ) throws -> DecisionLog {
         var log = try load(folder: folder)
 
+        // 会話由来(origin == nil)のエントリだけを置換対象にする。手動エントリは
+        // ユーザーが意図して記録したものであり、会話の再抽出のたびに消えては困るため、
+        // origin が付いている時点で無条件に保護する。
         for index in log.topics.indices {
-            log.topics[index].history.removeAll { $0.sessionDirectoryName == sessionDirectoryName }
+            log.topics[index].history.removeAll {
+                $0.origin == nil && $0.sessionDirectoryName == sessionDirectoryName
+            }
         }
 
         // 同じ議題へ解決される item を先にまとめてから1エントリを作る(上の不変条件を守るための保険)。
@@ -438,6 +494,34 @@ public enum DecisionLogStore {
             text: text, status: items.last!.status,
             sessionDirectoryName: sessionDirectoryName, sessionName: sessionName,
             recordedAt: sessionStartedAt, timeSeconds: timeSeconds, by: by, reason: reason)
+    }
+
+    /// 会話の外(Slack や PR レビュー等)で決まった・不要になったことを、ユーザーが手動で記録する。
+    /// 状態を直接書き換えるのではなく、history へ手動エントリを1件追記する
+    /// (経緯を消さずに「前回の決定 → 今回の決定」の変遷として残す、既存の history の
+    /// 設計をそのまま使うため)。追記したエントリが recordedAt 最新なら current(=history.last)
+    /// になり、議題の表示上の状態・内容はそのまま更新される。
+    ///
+    /// 議題が見つからない場合は黙って何もしない(=ユーザーが記録したつもりで実は残っていない)
+    /// を避けるため throw する。
+    @discardableResult
+    public static func appendManualEntry(
+        folder: String, topicId: String, text: String, status: DecisionStatus,
+        reason: String? = nil
+    ) throws -> DecisionLog {
+        var log = try load(folder: folder)
+        guard let index = log.topics.firstIndex(where: { $0.id == topicId }) else {
+            throw ManualEntryError.topicNotFound(topicId: topicId)
+        }
+
+        let entry = DecisionEntry(
+            text: text, status: status, sessionDirectoryName: "", sessionName: "",
+            recordedAt: Date(), timeSeconds: nil, by: nil, reason: reason, origin: .manual)
+        log.topics[index].history.append(entry)
+
+        sortHistories(&log)
+        try save(log, folder: folder)
+        return log
     }
 
     /// 検品用: 「記録に残さない」。該当議題の該当セッション由来エントリを消し、

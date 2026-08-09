@@ -402,6 +402,47 @@ extension SessionPackageTests {
         #expect(archived.filtered.map(\.id) == ["t2"])
     }
 
+    // MARK: - unresolvedTopics
+
+    @Test func unresolvedTopicsはアーカイブ済みと確定済みを除き保留仮を新しい順に返す() {
+        let older = decisionTestSessionStart
+        let newer = decisionTestSessionStart.addingTimeInterval(3600)
+        let log = DecisionLog(topics: [
+            DecisionTopic(
+                id: "pending-old", title: "保留(古い)",
+                history: [
+                    DecisionEntry(
+                        text: "内容", status: .pending, sessionDirectoryName: "s1",
+                        sessionName: "回1", recordedAt: older)
+                ]),
+            DecisionTopic(
+                id: "tentative-new", title: "仮(新しい)",
+                history: [
+                    DecisionEntry(
+                        text: "内容", status: .tentative, sessionDirectoryName: "s1",
+                        sessionName: "回1", recordedAt: newer)
+                ]),
+            DecisionTopic(
+                id: "confirmed", title: "確定済み",
+                history: [
+                    DecisionEntry(
+                        text: "内容", status: .confirmed, sessionDirectoryName: "s1",
+                        sessionName: "回1", recordedAt: newer)
+                ]),
+            DecisionTopic(
+                id: "archived-pending", title: "アーカイブ済みの保留", archivedAt: Date(),
+                history: [
+                    DecisionEntry(
+                        text: "内容", status: .pending, sessionDirectoryName: "s1",
+                        sessionName: "回1", recordedAt: newer)
+                ]),
+        ])
+
+        let unresolved = log.unresolvedTopics()
+
+        #expect(unresolved.map(\.id) == ["tentative-new", "pending-old"])
+    }
+
     // MARK: - DecisionDelta の寛容デコード
 
     @Test func 未知のstatusはpendingに落ちる() throws {
@@ -599,6 +640,127 @@ extension SessionPackageTests {
             #expect(log.topics.count == 2)
             #expect(log.topics[0].history.count == 1)
             #expect(log.topics[1].history.count == 1)
+        }
+    }
+
+    // MARK: - appendManualEntry(会話の外の足あと)
+
+    @Test func 手動エントリ追記でcurrentが置き換わりrecordedAt順が保たれる() throws {
+        try withTemporaryDecisionStore {
+            let first = try DecisionLogStore.merge(
+                delta: makeDecisionDelta(text: "初期案"), folder: decisionTestFolder,
+                sessionDirectoryName: "s1", sessionName: "回1",
+                sessionStartedAt: decisionTestSessionStart)
+            let topicId = first.topics[0].id
+
+            let after = try DecisionLogStore.appendManualEntry(
+                folder: decisionTestFolder, topicId: topicId, text: "Slack で見送りに変更",
+                status: .pending, reason: "Slack で合意")
+
+            let history = after.topics[0].history
+            #expect(history.count == 2)
+            // 手動エントリの recordedAt(記録時刻=いま)は会話エントリの recordedAt
+            // (2026-01-01 固定)より必ず後になるため、並び順はこの順で確定する。
+            #expect(history[0].sessionDirectoryName == "s1")
+            #expect(history[0].recordedAt < history[1].recordedAt)
+            #expect(history[1].origin == .manual)
+            #expect(history[1].sessionDirectoryName == "")
+            #expect(history[1].sessionName == "")
+            #expect(history[1].timeSeconds == nil)
+            #expect(history[1].by == nil)
+            #expect(history[1].reason == "Slack で合意")
+
+            #expect(after.topics[0].current?.text == "Slack で見送りに変更")
+            #expect(after.topics[0].current?.status == .pending)
+            #expect(after.topics[0].current?.origin == .manual)
+        }
+    }
+
+    @Test func 手動エントリ追記後に同一セッションの再マージをしても手動エントリが残る() throws {
+        try withTemporaryDecisionStore {
+            let first = try DecisionLogStore.merge(
+                delta: makeDecisionDelta(text: "初期案"), folder: decisionTestFolder,
+                sessionDirectoryName: "s1", sessionName: "回1",
+                sessionStartedAt: decisionTestSessionStart)
+            let topicId = first.topics[0].id
+
+            _ = try DecisionLogStore.appendManualEntry(
+                folder: decisionTestFolder, topicId: topicId, text: "Slack で見送りに変更",
+                status: .pending, reason: "Slack で合意")
+
+            // 同じセッションの要約を再生成した想定で、同じ sessionDirectoryName で再度 merge する。
+            // 置換対象は origin == nil のエントリだけなので、手動エントリは消えない。
+            let after = try DecisionLogStore.merge(
+                delta: makeDecisionDelta(topicId: topicId, text: "改訂案"),
+                folder: decisionTestFolder, sessionDirectoryName: "s1", sessionName: "回1",
+                sessionStartedAt: decisionTestSessionStart)
+
+            let history = after.topics[0].history
+            #expect(history.count == 2)
+            #expect(history.contains { $0.origin == .manual && $0.text == "Slack で見送りに変更" })
+            #expect(history.contains { $0.origin == nil && $0.text == "改訂案" })
+        }
+    }
+
+    @Test func 議題が見つからない場合appendManualEntryはエラーを投げる() throws {
+        try withTemporaryDecisionStore {
+            #expect(throws: DecisionLogStore.ManualEntryError.self) {
+                try DecisionLogStore.appendManualEntry(
+                    folder: decisionTestFolder, topicId: "存在しないid", text: "内容",
+                    status: .confirmed)
+            }
+        }
+    }
+
+    @Test func origin無しの旧JSONがデコードできる() throws {
+        try withTemporaryDecisionStore {
+            let dir = SessionStore.sessionsDirectory.appendingPathComponent(
+                decisionTestFolder, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let json = """
+                {"version": 1, "extractedSessionDirectories": [], "topics": [
+                    {"id": "t1", "title": "議題", "history": [
+                        {"text": "内容", "status": "confirmed", "sessionDirectoryName": "s1",
+                         "sessionName": "回1", "recordedAt": "2026-01-01T00:00:00Z"}
+                    ]}
+                ]}
+                """
+            try Data(json.utf8).write(to: dir.appendingPathComponent("decisions.json"))
+
+            let log = try DecisionLogStore.load(folder: decisionTestFolder)
+            #expect(log.topics[0].history[0].origin == nil)
+        }
+    }
+
+    @Test func 手動エントリ入りをエンコードしてデコードするとroundtripできる() throws {
+        try withTemporaryDecisionStore {
+            // appendManualEntry 経由だと recordedAt が Date()(実時刻)になり、ISO8601 の
+            // 秒未満切り捨てで往復比較が不安定になるため、ここでは日時を固定して直接組み立てる
+            // (見たいのは encode/decode が origin を含めて往復できることそのもの)。
+            let manualEntry = DecisionEntry(
+                text: "Slack で見送りに変更", status: .pending, sessionDirectoryName: "",
+                sessionName: "", recordedAt: decisionTestSessionStart, timeSeconds: nil, by: nil,
+                reason: "Slack で合意", origin: .manual)
+            let saved = DecisionLog(topics: [
+                DecisionTopic(id: "t1", title: "レート制限", history: [manualEntry])
+            ])
+            try DecisionLogStore.save(saved, folder: decisionTestFolder)
+
+            let loaded = try DecisionLogStore.load(folder: decisionTestFolder)
+            #expect(loaded == saved)
+        }
+    }
+
+    @Test func origin不在のエントリをエンコードしたJSONにoriginキーが現れない() throws {
+        try withTemporaryDecisionStore {
+            _ = try DecisionLogStore.merge(
+                delta: makeDecisionDelta(text: "初期案"), folder: decisionTestFolder,
+                sessionDirectoryName: "s1", sessionName: "回1",
+                sessionStartedAt: decisionTestSessionStart)
+
+            let data = try Data(contentsOf: DecisionLogStore.fileURL(folder: decisionTestFolder))
+            let text = String(decoding: data, as: UTF8.self)
+            #expect(!text.contains("origin"))
         }
     }
 }

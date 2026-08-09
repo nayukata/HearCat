@@ -7,6 +7,13 @@ import SwiftUI
 struct MenuPanel: View {
     let model: AppModel
 
+    /// 「まだ決まっていないこと」カードの中身。UnresolvedDecisionsCard 側に
+    /// .task を置くと、初期状態(pendingDecisions 空)では Group が EmptyView に
+    /// 解決され、EmptyView に付いた .task/.onAppear は発火しないため
+    /// 一度も読み込みが走らない(実機で再現済み)。activeSection の外側 VStack は
+    /// セッション中は必ず実体を持つため、ここに .task を置いて確実に発火させる。
+    @State private var pendingDecisions: [PendingDecision] = []
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -263,6 +270,11 @@ struct MenuPanel: View {
             .font(HCFont.caption)
             .foregroundStyle(HCColor.mistWhiteDim)
 
+            if let folder = model.activeSessionFolder, !pendingDecisions.isEmpty {
+                UnresolvedDecisionsCard(
+                    model: model, folder: folder, pendingDecisions: pendingDecisions)
+            }
+
             toggleRow("録音", isOn: recordingBinding)
             toggleRow("文字起こし", isOn: transcribingBinding)
 
@@ -301,6 +313,20 @@ struct MenuPanel: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
+        // body は状態変化のたびに再評価されるため、decisions.json の読み込みは
+        // ここへ切り出し、.task(id:) で folder が変わった時だけ読んで @State に保つ
+        // (body 内で毎回ディスクを読まない)。セッション中に決定記録が変わる頻度は
+        // 低いため、パネルを開き直した時に読み直せば十分で、ファイル監視までは行わない。
+        .task(id: model.activeSessionFolder) {
+            guard let folder = model.activeSessionFolder else {
+                pendingDecisions = []
+                return
+            }
+            let log = DecisionLogStore.loadOrEmpty(folder: folder)
+            pendingDecisions = log.unresolvedTopics().compactMap { topic in
+                topic.current.map { PendingDecision(topic: topic, current: $0) }
+            }
+        }
     }
 
     /// ラベル左・スイッチ右端のトグル行。スイッチの縦の列を揃える。
@@ -359,6 +385,104 @@ struct MenuPanel: View {
         Binding(
             get: { model.status.transcribing },
             set: { model.setTranscribing($0) })
+    }
+}
+
+/// 議題1件ぶんの表示用の中間形。DecisionTopic.current は Optional なので、
+/// 「current が無い(=history 空)議題は未決の対象にならない」を読み込み時点で
+/// 確定させ、行の描画側では force unwrap しなくて済むようにする。
+///
+/// 読み込み(MenuPanel.activeSection の .task)と表示(UnresolvedDecisionsCard)の
+/// 両方から参照するため、MenuPanel 直下の fileprivate な型として置く。
+fileprivate struct PendingDecision: Identifiable {
+    let topic: DecisionTopic
+    let current: DecisionEntry
+    var id: String { topic.id }
+}
+
+/// 「開始 30 秒ブリーフ」。セッション中、その保存先グループに未決(保留/仮)の議題が
+/// 残っている場合だけ、活動セクションの折り込みグループ行の直下に出す。会議に入ってすぐ
+/// 「前回までに決まっていないこと」を思い出せるようにするための入口で、経緯そのものは
+/// ここでは見せず、履歴ウィンドウの「決まったこと」タブへ委ねる。
+///
+/// 表示専用のビュー。decisions.json の読み込みは MenuPanel.activeSection 側の
+/// .task(id:) で行い、結果をここへ引数で渡す(このビュー自身に .task を持たせると、
+/// 初期状態で pendingDecisions が空 → 呼び出し側の Group が EmptyView に解決され、
+/// EmptyView に付いた .task/.onAppear は発火しない罠を踏む)。
+private struct UnresolvedDecisionsCard: View {
+    let model: AppModel
+    let folder: String
+    let pendingDecisions: [PendingDecision]
+
+    private static let maxVisibleRows = 3
+
+    var body: some View {
+        card
+    }
+
+    private var card: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                PawPrintShape()
+                    .fill(HCColor.cinnamon)
+                    .frame(width: 12, height: 12)
+                Text("まだ決まっていないこと")
+                    .font(HCFont.style(.subheadline, weight: .bold))
+                    .foregroundStyle(HCColor.mistWhiteDim)
+                Spacer()
+            }
+
+            VStack(spacing: 6) {
+                ForEach(pendingDecisions.prefix(Self.maxVisibleRows)) { decision in
+                    topicRow(decision)
+                }
+            }
+
+            if pendingDecisions.count > Self.maxVisibleRows {
+                Text("ほか \(pendingDecisions.count - Self.maxVisibleRows) 件")
+                    .font(HCFont.caption)
+                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Button {
+                model.showHistory(selecting: MainWindow.groupSelectionTag(folder))
+            } label: {
+                Text("経緯を開く")
+                    .font(HCFont.callout)
+                    .foregroundStyle(HCColor.cinnamon)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .pointingHandOnHover()
+        }
+        .padding(10)
+        .background(
+            HCRadius.shape(HCRadius.card)
+                .fill(.white.opacity(0.06)))
+    }
+
+    private func topicRow(_ decision: PendingDecision) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(decision.topic.title)
+                .font(HCFont.callout)
+                .foregroundStyle(HCColor.mistBody)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                Text(decision.current.text)
+                    .font(HCFont.caption)
+                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 6)
+                DecisionStatusChip(status: decision.current.status)
+                Text(HCDate.list.string(from: decision.current.recordedAt))
+                    .font(HCFont.monospacedDigit(.caption1))
+                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .frame(width: 40, alignment: .trailing)
+            }
+        }
     }
 }
 

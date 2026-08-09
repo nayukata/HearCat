@@ -163,6 +163,28 @@ enum HCRadius {
     }
 }
 
+/// 決定(decisions)まわりの日付書式。用途ごとに書式の意図が違うため、あえて統一しない
+/// (数値を丸めて似せると、どちらかの目的が損なわれる)。日付の書式をここ以外に直書きしない。
+enum HCDate {
+    /// 一覧の縦揃え用。`MM/dd`・ゼロ埋め・`en_US_POSIX`(ロケールで表記が揺れないように固定)。
+    /// GroupDetailView の議題一覧(TopicRow)で、複数行の日付を桁で揃えて読ませるために使う。
+    static let list: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM/dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
+
+    /// 本文に馴染ませる用。`M月d日`・`ja_JP`。質問応答パネル(DecisionHistoryCard)のように、
+    /// 縦揃えより「文章として自然に読める」ことを優先する場所で使う。
+    static let body: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M月d日"
+        formatter.locale = Locale(identifier: "ja_JP")
+        return formatter
+    }()
+}
+
 /// ランディングページ (docs/index.html) と揃えたデザイントークン。
 /// 色をここ以外に直書きしない(LP とアプリの見た目を一緒に保つため)。
 enum HCColor {
