@@ -1,6 +1,12 @@
 import AppKit
 import HearCatKit
 import SwiftUI
+import os
+
+/// 「クリックしても反応しない」報告の切り分け用。セクション開閉など、パネル内の
+/// クリックが実際に届いているかをログで確定させるためだけに使う。
+private let codeImpactOverlayLogger = Logger(
+    subsystem: SessionStore.bundleIdentifier, category: "code-impact-overlay")
 
 /// 会議中の作業を中断せずに結果を見られる、常に手前の非アクティブパネル。
 /// 通常ウィンドウを開かないため、ホットキーを押しても会議アプリからフォーカスを奪わない。
@@ -407,9 +413,12 @@ private struct CodeImpactOverlayView: View {
                                     .padding(.vertical, 12)
                             }
                             let isLatest = !streaming && index == model.codeImpactTurns.count - 1
+                            // 過去ターンの表示は、現在選択中のエンジンではなく、そのターンを
+                            // 実際に処理したエンジン(turn.cli)に従う
+                            // (エンジン切り替え後に過去回答の表示が変わってしまわないように)。
                             turnView(
                                 turnIndex: index, turnID: turn.id, question: turn.question,
-                                result: turn.result, isLatest: isLatest, cli: cli)
+                                result: turn.result, isLatest: isLatest, cli: turn.cli)
                                 .opacity(isLatest ? 1 : 0.75)
                                 .id(turn.id)
                         }
@@ -623,7 +632,9 @@ private struct CodeImpactOverlayView: View {
     /// - 質問あり + 資料フォルダなし: 「文字起こしから回答」(コード・資料は見ていないと伝える)
     /// 情報表示であって押せる要素ではないため、色はニュートラル(mistWhiteDim)にする。
     /// 過去ターンにも同じ構成を出し(情報粒度を揃える)、コピーボタンも各ターンの result を渡す。
-    private func statusBadgeRow(cli: AgentCLI, hasQuestion: Bool, result: String) -> some View {
+    private func statusBadgeRow(
+        cli: AgentCLI, hasQuestion: Bool, result: String
+    ) -> some View {
         let hasReferenceFolder = model.codeImpactActiveReferenceFolder != nil
         let statusText: String
         if !hasQuestion {
@@ -736,6 +747,9 @@ private struct CodeImpactOverlayView: View {
 
     /// macOS のダイアログ作法(キャンセル系を左、主アクションを右端)に合わせ、
     /// 「Esc 閉じる」を先に、主アクションの「↩ 送信」を最後に置く。
+    /// 右端には現在のエンジン・モデルを常時表示する(以前は回答ごとに statusBadgeRow で
+    /// 出していたが、「毎回表示されるのは邪魔」「質問前にどの AI で答えるか分からない」
+    /// という指摘で、送信前から見えるこの行へ集約した)。
     private var keyHintRow: some View {
         HStack(spacing: 6) {
             keyCap("Esc")
@@ -747,7 +761,28 @@ private struct CodeImpactOverlayView: View {
             Text("送信")
                 .font(HCFont.caption)
                 .foregroundStyle(HCColor.mistWhiteDim)
+            Spacer(minLength: 10)
+            Text(currentEngineLabel)
+                .font(HCFont.caption)
+                .foregroundStyle(HCColor.cinnamon)
+                .lineLimit(1)
         }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// 「エンジン名 (モデル名)」の形式(エンジン名と半角括弧の間に半角スペース 1 つ)。
+    /// モデル名は、ストリーミングで実際に届いた値(codeImpactStreamedModel)を優先し、
+    /// 届く前(まだ質問していない・応答の先頭が届く前)は設定値にフォールバックする。
+    /// どちらも無ければエンジン名だけを出す。
+    private var currentEngineLabel: String {
+        let cli = model.selectedCodeImpactAgent
+        guard
+            let modelName = model.codeImpactStreamedModel ?? model.settings.codeImpactAgentModel(for: cli),
+            !modelName.isEmpty
+        else {
+            return cli.displayName
+        }
+        return "\(cli.displayName) (\(modelName))"
     }
 
     private func keyCap(_ label: String) -> some View {
@@ -1448,6 +1483,9 @@ private struct CodeImpactResultView: View {
 
     private func toggle(title: String) {
         model.codeImpactSectionOverrides[overrideKey(title: title)] = !isExpanded(title: title)
+        codeImpactOverlayLogger.info(
+            "セクション開閉: key=\(overrideKey(title: title), privacy: .public) 新値=\(isExpanded(title: title), privacy: .public)"
+        )
     }
 
     /// 「次の一手」セクション専用の見た目。他のセクションの見出し行(`.padding(.top, 10)`)と

@@ -11,6 +11,12 @@ import os
 private let decisionExtractionLogger = Logger(
     subsystem: SessionStore.bundleIdentifier, category: "decision-extraction")
 
+/// 決定事項の変遷チップ・経緯カードからのジャンプ、履歴ウィンドウの表示まわりの内部ログ。
+/// 「クリックしても反応しない」報告の切り分け用(SessionDetailView / GroupDetailView の
+/// decisionInspectionLogger / groupDetailLogger と同じ category)。
+private let decisionInspectionLogger = Logger(
+    subsystem: SessionStore.bundleIdentifier, category: "decision-inspection")
+
 enum CodeImpactAnalysisState {
     case idle
     case requiresConsent(AgentCLI)
@@ -25,6 +31,7 @@ struct CodeImpactTurn: Identifiable {
     let id = UUID()
     let question: String?
     let result: String
+    let cli: AgentCLI
 }
 
 /// 質問応答パネルの「根拠と補足」内のタイムスタンプから、履歴側の文字起こしの該当時刻へ
@@ -196,6 +203,10 @@ final class AppModel {
     /// ストリーミングで届いた assistant テキストの断片を蓄積したもの。
     /// completed になったら使わなくなり、次の analyzing 開始時にクリアする。
     private(set) var codeImpactPartialText: String = ""
+    /// ストリーミング中に実測できた、実際に使われているモデル名。system/init(claude)等の
+    /// イベントから拾えた場合だけ入る。拾えなければ nil のままで、その場合はターン確定時に
+    /// settings.codeImpactAgentModel(for:) の設定値へフォールバックする。
+    private(set) var codeImpactStreamedModel: String?
     /// ストリーミング中の進捗行(例: "Read: AppModel.swift")。オーバーレイの上端に出す。
     private(set) var codeImpactActivity: String?
     /// 結果セクション(見出しタイトル)ごとの開閉のユーザー操作。ストリーミング表示と完了表示で
@@ -1098,6 +1109,7 @@ final class AppModel {
         codeImpactSessionDirectory = nil
         codeImpactSentTranscriptLength = nil
         codeImpactPartialText = ""
+        codeImpactStreamedModel = nil
         codeImpactActivity = nil
         codeImpactSectionOverrides = [:]
     }
@@ -1105,6 +1117,10 @@ final class AppModel {
     /// 対象切り替え直後、いま使える状態かどうかをパネルへ反映する共通処理。
     /// openCodeImpactPanel() と openCodeImpactPanel(for:) の両方から呼ぶ。
     private func presentCodeImpactPanelAfterTargetSwitch() {
+        // メニューパネルはオーバーレイ(.floating)より上の階層に出るため、開いたままだと
+        // 質問パネルに被って「開いたのに前面に出ない」ように見える。showHistory と同じく
+        // 先に閉じる(ホットキー経由などで閉じている場合は何もしないので害はない)。
+        dismissPanel()
         showCodeImpactOverlay()
         switch codeImpactAnalysisState {
         case .idle, .failed:
@@ -1113,7 +1129,17 @@ final class AppModel {
                 // 前回の失敗表示が残っていても、いま使える状態なら入力待ちへ戻す。
                 codeImpactAnalysisState = .idle
             } catch {
-                codeImpactAnalysisState = .failed(error.localizedDescription)
+                // ライブ対象で文字起こしが動いているなら、開いた瞬間にまだ発話が無い
+                // (transcript が空)だけの状態は失敗にしない。入力待ちのまま開き、
+                // 実際に質問した時点でまだ空ならそこで知らせる。過去セッション対象の
+                // 「文字起こしが無い」は待っても増えないので、これまでどおり先に知らせる。
+                if case AgentSummarizeError.noTranscript = error,
+                    codeImpactTargetDirectory == nil, status.transcribing
+                {
+                    codeImpactAnalysisState = .idle
+                } else {
+                    codeImpactAnalysisState = .failed(error.localizedDescription)
+                }
             }
         case .requiresConsent, .analyzing, .completed:
             break
@@ -1190,6 +1216,7 @@ final class AppModel {
         codeImpactTask = nil
         codeImpactRequestID = nil
         codeImpactPartialText = ""
+        codeImpactStreamedModel = nil
         codeImpactActivity = nil
         // 対象切り替え(switchCodeImpactTarget)経由でも呼ばれるため、失敗表示も一緒に片づける。
         codeImpactTurnError = nil
@@ -1264,7 +1291,10 @@ final class AppModel {
         }
     }
 
-    private var selectedCodeImpactAgent: AgentCLI {
+    // 質問パネルのキーヒント行が、送信前(まだ turn も session も無い状態)でも
+    // 「これから使うエンジン」を表示するために参照する。private のままだと
+    // CodeImpactOverlay.swift から見えないため internal にしている。
+    var selectedCodeImpactAgent: AgentCLI {
         let preferred = settings.codeImpactAgent
         let available = AgentCLIDetector.shared.availableCLIs
         guard !available.isEmpty, !available.contains(preferred) else { return preferred }
@@ -1324,6 +1354,7 @@ final class AppModel {
         let question = codeImpactQuestion
         codeImpactAnalysisState = .analyzing(cli)
         codeImpactPartialText = ""
+        codeImpactStreamedModel = nil
         // 前回の失敗表示が残っていても、新しい調査を始めた時点で消す。
         codeImpactTurnError = nil
         codeImpactActivity = nil
@@ -1364,8 +1395,11 @@ final class AppModel {
                             model.codeImpactPartialText += text
                         case .activity(let text):
                             model.codeImpactActivity = text
+                        case .model(let name):
+                            model.codeImpactStreamedModel = name
                         case .reset:
                             model.codeImpactPartialText = ""
+                            model.codeImpactStreamedModel = nil
                             model.codeImpactActivity = nil
                         }
                     }
@@ -1409,7 +1443,8 @@ final class AppModel {
                 }
                 guard !Task.isCancelled, self?.codeImpactRequestID == requestID else { return }
                 // 失敗・キャンセルでは積まない。ここに来た時点で成功が確定している。
-                self?.codeImpactTurns.append(CodeImpactTurn(question: question, result: result))
+                self?.codeImpactTurns.append(
+                    CodeImpactTurn(question: question, result: result, cli: cli))
                 self?.codeImpactAnalysisState = .completed(cli)
             } catch {
                 guard !Task.isCancelled, let self, self.codeImpactRequestID == requestID else { return }
@@ -1674,6 +1709,7 @@ final class AppModel {
         guard let openWindowAction else {
             // 起動直後でまだ注入されていない。注入された時点でここへ戻ってくる。
             needsHistoryWindow = true
+            decisionInspectionLogger.error("履歴ウィンドウの開き口が未注入のため保留")
             return
         }
         openWindowAction("main")
@@ -1727,7 +1763,15 @@ final class AppModel {
             let session = sessions.first(where: {
                 $0.folder == folder && $0.directory.lastPathComponent == entry.sessionDirectoryName
             })
-        else { return nil }
+        else {
+            decisionInspectionLogger.error(
+                "決定エントリのジャンプ失敗: folder=\(folder) dir=\(entry.sessionDirectoryName, privacy: .public) sessions=\(self.sessions.count, privacy: .public)"
+            )
+            return nil
+        }
+        decisionInspectionLogger.info(
+            "決定エントリのジャンプ: \(entry.sessionDirectoryName, privacy: .public) time=\(entry.timeSeconds ?? -1, privacy: .public)"
+        )
         guard let timeSeconds = entry.timeSeconds else { return session }
         let wallClock = entry.recordedAt.addingTimeInterval(TimeInterval(timeSeconds))
         transcriptRevealRequest = TranscriptRevealRequest(
@@ -1742,6 +1786,8 @@ final class AppModel {
     /// 由来セッションそのものを引き直す(GroupDetailView.jumpToEntry と同じ共通処理)。
     @MainActor
     func revealDecisionEntry(_ entry: DecisionEntry, folder: String) {
+        decisionInspectionLogger.info(
+            "経緯カードの時刻クリック: dir=\(entry.sessionDirectoryName, privacy: .public)")
         guard let session = postDecisionEntryReveal(entry, folder: folder) else { return }
         showHistory(selecting: session.id)
     }

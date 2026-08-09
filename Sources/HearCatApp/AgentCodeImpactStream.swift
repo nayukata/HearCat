@@ -12,6 +12,9 @@ enum CodeImpactStreamEvent: Sendable {
     case textDelta(String)
     /// ツール利用など、進捗として見せてよい 1 行(例: "Read: AppModel.swift")。
     case activity(String)
+    /// system/init イベントから拾えた、実際に使われているモデル名。設定側の希望値
+    /// (フォールバック名など)ではなく実測値なので、UI の表示はこちらを優先する。
+    case model(String)
     /// フォールバックで実行をやり直す合図。直前の attempt で溜まった部分テキストは
     /// 引き継がず、受け取った側は codeImpactPartialText 等をクリアすること。
     case reset
@@ -451,6 +454,9 @@ enum AgentCodeImpactStream {
             else { return }
             state.setSessionID(sessionID)
             onEvent(.sessionID(sessionID))
+            if let model = json["model"] as? String, !model.isEmpty {
+                onEvent(.model(model))
+            }
 
         case "stream_event":
             guard let event = json["event"] as? [String: Any],
