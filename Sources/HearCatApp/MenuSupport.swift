@@ -32,6 +32,7 @@ func makeHCMenu() -> NSMenu {
 /// isFlipped = false(非 flipped、y=0 が下端)なので、ボタン直下に出すには負のオフセットを
 /// 使う。NSHostingView 等の flipped なビューに載る場合は上端 y=0 なので、そちらは
 /// 高さぶん下げる。
+@MainActor
 func popUpMenu(_ menu: NSMenu, below anchor: NSView) {
     let point = anchor.isFlipped
         ? NSPoint(x: 0, y: anchor.bounds.height + 4)
