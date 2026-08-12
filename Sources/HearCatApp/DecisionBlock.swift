@@ -12,6 +12,9 @@ struct DecisionRow: Identifiable, Equatable {
     let currentText: String
     let status: DecisionStatus
     let timeSeconds: Int?
+    /// この議題の全履歴。展開時に DecisionTimelineView で描く。カード本文(previousText/
+    /// currentText)の抽出規則とは別に、経緯を辿りたいときのためだけに保持する。
+    let history: [DecisionEntry]
 
     var id: String { topicID }
 
@@ -32,7 +35,8 @@ struct DecisionRow: Identifiable, Equatable {
             return DecisionRow(
                 topicID: topic.id, title: topic.title,
                 previousText: previous?.text, currentText: current.text,
-                status: current.status, timeSeconds: current.timeSeconds)
+                status: current.status, timeSeconds: current.timeSeconds,
+                history: topic.history)
         }
     }
 }
@@ -75,30 +79,91 @@ private struct DecisionRowContent: View {
     /// MenuSupport.swift のコメント参照。
     @State private var menuAnchor: NSView?
     @State private var menuActionHandler = MenuActionHandler()
+    /// 全履歴タイムラインの展開状態。GroupDetailView.TopicRow と同じく行単位で持つ
+    /// (複数カードを同時に開けてよく、他の行の開閉に連動する理由が無いため)。
+    @State private var isExpanded = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(row.title)
-                    .font(HCFont.style(.body, weight: .semibold))
-                content
-            }
-            Spacer(minLength: 8)
-            HStack(spacing: 6) {
-                DecisionStatusChip(status: row.status)
-                if let timeSeconds = row.timeSeconds {
-                    Button(formatPlaybackTime(TimeInterval(timeSeconds))) {
-                        onJump(timeSeconds)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .foregroundStyle(.secondary)
+                    .font(HCFont.caption)
+                    .padding(.top, 4)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.title)
+                        .font(HCFont.style(.body, weight: .semibold))
+                    // 展開中はタイムライン先頭(いまここ)と同じ内容が2回並んで見えるため隠す。
+                    if !isExpanded {
+                        content
                     }
+                }
+                Spacer(minLength: 8)
+                HStack(spacing: 10) {
+                    DecisionStatusChip(status: row.status)
+                    if let timeSeconds = row.timeSeconds {
+                        Button(formatPlaybackTime(TimeInterval(timeSeconds))) {
+                            onJump(timeSeconds)
+                        }
+                        .buttonStyle(.plain)
+                        .font(HCFont.timecode)
+                        .foregroundStyle(.tint)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                        .pointingHandOnHover()
+                        .help("この位置から文字起こしへ移動")
+                    }
+                    moreButton
+                }
+            }
+            .contentShape(Rectangle())
+            // 行全体をタップ対象にしても、秒数ボタン・「⋯」ボタンは Button 自身のヒットテストが
+            // 外側の onTapGesture より優先されるため奪われない(GroupDetailView.TopicRow と同じ理屈)。
+            .onTapGesture { isExpanded.toggle() }
+
+            if isExpanded {
+                historySection
+            }
+        }
+    }
+
+    /// 全履歴タイムライン。カード本文(previousText/currentText、このセッション由来の抜粋)とは
+    /// 別に、議題の変遷をまるごと辿るための導線。描画は GroupDetailView.TopicRow.historySection
+    /// と同じ DecisionTimelineView を使うが、メタ行の組み立ては呼び出し元ごとに違うためここでも
+    /// 個別に持つ(TopicRow 側との無理な共通化はしない)。
+    private var historySection: some View {
+        DecisionTimelineView(
+            history: row.history,
+            currentTextColor: .primary, pastTextColor: .secondary
+        ) { entry in
+            entryMetaRow(entry)
+        }
+        .padding(.leading, 20)
+        .padding(.top, 6)
+    }
+
+    private func entryMetaRow(_ entry: DecisionEntry) -> some View {
+        HStack(spacing: 4) {
+            DecisionStatusChip(status: entry.status)
+            Text(HCDate.list.string(from: entry.recordedAt))
+                .font(HCFont.monospacedDigit(.caption1))
+            Text(entry.sourceLabel)
+            if let timeSeconds = entry.timeSeconds {
+                Text("·")
+                Button(formatPlaybackTime(TimeInterval(timeSeconds))) { onJump(timeSeconds) }
                     .buttonStyle(.plain)
                     .font(HCFont.timecode)
                     .foregroundStyle(.tint)
                     .pointingHandOnHover()
                     .help("この位置から文字起こしへ移動")
-                }
-                moreButton
+            }
+            if !entry.isManual, let reason = entry.reason, !reason.isEmpty {
+                Text("— \(reason)")
             }
         }
+        .font(HCFont.caption)
+        .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -118,12 +183,18 @@ private struct DecisionRowContent: View {
         }
     }
 
+    /// グリフの実寸は変えず、.frame + .contentShape でクリック判定だけ 24x24pt 相当まで広げる
+    /// (GroupDetailView.TopicRow.archiveButton と同じ作り)。MenuAnchorView は label の背後に
+    /// 敷いているため、広げたフレームがそのままアンカーの大きさになり、popUpMenu はこの枠の
+    /// 下端から出る(位置関係は保たれる。以前より少し下から出るだけ)。
     private var moreButton: some View {
         Button {
             presentActionMenu()
         } label: {
             Image(systemName: "ellipsis")
                 .imageScale(.small)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
