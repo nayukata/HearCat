@@ -381,7 +381,7 @@ enum AgentCodeImpactStream {
                 nonisolated(unsafe) let timeoutWork = DispatchWorkItem {
                     guard process.isRunning else { return }
                     process.terminate()
-                    resumeOnce(.failure(AgentSummarizeError.timedOut))
+                    resumeOnce(.failure(AgentSummarizeError.timedOut(minutes: Int(timeout / 60), partialOutput: nil)))
                 }
 
                 process.terminationHandler = { proc in

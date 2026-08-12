@@ -158,7 +158,10 @@ enum AgentSummarizeError: LocalizedError {
     case notInstalled(AgentCLI)
     case notAuthenticated(AgentCLI)
     case noTranscript
-    case timedOut
+    /// partialOutput はタイムアウトまでに溜まった標準出力の末尾(切り詰め済み)。
+    /// 呼び出し元がハングと単なる処理超過を区別できるようにするための情報で、
+    /// 取得していない経路(要約以外のストリーミング実行)では nil のままでよい。
+    case timedOut(minutes: Int, partialOutput: String?)
     case failed(exitCode: Int32, stderr: String)
     case emptyOutput
     case unexpectedOutput(excerpt: String)
@@ -171,8 +174,11 @@ enum AgentSummarizeError: LocalizedError {
             return "\(cli.displayName) にログインしていません。ターミナルでログインしてから再度お試しください"
         case .noTranscript:
             return "文字起こしがありません"
-        case .timedOut:
-            return "AI 処理がタイムアウトしました (5 分)"
+        case .timedOut(let minutes, let partialOutput):
+            guard let partialOutput, !partialOutput.isEmpty else {
+                return "AI 処理がタイムアウトしました (\(minutes) 分)"
+            }
+            return "AI 処理がタイムアウトしました (\(minutes) 分)。ここまでの出力: \(partialOutput)"
         case .failed(let exitCode, let stderr):
             let summary = stderr.isEmpty ? "" : ": \(stderr)"
             return "AI 処理に失敗しました (終了コード \(exitCode))\(summary)"
@@ -324,7 +330,7 @@ enum AgentProcessEnvironment {
 /// エージェント CLI での要約実行。claude / codex の差分(引数の組み立て・出力の取り出し方)を
 /// このファイル内に閉じ込める。
 enum AgentSummarizer {
-    private static let timeout: TimeInterval = 300
+    private static let timeout: TimeInterval = 600
 
     static func summarize(
         using cli: AgentCLI,
@@ -627,7 +633,10 @@ enum AgentSummarizer {
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard process.isRunning else { return }
                 process.terminate()
-                resumeOnce(.failure(AgentSummarizeError.timedOut))
+                let partialOutput = String(data: stdout.snapshot(), encoding: .utf8) ?? ""
+                resumeOnce(.failure(AgentSummarizeError.timedOut(
+                    minutes: Int(timeout / 60),
+                    partialOutput: summarizeTail(partialOutput))))
             }
         }
     }
@@ -646,6 +655,14 @@ enum AgentSummarizer {
     static func summarize(stderr: String) -> String {
         let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.count > 300 ? String(trimmed.prefix(300)) + "…" : trimmed
+    }
+
+    /// タイムアウト時に添える部分出力の要約。summarize(stderr:) が失敗時の診断ログを
+    /// 先頭から切り詰めるのに対し、こちらは「どこまで書けていたか」を見せたいため末尾を残す。
+    private static func summarizeTail(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.count > 300 ? "…" + trimmed.suffix(300) : trimmed
     }
 
     /// 要約専用。本文は「## 概要」で始まる想定。前置きが混ざっていたら最初の「## 」以降だけを
