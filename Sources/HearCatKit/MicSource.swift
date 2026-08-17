@@ -25,12 +25,26 @@ public final class MicSource {
             applyInputDevice(uid: deviceUID, to: input)
         }
         let format = input.outputFormat(forBus: 0)
-        debugLog("mic capture format sr=\(format.sampleRate) ch=\(format.channelCount)")
+        if let deviceName = Self.currentInputDeviceName(audioUnit: input.audioUnit) {
+            debugLog("mic capture format sr=\(format.sampleRate) ch=\(format.channelCount) device=\(deviceName)")
+        } else {
+            debugLog("mic capture format sr=\(format.sampleRate) ch=\(format.channelCount)")
+        }
         let continuation = self.continuation
         // tap のコールバックは音声スレッド。ここでは深いコピーだけ取って即 yield し、
         // 変換や解析といった重い処理は消費側(別スレッド)に任せる。
+        // callbackCount はクロージャに参照キャプチャされ、このタップ専用に音声スレッド上でだけ増える。
+        var callbackCount = 0
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
             guard let copy = buffer.deepCopy() else { return }
+            if hearcatDebug {
+                callbackCount += 1
+                if callbackCount % 100 == 0 {
+                    let rms = Self.perChannelRMS(buffer)
+                    let formatted = rms.enumerated().map { "ch\($0.offset)=\($0.element)" }.joined(separator: " ")
+                    debugLog("mictap cb#\(callbackCount) rms=[\(formatted)]")
+                }
+            }
             continuation.yield(SendableBuffer(buffer: copy))
         }
         engine.prepare()
@@ -65,6 +79,68 @@ public final class MicSource {
         if err != noErr {
             debugLog("mic device uid=\(uid) の適用に失敗(err=\(err))。システム標準を使用します")
         }
+    }
+
+    // MARK: - 診断ログ
+
+    /// 実際に使われている入力デバイス名。audioUnit にまだ現在のデバイスが反映されていない場合は
+    /// 既定の入力デバイスにフォールバックする。取得できなければ nil(呼び出し側でログから省く)。
+    private static func currentInputDeviceName(audioUnit: AudioUnit?) -> String? {
+        if let audioUnit, let deviceID = currentDevice(of: audioUnit) {
+            return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceNameCFString)
+        }
+        guard let deviceID = defaultInputDeviceID() else { return nil }
+        return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceNameCFString)
+    }
+
+    private static func currentDevice(of audioUnit: AudioUnit) -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let err = AudioUnitGetProperty(
+            audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &deviceID, &size)
+        guard err == noErr else { return nil }
+        return deviceID
+    }
+
+    private static func defaultInputDeviceID() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let err = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        guard err == noErr else { return nil }
+        return deviceID
+    }
+
+    /// チャンネルごとの RMS。片チャンネルにしか声が入っていない疑いの切り分けに使う。
+    /// マイクの tap は Float32 でしか来ないため(Int16 は非対応)、該当しなければ空を返す。
+    private static func perChannelRMS(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        let frames = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        guard frames > 0, channels > 0, let data = buffer.floatChannelData else { return [] }
+        var result = [Float](repeating: 0, count: channels)
+        if buffer.format.isInterleaved {
+            let p = data[0]
+            for c in 0..<channels {
+                var sum: Float = 0
+                for i in 0..<frames {
+                    let v = p[i * channels + c]
+                    sum += v * v
+                }
+                result[c] = (sum / Float(frames)).squareRoot()
+            }
+        } else {
+            for c in 0..<channels {
+                let p = data[c]
+                var sum: Float = 0
+                for i in 0..<frames { sum += p[i] * p[i] }
+                result[c] = (sum / Float(frames)).squareRoot()
+            }
+        }
+        return result
     }
 
     // MARK: - デバイス列挙(Core Audio)
