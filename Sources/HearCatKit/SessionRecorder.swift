@@ -58,31 +58,15 @@ public actor SessionRecorder {
     private var micQueue: [Float] = []
     private var systemQueue: [Float] = []
     /// 録音音量(設定画面から変更)。1.0 が原音。ミックス時の重みとして掛ける。
+    /// マイクの自動メイクアップゲインは撤去した。自分の声(実測 RMS -53〜-59dB)を
+    /// 相手(-26dB)に揃えるには 25〜40 倍の増幅が要るが、マイク信号の SN 比が約 20dB
+    /// しかないため、ノイズフロアも可聴域(-42dB 前後)まで持ち上がり録音全体にヒスが乗る
+    /// (実録音で確認)。録音は無加工で残し、音量差は再生側や設定のスライダーで補う。
     private var micGain: Float = 1
     private var systemGain: Float = 1
     /// マイクはシステム音声より先に動き出すため、相手側の最初のバッファが届いた時点で
     /// 先行分を捨てて2音源の開始位置を揃える。
     private var alignedToSystemStart = false
-
-    /// マイク自動メイクアップゲイン。実録音で自分の声が RMS -53〜-59dB、
-    /// システム音声(相手)が -26dB と、素の信号のままでは自分の声がほぼ聞こえない
-    /// (Zoom 等は自前のマイク AGC でこの差を補正している)。ここではマイク側だけに
-    /// 自動ゲインを掛けて、システム音声に対して聞き取れる音量まで底上げする。
-    private var autoMicGain: Float = 1
-    /// 発話レベルの指数移動平均(EMA)。無音・環境ノイズのブロックでは更新しないことで、
-    /// 目標ゲインが無音側に引きずられないようにする。未確定の間はゲインを 1 のまま保つ。
-    private var speechLevelEMA: Float?
-    /// これ未満は無音・環境ノイズとみなし EMA を更新しない。
-    private static let speechEMAThreshold: Float = 0.0015
-    /// EMA の更新係数。大きいほど直近のブロックに素早く追従する。
-    private static let speechEMAAlpha: Float = 0.2
-    /// 発話の目標 RMS。システム音声側の実測 -26dB(≈0.05)に揃える。
-    private static let targetSpeechRMS: Float = 0.05
-    /// 自動ゲインの上限。実測差 約30dB(+32dB ≈ 40倍)を超えて増幅しない。
-    private static let maxAutoMicGain: Float = 40
-    /// 目標ゲインへ毎ブロック追従させる割合。ブロックは 0.1 秒なので約1秒で追従し、
-    /// 音量急変時のポンピング(急激な音量変化の耳障りな上下動)を防ぐ。
-    private static let autoGainSmoothing: Float = 0.1
 
     /// 0.1秒ぶんずつ書く。小さすぎる書き込みはエンコーダに優しくない。
     private let blockFrames = 4800
@@ -298,9 +282,8 @@ public actor SessionRecorder {
             let otherOut = otherBlock?.floatChannelData?[0]
             micQueue.withUnsafeBufferPointer { mic in
                 systemQueue.withUnsafeBufferPointer { system in
-                    updateAutoMicGain(mic: mic, frames: frames)
                     for i in 0..<frames {
-                        let me = mic[i] * micGain * autoMicGain
+                        let me = mic[i] * micGain
                         let other = system[i] * systemGain
                         out[i] = max(-1, min(1, me + other))
                         otherOut?[i] = max(-1, min(1, other))
@@ -369,29 +352,6 @@ public actor SessionRecorder {
             errorLog("片側だけの録音を中止します: \(error)")
             file = nil
         }
-    }
-
-    /// マイク側(ゲイン適用前の素の値)のブロック RMS から自動ゲインを更新する。
-    /// micGain を掛ける直前の生サンプルを見るのは、ユーザー設定の音量スライダーと
-    /// 独立に「発話の物理的な大きさ」を追跡するため(スライダーを動かすたびに
-    /// 目標が変わってしまうのを避ける)。
-    private func updateAutoMicGain(mic: UnsafeBufferPointer<Float>, frames: Int) {
-        guard frames > 0 else { return }
-        var sumSquares: Float = 0
-        for i in 0..<frames { sumSquares += mic[i] * mic[i] }
-        let rms = (sumSquares / Float(frames)).squareRoot()
-
-        if rms > Self.speechEMAThreshold {
-            if let ema = speechLevelEMA {
-                speechLevelEMA = ema + Self.speechEMAAlpha * (rms - ema)
-            } else {
-                speechLevelEMA = rms
-            }
-        }
-
-        guard let ema = speechLevelEMA, ema > 0 else { return }
-        let target = max(1, min(Self.maxAutoMicGain, Self.targetSpeechRMS / ema))
-        autoMicGain += (target - autoMicGain) * Self.autoGainSmoothing
     }
 
     // MARK: - モノラル化とレート合わせ(決定的な手書き処理)

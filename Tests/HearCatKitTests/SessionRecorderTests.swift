@@ -4,9 +4,9 @@ import Testing
 
 @testable import HearCatKit
 
-/// SessionRecorder のマイク自動ゲインの検証。
-/// 実測(自分の声 RMS -53〜-59dB、相手[システム音声] RMS -26dB、約30dBの差)を踏まえ、
-/// マイク側だけに自動メイクアップゲインが掛かり、システム音声側には掛からないことを確認する。
+/// SessionRecorder のミックス音量の検証。
+/// マイク・システム音声のどちらも自動では増幅されず、設定ゲイン(既定値 1)倍の
+/// 素の振幅のまま録音されることを確認する。
 struct SessionRecorderTests {
     private let sampleRate = SessionRecorder.sampleRate
     private let blockFrames = 4800
@@ -57,7 +57,7 @@ struct SessionRecorderTests {
         FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).m4a")
     }
 
-    @Test func マイク入力に自動ゲインが掛かり相手より聞こえる音量まで底上げされる() async throws {
+    @Test func マイク入力は増幅せずそのままの音量で録る() async throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
 
@@ -65,7 +65,7 @@ struct SessionRecorderTests {
         // 実測の自分の声(RMS -53〜-59dB ≈ 0.001〜0.002)相当の小さい振幅。
         let amplitude: Float = 0.002 * Float(2).squareRoot()
         var allInput: [Float] = []
-        let blocks = 50 // 5秒ぶん(自動ゲインが目標へ追従し切るのに十分な長さ)
+        let blocks = 50 // 5秒ぶん
         for i in 0..<blocks {
             // system 側の最初の1回はマイクのプリロールを揃えるためのものなので先に呼ぶ。
             await recorder.appendSystem(makeBuffer([Float](repeating: 0, count: blockFrames)))
@@ -79,7 +79,9 @@ struct SessionRecorderTests {
         let outputRMS = try readOverallRMS(url: url)
 
         #expect(inputRMS > 0.0015 && inputRMS < 0.003, "テスト前提の入力RMSが想定範囲外: \(inputRMS)")
-        #expect(outputRMS > inputRMS * 10, "自動ゲインで十分増幅されていない: input=\(inputRMS) output=\(outputRMS)")
+        #expect(
+            outputRMS > inputRMS * 0.5 && outputRMS < inputRMS * 1.5,
+            "マイク入力が無加工のまま録れていない(AACエンコード誤差の範囲を超える差): input=\(inputRMS) output=\(outputRMS)")
     }
 
     @Test func 遅配が追いついても録音は実時間より長くならない() async throws {
@@ -155,7 +157,7 @@ struct SessionRecorderTests {
         await recorder.close()
 
         #expect(try readOverallRMS(url: otherURL) < 0.001)
-        // 混ぜたものには自分の声が(自動ゲインで底上げされて)入っている。
+        // 混ぜたものには自分の声が入っている。
         #expect(try readOverallRMS(url: url) > 0.01)
     }
 
@@ -217,7 +219,7 @@ struct SessionRecorderTests {
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
-    @Test func システム音声には自動ゲインが掛からない() async throws {
+    @Test func システム音声は増幅せずそのままの音量で録る() async throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
 
