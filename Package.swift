@@ -5,10 +5,23 @@ let package = Package(
     name: "hearcat",
     platforms: [.macOS("26.0")],
     targets: [
+        // speexdsp のエコーキャンセラ (speex_echo/mdf) のみを同梱した C ターゲット。
+        // ノイズ抑制などの他機能は含めない。ライセンスは COPYING (BSD) を参照。
+        .target(
+            name: "CSpeexDSP",
+            path: "Sources/CSpeexDSP",
+            exclude: ["COPYING"],
+            cSettings: [
+                .define("FLOATING_POINT"),
+                .define("USE_KISS_FFT"),
+                .define("EXPORT", to: "")
+            ]
+        ),
         // 音声キャプチャ・文字起こし・録音・セッション管理・IPC の共通部品。
         // アプリ(常駐エンジン)と CLI(操作窓口)の両方から使う。
         .target(
             name: "HearCatKit",
+            dependencies: ["CSpeexDSP"],
             path: "Sources/HearCatKit",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
