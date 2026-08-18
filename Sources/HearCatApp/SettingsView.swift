@@ -1285,6 +1285,7 @@ private struct HCKeyCapButtonStyle: ButtonStyle {
         configuration.label
             .opacity(configuration.isPressed ? 0.7 : 1)
             .contentShape(Rectangle())
+            .pointingHandOnHover()
     }
 }
 

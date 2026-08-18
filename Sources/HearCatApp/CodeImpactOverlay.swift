@@ -191,10 +191,13 @@ private struct CodeImpactOverlayView: View {
                 Image(systemName: "xmark")
                     .font(HCFont.style(.callout, weight: .semibold))
                     .frame(width: 22, height: 22)
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
             }
             .buttonStyle(.plain)
             .pointingHandOnHover()
+            // パネルを開いた直後にフォーカスがここへ乗ってリングが描かれる。閉じる操作は
+            // Esc とクリックで足りるため、リングは出さない。
+            .focusEffectDisabled()
             .help("閉じる (Esc)")
         }
     }
@@ -1942,7 +1945,6 @@ private struct ChoicesView: View {
                     .buttonStyle(.hcPrimary)
                     .controlSize(.small)
                     .disabled(!canSubmit)
-                    .pointingHandOnHover(disabled: !canSubmit)
                     // 選択肢をクリックすると入力欄からフォーカスが外れ、Return が
                     // どこにも届かずビープ音になる。ウィンドウ単位で効く既定アクションを
                     // 割り当て、フォーカスの位置に関わらず Enter で送信できるようにする

@@ -132,6 +132,7 @@ struct MenuPanel: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .pointingHandOnHover()
 
             Button {
                 Task { await model.startSession(record: false, transcribe: true) }
@@ -253,7 +254,8 @@ struct MenuPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(HCColor.mistWhiteDim)
+        .pointingHandOnHover()
+        .foregroundStyle(HCColor.textDim)
     }
 
     // MARK: - セッション中
