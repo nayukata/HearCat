@@ -78,7 +78,7 @@ public final class SessionEngine {
     /// 確定を促し、hangover を超えて無音が続く場合だけ本当に何も送らない(省電力)。
     /// これにより hangover 中に実音声(エコーを含む)を送っていた問題も同時に解消する。
     private struct SilenceGate {
-        enum Action {
+        enum Action: Equatable {
             /// 実バッファをそのまま解析へ渡す。
             case open
             /// 無音だが hangover 以内。ゼロ埋めバッファを渡して文末検出を促す。
@@ -361,6 +361,24 @@ public final class SessionEngine {
     ) -> Bool {
         systemSilentFor >= systemChannelSilence && micSilentFor <= recentVoice
     }
+
+    /// マイクのモノラル 48kHz サンプルへ canceller.process を適用する。
+    ///
+    /// gate の開閉(.open/.silence/.skip)に関わらず、呼び出し側(pump)は毎バッファ
+    /// これを呼ぶ前提。process を呼ばないと近端側の消費が止まり、参照側だけが
+    /// pushReference のキャップ(フィルタ長ぶん)で頭打ちのまま進み続ける。その状態で gate が開くと、
+    /// 積まれた参照と「今」の近端の対応がフィルタ長を超えてズレ、打ち消しが
+    /// 効かなくなる(自分の沈黙中に相手の声の回り込みだけで gate が開くケースで顕著)。
+    /// そのため process 自体は echoRemoval のオン/オフに関わらず常に実行し、
+    /// 打ち消し済みの出力を feed に使うかどうかだけを echoRemoval で分岐する。
+    /// canceller が無ければ(init 失敗時の素通し)常に入力をそのまま返す。
+    internal nonisolated static func applyEchoCancellation(
+        _ monoSamples: [Float], echoRemoval: Bool, canceller: EchoCanceller?
+    ) -> [Float] {
+        let processed = canceller?.process(monoSamples) ?? monoSamples
+        return echoRemoval ? processed : monoSamples
+    }
+
     /// 「誰かが話している」とみなす音量の下限。
     ///
     /// SilenceGate.defaultThreshold(0.001)を流用してはいけない。あちらは文字起こしを
@@ -524,6 +542,14 @@ public final class SessionEngine {
             onHealthEvent?(.systemAudioUnavailable(reason: systemAudioError!))
         }
 
+        // システム音声チャンネルがあるセッションだけエコーキャンセラを作る。init が nil を
+        // 返した場合(speexdsp 側の異常)は素通しで続行し、デバッグログに1回だけ残す。
+        let hasSystemChannel = system != nil
+        let canceller: EchoCanceller? = hasSystemChannel ? EchoCanceller(sampleRate: SessionRecorder.sampleRate) : nil
+        if hasSystemChannel, canceller == nil {
+            debugLog("EchoCanceller の初期化に失敗したため、エコー除去なしで続行します")
+        }
+
         // --- 録音(モノラルミックス1本 + 相手も録るなら相手だけの1本) ---
         // ファイル名の規則は SessionInfo.Artifact が正本。ここで組み立て直さない。
         let dirName = sessionDir.lastPathComponent
@@ -533,7 +559,7 @@ public final class SessionEngine {
         let recorder = SessionRecorder(
             url: audioURL(.audio),
             otherURL: audioURL(.audioOther),
-            includesSystemChannel: system != nil)
+            includesSystemChannel: hasSystemChannel)
         await recorder.setGains(mic: micGain, system: systemGain)
         // 書き込み失敗は actor(SessionRecorder)の外の文脈で呼ばれるため、
         // MainActor の onHealthEvent へ触るところだけ Task で MainActor へ渡す
@@ -553,13 +579,18 @@ public final class SessionEngine {
         let micGateSettings = self.micGateSettings
         pumps.append(Task.detached(priority: .userInitiated) {
             var gate = SilenceGate()
+            // エコー打ち消しの前後 RMS を約10秒おきに1回だけログへ残す(HEARCAT_DEBUG)。
+            // 対象は打ち消しを実際に適用したバッファのみ(オフの時は比較する意味がない)。
+            var lastAecLogAt = Date.distantPast
             for await item in micBuffers {
                 let level = rmsLevel(item.buffer)
                 onLevel?("自分", level)
+                // ループ1周につき1回だけ読む。しきい値・エコー除去のオン/オフの両方をここから導出する。
+                let gateSettings = micGateSettings.snapshot()
                 // しきい値はユーザーが設定した入力感度(自動なら既定値)をそのまま使う。
                 // エコー除去のためにここでしきい値を動かすことはしない
                 // (理由は EchoTextFilter のコメントを参照)。
-                let threshold = micGateSettings.snapshot().micThreshold ?? SilenceGate.defaultThreshold
+                let threshold = gateSettings.micThreshold ?? SilenceGate.defaultThreshold
                 // 無音判定は発話レベルで切る(理由は speechLevel を参照)。ただし騒がしい
                 // 部屋で入力感度をそれより高く設定している場合は、そちらを下限にする。
                 // 感度より下は文字起こしにも渡らない音なので、発話として数える理由がない。
@@ -569,16 +600,54 @@ public final class SessionEngine {
                 }
                 // ゲートは文字起こしにだけ効かせる。録音は無音も含めて忠実に残す。
                 if toggles.transcribing.withLock({ $0 }) {
-                    switch gate.action(for: item.buffer, level: level, threshold: threshold) {
-                    case .open:
-                        await mine.feed(item.buffer)
-                    case .silence:
+                    let action = gate.action(for: item.buffer, level: level, threshold: threshold)
+                    // 「.open で feed するバッファ」「.silence で feed するバッファ」の作り方だけを
+                    // hasSystemChannel で分け、action の分岐は下の switch 1本にまとめる。
+                    let openBuffer: () -> AVAudioPCMBuffer?
+                    let silenceBuffer: () -> AVAudioPCMBuffer?
+                    if hasSystemChannel {
+                        // システム音声チャンネルがあるセッションでは、エコー除去のオン/オフに
+                        // 関わらず認識器へ渡すフォーマットを常にモノラル 48kHz に統一する
+                        // (途中トグルで認識器へ渡るフォーマットが揺れないように)。
+                        //
+                        // canceller.process(applyEchoCancellation 経由)は gate の結果に関わらず
+                        // 毎バッファ呼ぶ。.silence/.skip の間だけ呼ばずにいると、その間も
+                        // pushReference は続くため参照側だけがキャップ(フィルタ長ぶん)で頭打ちのまま進み、
+                        // 次に gate が開いた瞬間の近端との対応がフィルタ長を超えてズレて
+                        // 打ち消しが効かなくなる(理由の詳細は applyEchoCancellation 参照)。
+                        let monoSamples = SessionRecorder.monoSamples(
+                            item.buffer, targetRate: SessionRecorder.sampleRate)
+                        let echoRemoval = gateSettings.echoRemoval
+                        let toFeed = SessionEngine.applyEchoCancellation(
+                            monoSamples, echoRemoval: echoRemoval, canceller: canceller)
+                        if action == .open, echoRemoval, canceller != nil, hearcatDebug {
+                            let now = Date()
+                            if now.timeIntervalSince(lastAecLogAt) >= 10 {
+                                lastAecLogAt = now
+                                debugLog(
+                                    "aec pre=\(rmsLevel(monoSamples)) post=\(rmsLevel(toFeed))"
+                                        + " depth=\(canceller?.referenceDepthMilliseconds ?? 0)ms"
+                                        + " fill=\(canceller?.cumulativeZeroFillMilliseconds ?? 0)ms"
+                                        + " reanchor=\(canceller?.reAnchorCount ?? 0)")
+                            }
+                        }
+                        openBuffer = { makeMonoBuffer(samples: toFeed, sampleRate: SessionRecorder.sampleRate) }
                         // 実音声(エコー含む)でなく無音そのものを送ることで、SpeechAnalyzer に
                         // 文末を検出させて確定を早める(実測: 送らないと「認識中」が
-                        // 20秒以上張り付く)。
-                        if let silent = makeSilentBuffer(matching: item.buffer) {
-                            await mine.feed(silent)
+                        // 20秒以上張り付く)。フォーマットは .open と同じくモノラル 48kHz
+                        // (長さは上で変換済みの monoSamples を使い回す)。
+                        silenceBuffer = {
+                            makeSilentMonoBuffer(sampleCount: monoSamples.count, sampleRate: SessionRecorder.sampleRate)
                         }
+                    } else {
+                        openBuffer = { item.buffer }
+                        silenceBuffer = { makeSilentBuffer(matching: item.buffer) }
+                    }
+                    switch action {
+                    case .open:
+                        if let buffer = openBuffer() { await mine.feed(buffer) }
+                    case .silence:
+                        if let buffer = silenceBuffer() { await mine.feed(buffer) }
                     case .skip:
                         break
                     }
@@ -596,6 +665,13 @@ public final class SessionEngine {
                     if level >= Self.speechLevel {
                         lastVoiceAt.withLock { $0 = Date() }
                         lastSystemVoiceAt.withLock { $0 = Date() }
+                    }
+                    // 参照信号(相手の声)は文字起こしトグルとは無関係に常時 canceller へ積む。
+                    // オフ→オンへ戻した瞬間から効かせるには、オフの間も参照を絶やせない。
+                    if let canceller {
+                        let referenceSamples = SessionRecorder.monoSamples(
+                            item.buffer, targetRate: SessionRecorder.sampleRate)
+                        canceller.pushReference(referenceSamples)
                     }
                     if toggles.transcribing.withLock({ $0 }) {
                         switch gate.action(for: item.buffer, level: level) {
@@ -622,14 +698,13 @@ public final class SessionEngine {
         // 発話が戻ったら onSilenceEnded を出して、次の無音でまた通知できる状態に戻す。
         // 相手のチャンネルを見張るのは、そもそも取得できているセッションだけ。
         // 開始時点で取れていない場合は systemAudioUnavailable で既に伝えている。
-        let watchesSystemChannel = system != nil
         silenceWatchTask = Task { [weak self] in
             var notified = false
             var systemNotified = false
             while true {
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled, let self else { return }
-                if watchesSystemChannel {
+                if hasSystemChannel {
                     let systemSilentFor = Date().timeIntervalSince(
                         lastSystemVoiceAt.withLock { $0 })
                     let micSilentFor = Date().timeIntervalSince(lastMicVoiceAt.withLock { $0 })

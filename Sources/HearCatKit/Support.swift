@@ -131,6 +131,15 @@ public func rmsLevel(_ buffer: AVAudioPCMBuffer) -> Float {
     return -1
 }
 
+/// Collection 版の RMS。バッファでなく Float 列(配列やスライス)から直接計算したい場合に使う
+/// (エコー打ち消し前後の比較・幻聴判定など)。
+internal func rmsLevel<C: Collection>(_ samples: C) -> Float where C.Element == Float {
+    guard !samples.isEmpty else { return 0 }
+    var sumSq: Float = 0
+    for v in samples { sumSq += v * v }
+    return (sumSq / Float(samples.count)).squareRoot()
+}
+
 public enum TranscriptionError: Error {
     case localeNotSupported
     case noAudioFormat
@@ -143,6 +152,37 @@ public enum SystemAudioError: Error {
     case ioProcFailed(OSStatus)
     case startFailed(OSStatus)
     case propertyFailed(OSStatus)
+}
+
+/// モノラル・指定サンプルレートの Float 列から AVAudioPCMBuffer を作る。
+/// システム音声チャンネルがあるセッションでは、エコー除去のオン/オフに関わらず
+/// 認識器へ渡すマイクのバッファをこれで統一する(途中トグルでフォーマットが揺れないように)。
+internal func makeMonoBuffer(samples: [Float], sampleRate: Double) -> AVAudioPCMBuffer? {
+    guard !samples.isEmpty,
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+        let data = buffer.floatChannelData
+    else { return nil }
+    buffer.frameLength = AVAudioFrameCount(samples.count)
+    samples.withUnsafeBufferPointer { src in
+        guard let base = src.baseAddress else { return }
+        data[0].update(from: base, count: samples.count)
+    }
+    return buffer
+}
+
+/// 指定フレーム数ぶんの無音(ゼロ埋め)モノラル AVAudioPCMBuffer を作る。
+/// makeMonoBuffer と違い、中間の [Float](repeating: 0, ...) を確保せず
+/// floatChannelData を直接ゼロ化する。
+internal func makeSilentMonoBuffer(sampleCount: Int, sampleRate: Double) -> AVAudioPCMBuffer? {
+    guard sampleCount > 0,
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleCount)),
+        let data = buffer.floatChannelData
+    else { return nil }
+    buffer.frameLength = AVAudioFrameCount(sampleCount)
+    memset(data[0], 0, sampleCount * MemoryLayout<Float>.size)
+    return buffer
 }
 
 extension AVAudioPCMBuffer {

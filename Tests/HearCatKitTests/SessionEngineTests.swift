@@ -232,4 +232,73 @@ struct SessionEngineTests {
             !SessionEngine.isSystemChannelOneSided(
                 systemSilentFor: 30 * 60, micSilentFor: 30 * 60))
     }
+
+    // MARK: - マイク音声へのエコー除去適用可否
+    //
+    // pump 内の分岐(SessionEngine.applyEchoCancellation)だけを切り出して検証する。
+    // モノラル 48kHz への変換自体は SessionRecorder.monoSamples が既にテスト済みのため、
+    // ここでは「process をいつ呼ぶか・打ち消し済みの出力を feed に使うかどうか」だけを見る。
+
+    private static let echoSampleRate = 48000.0
+
+    /// エコー除去がオフでも、返す値は未処理のモノラルのまま
+    /// (= process 自体は内部で呼ばれるが、feed には使われない。フォーマットが常に
+    /// モノラル変換だけを経由し、揺れないことの前提部分)。
+    @Test func エコー除去がオフなら打ち消し済みではなく未処理のまま返す() {
+        let canceller = EchoCanceller(sampleRate: Self.echoSampleRate)
+        #expect(canceller != nil)
+        let mono = toneSignal(sampleCount: 4096, frequencies: [220, 440], sampleRate: Self.echoSampleRate)
+
+        let result = SessionEngine.applyEchoCancellation(
+            mono, echoRemoval: false, canceller: canceller)
+
+        #expect(result == mono)
+    }
+
+    /// canceller が無い(init 失敗などの素通し経路)場合も、除去フラグに関わらずそのまま返す。
+    @Test func cancellerが無ければ除去オンでもそのまま返す() {
+        let mono = toneSignal(sampleCount: 4096, frequencies: [220, 440], sampleRate: Self.echoSampleRate)
+
+        let result = SessionEngine.applyEchoCancellation(
+            mono, echoRemoval: true, canceller: nil)
+
+        #expect(result == mono)
+    }
+
+    /// エコー除去がオンかつ canceller があれば、canceller.process が実際に呼ばれ、
+    /// 参照信号と相関するエコー成分が抑圧される(= 恒等関数ではないことを観測で確認する)。
+    @Test func エコー除去がオンなら参照と相関する成分を抑圧する() {
+        guard let canceller = EchoCanceller(sampleRate: Self.echoSampleRate) else {
+            Issue.record("EchoCanceller の初期化に失敗した")
+            return
+        }
+
+        let totalSamples = Int(Self.echoSampleRate * 4.0)
+        let reference = toneSignal(sampleCount: totalSamples, frequencies: [220, 440, 880], sampleRate: Self.echoSampleRate)
+        // 近端 = 参照を50ms遅らせて0.3倍したもの(回り込みエコーを模する)。
+        let delaySamples = Int(Self.echoSampleRate * 0.05)
+        let near = withEcho(of: reference, delaySamples: delaySamples, scale: 0.3)
+
+        let chunkSize = 4096
+        var output: [Float] = []
+        output.reserveCapacity(totalSamples)
+        var offset = 0
+        while offset < totalSamples {
+            let end = min(offset + chunkSize, totalSamples)
+            canceller.pushReference(Array(reference[offset..<end]))
+            let processed = SessionEngine.applyEchoCancellation(
+                Array(near[offset..<end]), echoRemoval: true, canceller: canceller)
+            output.append(contentsOf: processed)
+            offset = end
+        }
+
+        #expect(output.count == near.count)
+        let half = totalSamples / 2
+        let nearRms = rmsLevel(near[half...])
+        let outRms = rmsLevel(output[half...])
+        #expect(nearRms > 0)
+        let ratioDb = 20 * log10(Double(outRms) / Double(nearRms))
+        #expect(ratioDb <= -10, "抑圧量が不足: \(ratioDb) dB")
+    }
+
 }
