@@ -169,8 +169,6 @@ struct SettingsView: View {
     @State private var pendingDeleteOldRecordingsDays: Int?
     @State private var pendingDeleteOldRecordingsSummary: SessionStore.OldRecordingsSummary?
     @State private var deleteOldRecordingsMessage: String?
-    /// 入力レベルの確認中か。押されている間だけマイクを掴む(micTestRow を参照)。
-    @State private var micTesting = false
 
     var body: some View {
         // 1本の長いスクロールだと下のセクションが見落とされるため、macOS の
@@ -580,36 +578,6 @@ struct SettingsView: View {
         }
     }
 
-    /// 入力レベルの確認。押した間だけマイクを掴む。
-    ///
-    /// タブを開いただけで掴まないのは、Bluetooth のイヤホンだと、マイクを掴んだ時点で
-    /// 機器が通話用の経路へ切り替わり、聞こえている音の大きさまで変わってしまうため。
-    /// (実測: AirPods Pro で、マイクを掴むと出力音量が 0.390 → 0.330 に変わり、
-    /// マイクを離しても元に戻らなかった。設定を見に来ただけで音が変わるのは事故に近い。)
-    ///
-    /// メーターの表示/非表示を伝えるだけで、実際にプローブを動かすかどうかの判定
-    /// (セッション中でないか等)は AppModel.updateMicProbe に集約している。
-    /// デバイス変更時の作り直しも settings.micDeviceChanged 経由で同じ場所に集約される。
-    private var micTestRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button(micTesting ? "マイクの確認を止める" : "マイクを試す") {
-                micTesting.toggle()
-                model.setMicMeterVisible(micTesting)
-            }
-            .controlSize(.small)
-            if micTesting {
-                micLevelMeter
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // 感度の自動調整に戻した時、タブを離れた時、ウィンドウを閉じた時のいずれでも
-        // マイクを離す。掴んだままにすると、設定を閉じたあとも音の経路が戻らない。
-        .onDisappear {
-            micTesting = false
-            model.setMicMeterVisible(false)
-        }
-    }
-
     private var audioTab: some View {
         Form {
             Section {
@@ -622,7 +590,6 @@ struct SettingsView: View {
                 Toggle("入力感度を自動調整", isOn: $settings.micSensitivityAuto)
                 if !settings.micSensitivityAuto {
                     micSensitivitySlider
-                    micTestRow
                 }
             } header: {
                 Text("マイク")
@@ -631,7 +598,7 @@ struct SettingsView: View {
                     "入力デバイスの変更は次のセッションから有効です。",
                     "エコー除去は、スピーカーから出た相手の声が自分の発言として文字起こしされるのを防ぎます。",
                     "入力感度は、マイクの音量がこの値を下回る間は文字起こしに流しません。低すぎると回り込みを拾い、高すぎると小さな声を取りこぼします。",
-                    "「マイクを試す」の間だけマイクを使います。Bluetooth のイヤホンでは、マイクを使うと機器が通話用に切り替わり、聞こえる音の大きさが変わることがあります。")
+                    "入力感度を手動にしている間は、レベル表示のためにマイクを使います。Bluetooth のイヤホンでは、マイクを使うと機器が通話用に切り替わり、聞こえる音の大きさが変わることがあります。")
             }
 
             Section {
@@ -982,17 +949,48 @@ struct SettingsView: View {
         Self.micSensitivityMin * pow(Self.micSensitivityMax / Self.micSensitivityMin, ui)
     }
 
+    /// 入力感度のスライダーとレベルメーターを1本の帯に合体させたコントロール
+    /// (Discord の入力感度 UI のイメージ)。しきい値をレベルと同じ溝の上に置きたいため、
+    /// macOS 標準の Slider は使わずドラッグジェスチャーで自前実装する。
     private var micSensitivitySlider: some View {
         LabeledContent("入力感度") {
             HStack(spacing: 8) {
-                Slider(
-                    value: Binding(
-                        get: { rmsToUI(settings.micSensitivity) },
-                        set: { settings.micSensitivity = uiToRMS($0) }
-                    ),
-                    in: 0...1
-                )
-                .frame(width: 180)
+                GeometryReader { geometry in
+                    let width = geometry.size.width
+                    let level = rmsToUI(Double(model.micLevel))
+                    let threshold = rmsToUI(settings.micSensitivity)
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(.quaternary)
+                            .frame(height: 8)
+                        Capsule()
+                            .fill(.tint)
+                            .frame(width: width * level, height: 8)
+                        Circle()
+                            .fill(.white)
+                            .overlay(Circle().stroke(HCColor.strokeLine, lineWidth: 0.5))
+                            .shadow(radius: 1, y: 0.5)
+                            .frame(width: 14, height: 14)
+                            // 端に振り切った時も丸が枠から出ないよう、可動域を枠内にとどめる
+                            // (クリップで欠けさせると輪郭が不格好になるため、位置側で抑える)。
+                            .offset(x: min(max(width * threshold - 7, 0), width - 14))
+                    }
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let fraction = max(0, min(1, value.location.x / width))
+                                settings.micSensitivity = uiToRMS(fraction)
+                            }
+                    )
+                }
+                .frame(width: 180, height: 16)
+                // 横に動かす操作であることをカーソルでも伝える。SDK に左右リサイズ相当の
+                // PointerStyle(.columnResize、NSCursor.resizeLeftRight と同等の見た目)が
+                // あるため、pointingHandOnHover と同じ pointerStyle 方式で足りる
+                // (NSCursor の push/pop を自前で管理する必要がない)。
+                .pointerStyle(.columnResize)
                 // RMS の生値(例: 0.0012)はユーザーに意味が伝わらないため、スライダーの
                 // 位置をパーセントで見せる(rmsToUI で変換するだけで、内部の保存値は変えない)。
                 Text("\(Int((rmsToUI(settings.micSensitivity) * 100).rounded()))%")
@@ -1001,29 +999,17 @@ struct SettingsView: View {
                     .frame(width: 40, alignment: .trailing)
             }
         }
-    }
-
-    /// マイク音量のレベルメーター。しきい値の位置を縦線マーカーで重ねて表示する
-    /// (Discord の入力感度 UI のイメージ)。バーもしきい値と同じ対数マッピングで描く。
-    private var micLevelMeter: some View {
-        VStack(alignment: .trailing, spacing: 4) {
-            GeometryReader { geometry in
-                let levelFraction = rmsToUI(Double(model.micLevel))
-                let thresholdFraction = rmsToUI(settings.micSensitivity)
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.quaternary)
-                    Capsule()
-                        .fill(.tint)
-                        .frame(width: geometry.size.width * levelFraction)
-                    Rectangle()
-                        .fill(.secondary)
-                        .frame(width: 2)
-                        .offset(x: geometry.size.width * thresholdFraction - 1)
-                }
-            }
-            .frame(height: 8)
-        }
+        // 入力感度を手動にしてこの欄が見えている間だけマイクを掴む。タブを開いた
+        // だけで常時掴まないのは、Bluetooth のイヤホンだと、マイクを掴んだ時点で
+        // 機器が通話用の経路へ切り替わり、聞こえている音の大きさまで変わってしまうため。
+        // (実測: AirPods Pro で、マイクを掴むと出力音量が 0.390 → 0.330 に変わり、
+        // マイクを離しても元に戻らなかった。設定を見に来ただけで音が変わるのは事故に近い。)
+        //
+        // 表示/非表示を伝えるだけで、実際にプローブを動かすかどうかの判定
+        // (セッション中でないか等)は AppModel.updateMicProbe に集約している。
+        // デバイス変更時の作り直しも settings.micDeviceChanged 経由で同じ場所に集約される。
+        .onAppear { model.setMicMeterVisible(true) }
+        .onDisappear { model.setMicMeterVisible(false) }
     }
 
     private func statusLabel(installed: Bool) -> some View {
