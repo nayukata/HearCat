@@ -14,22 +14,20 @@ struct LiveSessionView: View {
     var body: some View {
         VStack(spacing: 0) {
             bar
-            Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
+            Rectangle().fill(HCColor.lift(0.1)).frame(height: 1)
             transcriptList
         }
-        .background(HCColor.mistDark)
-        // ライブ画面はシステムの外観設定に関わらずネイビー基調(LP と同じ)。
-        .environment(\.colorScheme, .dark)
+        .background(HCColor.panel)
     }
 
     private var bar: some View {
         HStack(spacing: 12) {
             HCLogoShape()
-                .fill(.white.opacity(0.6), style: FillStyle(eoFill: true))
+                .fill(HCColor.lift(0.6), style: FillStyle(eoFill: true))
                 .frame(width: 15, height: 15)
             Text("HearCat — ライブ")
                 .font(HCFont.callout)
-                .foregroundStyle(HCColor.mistWhiteDim)
+                .foregroundStyle(HCColor.textDim)
             EQBars(active: model.status.transcribing)
             if model.status.recording {
                 RecBadge()
@@ -64,7 +62,7 @@ struct LiveSessionView: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
-        .tint(HCColor.cinnamon)
+        .tint(HCColor.accent)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
@@ -139,18 +137,18 @@ struct LiveSessionView: View {
             // 面によって単位が食い違い、「ジャンプ先がズレて見える」混乱を招いた。
             Text(elapsedLabel(for: time, startDate: startDate))
                 .font(HCFont.timecode)
-                .foregroundStyle(.white.opacity(0.34))
+                .foregroundStyle(HCColor.lift(0.34))
                 // 幅 66 は元々 "[HH:mm:ss]"(10 文字)を収める値だった。経過時間の最長想定
                 // "999:59" 程度(6 文字、"認識中" と同程度)はそれより短いため、そのまま流用できる。
                 .frame(width: 66, alignment: time == nil ? .center : .leading)
             SpeakerChip(speaker: speaker)
             if volatile {
                 StreamingText(target: text)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(HCColor.lift(0.5))
                     .font(HCFont.body)
             } else {
                 Text(text)
-                    .foregroundStyle(.white.opacity(0.88))
+                    .foregroundStyle(HCColor.lift(0.88))
                     .font(HCFont.body)
                     .textSelection(.enabled)
             }
@@ -186,15 +184,18 @@ private struct StreamingText: View {
     let target: String
     @State private var displayed = ""
     @State private var caretOn = true
+    @Environment(\.colorScheme) private var colorScheme
 
     /// キャレットの画像。LP の .u.partial .b::after と同じ 2×14px の棒 + 左に 3px の間隔。
     /// Text 内には図形ビューを置けないため画像として補間する(ビューを横に並べると、
     /// テキストが折り返した時に最終文字の隣でなく段落全体の右側に出てしまう)。
     /// 点滅で本文の折り返しが変わらないよう、消えている間も同じ寸法の透明画像で場所を確保する。
-    private static func makeCaret(visible: Bool) -> NSImage {
+    /// NSImage は SwiftUI の外観切替に自動追従しないため、adaptive な HCColor.accent には
+    /// 頼らず、ダーク/ライトそれぞれの実色で画像を分けて生成する。
+    private static func makeCaret(visible: Bool, dark: Bool) -> NSImage {
         NSImage(size: NSSize(width: 5, height: 14), flipped: false) { _ in
             if visible {
-                NSColor(HCColor.cinnamon).setFill()
+                NSColor(dark ? HCColor.cinnamon : HCColor.spruce).setFill()
                 NSBezierPath(
                     roundedRect: NSRect(x: 3, y: 0, width: 2, height: 14), xRadius: 1, yRadius: 1
                 ).fill()
@@ -202,11 +203,16 @@ private struct StreamingText: View {
             return true
         }
     }
-    private static let caretShown = makeCaret(visible: true)
-    private static let caretHidden = makeCaret(visible: false)
+    private static let caretShownDark = makeCaret(visible: true, dark: true)
+    private static let caretShownLight = makeCaret(visible: true, dark: false)
+    private static let caretHidden = makeCaret(visible: false, dark: true)
+
+    private var caretShown: NSImage {
+        colorScheme == .dark ? Self.caretShownDark : Self.caretShownLight
+    }
 
     var body: some View {
-        Text("\(displayed)\(Image(nsImage: caretOn ? Self.caretShown : Self.caretHidden))")
+        Text("\(displayed)\(Image(nsImage: caretOn ? caretShown : Self.caretHidden))")
             .task(id: target) {
                 // 仮説が途中から書き換わった場合は、一致している先頭部分まで戻してから追う。
                 let common = displayed.commonPrefix(with: target)

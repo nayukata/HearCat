@@ -117,10 +117,10 @@ private struct NudgeOverlayView: View {
         .frame(
             width: NudgeOverlayController.size.width,
             height: NudgeOverlayController.size.height)
-        .background(HCColor.mistDark)
+        .background(HCColor.panel)
         .overlay(
             HCRadius.shape(HCRadius.panel)
-                .stroke(HCColor.mistDarkStroke, lineWidth: 1))
+                .stroke(HCColor.strokeLine, lineWidth: 1))
         .clipShape(HCRadius.shape(HCRadius.panel))
     }
 
@@ -129,15 +129,15 @@ private struct NudgeOverlayView: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: prompt.icon)
                     .font(HCFont.title3)
-                    .foregroundStyle(HCColor.cinnamon)
+                    .foregroundStyle(HCColor.accentText)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(prompt.title)
                         .font(HCFont.style(.subheadline, weight: .semibold))
-                        .foregroundStyle(HCColor.mistWhite)
+                        .foregroundStyle(HCColor.textPrimary)
                     Text(prompt.detail)
                         .font(HCFont.caption)
-                        .foregroundStyle(HCColor.mistWhiteDim)
+                        .foregroundStyle(HCColor.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineLimit(3)
                 }
@@ -149,7 +149,7 @@ private struct NudgeOverlayView: View {
                     Text(timerInterval: Date.now...deadline, countsDown: true)
                         .font(HCFont.timecode)
                 }
-                .foregroundStyle(HCColor.cinnamon)
+                .foregroundStyle(HCColor.accentText)
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {

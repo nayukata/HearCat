@@ -45,8 +45,7 @@ enum FloatingPanel {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        let hostingController = NSHostingController(
-            rootView: content.environment(\.colorScheme, .dark))
+        let hostingController = NSHostingController(rootView: content)
         if resizable {
             panel.contentMinSize = NSSize(width: 460, height: 360)
             // 既定では NSHostingController が SwiftUI 側の理想サイズにウィンドウを引き戻そうとする。

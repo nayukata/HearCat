@@ -206,6 +206,10 @@ enum HCColor {
     static let mistDarkSurface = Color(red: 0x26 / 255, green: 0x2A / 255, blue: 0x2D / 255)  // #262A2D
     /// パネル外周の細い縁。
     static let mistDarkStroke = Color(red: 0x33 / 255, green: 0x3A / 255, blue: 0x3D / 255)  // #333A3D
+    /// ライト外観のウィンドウに置くサーフェス(mistDarkSurface の明側)。
+    static let mistLightSurface = Color(red: 0xE6 / 255, green: 0xE9 / 255, blue: 0xEB / 255)  // #E6E9EB
+    /// ライト外観での細い縁(mistDarkStroke の明側)。
+    static let mistLightStroke = Color(red: 0xC9 / 255, green: 0xCF / 255, blue: 0xD2 / 255)  // #C9CFD2
     /// アクセント本体(白茶バイカラーのシナモン茶)。見出し・アイコン・タグ用。
     static let cinnamon = Color(red: 0xC8 / 255, green: 0x90 / 255, blue: 0x60 / 255)  // #C89060
     /// 入力欄フォーカス時のストローク色(cinnamon より少し暗く落ち着かせる)。
@@ -254,28 +258,100 @@ enum HCColor {
     static let confirmedBackground = Color(red: 0x2E / 255, green: 0x8A / 255, blue: 0x5E / 255).opacity(0.22)
     static let confirmedTextLight = Color(red: 0x14 / 255, green: 0x7A / 255, blue: 0x52 / 255)  // #147A52
     static let confirmedBackgroundLight = Color(red: 0x2E / 255, green: 0x8A / 255, blue: 0x5E / 255).opacity(0.14)
+
+    // --- 外観追従トークン(配色設計「窓際の朝」) ---
+    // かつて常時ダークだったパネル群(メニューバー・質問・ライブ・コード影響・お知らせ)を
+    // システム外観に追従させるための役割ベースの色。ダーク側は従来の mist / cinnamon の
+    // 値そのまま、ライト側は「ダークと同じコントラスト比の階段」で設計した値
+    // (灰の各段の比はダーク実測と誤差 0.05 以内。REC 赤だけは比の一致より
+    // 「ライトで 4.5 以上を確保しつつ赤の彩度を保つ」を優先した。実測は WCAG コントラスト比)。
+    // 常時ダークのまま残す共有画像(SummaryShareCard)は、従来どおり固定トークンを使う。
+
+    /// パネル本体の背景。
+    static let panel = adaptive(dark: mistDark, light: Color(red: 0xF5 / 255, green: 0xF7 / 255, blue: 0xF8 / 255))  // #F5F7F8
+    /// 入力欄・ボタン・キーキャップ等、パネルより一段浮くサーフェス。
+    static let surface = adaptive(dark: mistDarkSurface, light: mistLightSurface)
+    /// パネルや部品の細い縁。
+    static let strokeLine = adaptive(dark: mistDarkStroke, light: mistLightStroke)
+    /// 主要テキスト。ライト側はパネル背景色(霧の底)を文字として再利用する。
+    static let textPrimary = adaptive(dark: mistWhite, light: mistDark)
+    /// 本文テキスト。
+    static let textBody = adaptive(dark: mistBody, light: Color(red: 0x2D / 255, green: 0x31 / 255, blue: 0x33 / 255))  // #2D3133
+    /// 読ませたいが主張させない補助テキスト。
+    static let textBright = adaptive(dark: mistWhiteBright, light: Color(red: 0x40 / 255, green: 0x46 / 255, blue: 0x48 / 255))  // #404648
+    /// さらに一段薄い補助テキスト。
+    static let textDeeper = adaptive(dark: mistWhiteDeeper, light: Color(red: 0x5C / 255, green: 0x64 / 255, blue: 0x68 / 255))  // #5C6468
+    /// サブヘッダー・キャプション。
+    static let textDim = adaptive(dark: mistWhiteDim, light: Color(red: 0x60 / 255, green: 0x69 / 255, blue: 0x6C / 255))  // #60696C
+    /// 入力欄プレースホルダー・disabled のテキスト。
+    static let placeholderText = adaptive(dark: mistPlaceholder, light: Color(red: 0x7D / 255, green: 0x88 / 255, blue: 0x8D / 255))  // #7D888D
+    /// キーキャップの背景。
+    static let keyCap = adaptive(dark: mistKeyCap, light: Color.black.opacity(0.05))
+    /// キーキャップ内のテキスト。
+    static let keyText = adaptive(dark: mistKeyText, light: Color(red: 0x44 / 255, green: 0x4A / 255, blue: 0x4D / 255))  // #444A4D
+    /// 細い区切り線。
+    static let divider = adaptive(dark: mistDivider, light: Color.black.opacity(0.08))
+    /// 一段強い区切り線。
+    static let dividerStrong = adaptive(dark: mistDividerStrong, light: Color.black.opacity(0.14))
+    /// アクセントの塗り(主ボタン等)。ダークはシナモン茶、ライトは針葉樹の深緑。
+    /// シナモンは明るい地では 2.55 しか比が出ず、暗くすると彩度が死んで濁るため、
+    /// ライト側は彩度を張ったまま沈められる色相(トウヒの森の青緑)に替える。
+    static let accent = adaptive(dark: cinnamon, light: spruce)
+    /// ライトのアクセント実色(針葉樹の深緑)。外観で分岐できない描画(キャレット画像等)が
+    /// ライト側の値を名指しするための固定トークン。
+    static let spruce = Color(red: 0x41 / 255, green: 0xAD / 255, blue: 0x92 / 255)  // #41AD92
+    /// アクセント塗りの押下時・hover・disabled(一段落ち着いた変化色)。
+    static let accentPressed = adaptive(dark: cinnamonStroke, light: Color(red: 0x3C / 255, green: 0x9F / 255, blue: 0x86 / 255))  // #3C9F86
+    /// アクセント色の縁取り(入力欄フォーカス・選択中の枠・アバターの縁など)。
+    static let accentStroke = adaptive(dark: cinnamonStroke, light: Color(red: 0x28 / 255, green: 0x8A / 255, blue: 0x71 / 255))  // #288A71
+    /// アクセント色のテキスト・アイコン。
+    static let accentText = adaptive(dark: cinnamon, light: Color(red: 0x18 / 255, green: 0x72 / 255, blue: 0x5C / 255))  // #18725C
+    /// 録音中の赤(REC 表示)。
+    static let recText = adaptive(dark: Color(red: 1, green: 122 / 255, blue: 122 / 255), light: Color(red: 0xC2 / 255, green: 0x45 / 255, blue: 0x45 / 255))  // #FF7A7A / #C24545
+
+    /// 地からわずかに持ち上げる装飾オーバーレイ。ダークは白、ライトは黒の同じ不透明度。
+    static func lift(_ opacity: Double) -> Color {
+        adaptive(dark: .white.opacity(opacity), light: .black.opacity(opacity))
+    }
+
+    /// 実際に描画される場所の外観(ダーク/ライト)で解決される動的な色を作る。
+    /// SwiftUI の colorScheme 分岐と違い、AppKit 直書き(NSTextView 等)でもそのまま効く。
+    private static func adaptive(dark: Color, light: Color) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(isDark ? dark : light)
+        })
+    }
 }
 
 /// アプリ全体で使う落ち着いた secondary button のスタイル。
-/// ダーク UI で「主張しすぎず、しかし押せることが分かる」ことを両立する。
-/// - 通常: 一段明るいサーフェス塗り + 薄い縁 + 白系テキスト(mistDark 上でも読める)
+/// ダーク・ライトどちらの外観でも「主張しすぎず、しかし押せることが分かる」ことを両立する。
+/// - 通常: 一段明るいサーフェス塗り + 薄い縁 + 地に対して読めるテキスト
 /// - pressed: 縁と背景が一段濃くなる
 /// - role: .destructive: 赤系の縁とテキストで、他ボタンと視覚的に差別化する
 /// - compact: pill の縦余白を控えめにする(Form の LabeledContent 内で高さを揃える用途)。
 struct HCSecondaryButtonStyle: ButtonStyle {
     var compact: Bool = false
 
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         let isDestructive = configuration.role == .destructive
+        let isDark = colorScheme == .dark
         let bg = configuration.isPressed
-            ? HCColor.mistDarkStroke
-            : HCColor.mistDarkSurface
+            ? (isDark ? HCColor.mistDarkStroke : HCColor.mistLightStroke)
+            : (isDark ? HCColor.mistDarkSurface : HCColor.mistLightSurface)
         let border: Color = isDestructive
-            ? Color(red: 0.75, green: 0.36, blue: 0.36).opacity(0.55)
-            : HCColor.mistDarkStroke
+            ? (isDark
+                ? Color(red: 0.75, green: 0.36, blue: 0.36).opacity(0.55)
+                : Color(red: 0.63, green: 0.25, blue: 0.25).opacity(0.5))
+            : (isDark ? HCColor.mistDarkStroke : HCColor.mistLightStroke)
         let foreground: Color = isDestructive
-            ? Color(red: 0.94, green: 0.55, blue: 0.55)
-            : HCColor.mistWhite
+            ? (isDark
+                ? Color(red: 0.94, green: 0.55, blue: 0.55)
+                : Color(red: 0.66, green: 0.20, blue: 0.20))
+            : (isDark ? HCColor.mistWhite : HCColor.mistDark)
         return configuration.label
             .font(HCFont.callout)
             .foregroundStyle(foreground)
@@ -288,21 +364,25 @@ struct HCSecondaryButtonStyle: ButtonStyle {
                 HCRadius.shape(HCRadius.control)
                     .stroke(border, lineWidth: 1))
             .opacity(configuration.isPressed ? 0.9 : 1)
+            .pointingHandOnHover(disabled: !isEnabled)
     }
 }
 
 /// 主要な操作に使う primary button のスタイル。secondary と対で使い、
 /// 1つの画面に1つだけ置く(押してほしい先が2つあると、どちらも押されなくなる)。
 struct HCPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(HCFont.style(.callout, weight: .semibold))
-            .foregroundStyle(HCColor.mistDark)
+            .foregroundStyle(HCColor.mistDark)  // 塗りの上の濃い文字。深緑/シナモンどちらの塗りでも比 5.7 前後
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(
                 HCRadius.shape(HCRadius.control)
-                    .fill(configuration.isPressed ? HCColor.cinnamonStroke : HCColor.cinnamon))
+                    .fill(configuration.isPressed ? HCColor.accentPressed : HCColor.accent))
+            .pointingHandOnHover(disabled: !isEnabled)
     }
 }
 
@@ -646,7 +726,7 @@ struct EQBars: View {
         HStack(spacing: 3) {
             ForEach(0..<5, id: \.self) { i in
                 Capsule()
-                    .fill(HCColor.cinnamon)
+                    .fill(HCColor.accent)
                     .frame(width: 3)
                     .scaleEffect(y: animating && active ? 1 : 0.25, anchor: .bottom)
                     .animation(
@@ -676,7 +756,7 @@ struct RecBadge: View {
             Text("REC")
                 .font(HCFont.badge)
                 .kerning(1)
-                .foregroundStyle(Color(red: 1, green: 122 / 255, blue: 122 / 255))
+                .foregroundStyle(HCColor.recText)
         }
         .onAppear { dimmed = true }
     }

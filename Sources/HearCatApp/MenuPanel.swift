@@ -48,17 +48,15 @@ struct MenuPanel: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 300)
-        .background(HCColor.mistDark)
-        // パネルは LP と同じネイビー基調で固定する。
-        .environment(\.colorScheme, .dark)
-        .tint(HCColor.cinnamon)
+        .background(HCColor.panel)
+        .tint(HCColor.accent)
         .background(WindowAccessor { window in
             model.panelWindow = window
         })
     }
 
     private var divider: some View {
-        Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
+        Rectangle().fill(HCColor.lift(0.1)).frame(height: 1)
     }
 
     // MARK: - ヘッダー
@@ -68,22 +66,22 @@ struct MenuPanel: View {
             // マークが塗り1枚になったので、稼働中と待機の差は明度で付ける。
             HCLogoShape()
                 .fill(
-                    model.status.active ? HCColor.mistWhite : HCColor.mistWhiteDim,
+                    model.status.active ? HCColor.textPrimary : HCColor.textDim,
                     style: FillStyle(eoFill: true))
                 .frame(width: 17, height: 17)
             Text("HearCat")
                 .font(HCFont.brand)
-                .foregroundStyle(.white)
+                .foregroundStyle(HCColor.textPrimary)
             Spacer()
             if model.status.active, let startedAt = model.status.startedAt {
                 // 経過時間。Text(_:style: .timer) が毎秒勝手に進んでくれる。
                 Text(startedAt, style: .timer)
                     .font(HCFont.monospacedDigit(.subheadline))
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
             } else {
                 Text("待機中")
                     .font(HCFont.subheadline)
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
             }
         }
     }
@@ -159,11 +157,11 @@ struct MenuPanel: View {
                 Text(session.startDate.formatted(date: .omitted, time: .shortened))
             }
             .font(HCFont.caption)
-            .foregroundStyle(HCColor.mistWhiteDim)
+            .foregroundStyle(HCColor.textDim)
 
             Text(session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name)
                 .font(HCFont.style(.callout, weight: .semibold))
-                .foregroundStyle(HCColor.mistWhite)
+                .foregroundStyle(HCColor.textPrimary)
                 .lineLimit(1)
 
             if awaitingSummary {
@@ -172,7 +170,7 @@ struct MenuPanel: View {
                     Text("要約を作成中")
                 }
                 .font(HCFont.caption)
-                .foregroundStyle(HCColor.mistWhiteDim)
+                .foregroundStyle(HCColor.textDim)
             }
 
             Button {
@@ -188,7 +186,7 @@ struct MenuPanel: View {
         .padding(10)
         .background(
             HCRadius.shape(HCRadius.card)
-                .fill(.white.opacity(0.06)))
+                .fill(HCColor.lift(0.06)))
     }
 
     /// 開始するセッションを入れるグループの選択。表示は「次のセッションが入る先」で、
@@ -268,7 +266,7 @@ struct MenuPanel: View {
                 Text(model.activeSessionFolder ?? "未分類")
             }
             .font(HCFont.caption)
-            .foregroundStyle(HCColor.mistWhiteDim)
+            .foregroundStyle(HCColor.textDim)
 
             if let folder = model.activeSessionFolder, !pendingDecisions.isEmpty {
                 UnresolvedDecisionsCard(
@@ -343,7 +341,7 @@ struct MenuPanel: View {
         HStack(spacing: 8) {
             Text(label)
                 .font(HCFont.caption)
-                .foregroundStyle(HCColor.mistWhiteDim)
+                .foregroundStyle(HCColor.textDim)
                 .frame(width: 28, alignment: .leading)
             LevelMeter(level: level)
         }
@@ -424,11 +422,11 @@ private struct UnresolvedDecisionsCard: View {
         VStack(spacing: 8) {
             HStack(spacing: 6) {
                 PawPrintShape()
-                    .fill(HCColor.cinnamon)
+                    .fill(HCColor.accent)
                     .frame(width: 12, height: 12)
                 Text("まだ決まっていないこと")
                     .font(HCFont.style(.subheadline, weight: .bold))
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
                 Spacer()
             }
 
@@ -441,7 +439,7 @@ private struct UnresolvedDecisionsCard: View {
             if pendingDecisions.count > Self.maxVisibleRows {
                 Text("ほか \(pendingDecisions.count - Self.maxVisibleRows) 件")
                     .font(HCFont.caption)
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -450,7 +448,7 @@ private struct UnresolvedDecisionsCard: View {
             } label: {
                 Text("経緯を開く")
                     .font(HCFont.callout)
-                    .foregroundStyle(HCColor.cinnamon)
+                    .foregroundStyle(HCColor.accentText)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
@@ -459,27 +457,27 @@ private struct UnresolvedDecisionsCard: View {
         .padding(10)
         .background(
             HCRadius.shape(HCRadius.card)
-                .fill(.white.opacity(0.06)))
+                .fill(HCColor.lift(0.06)))
     }
 
     private func topicRow(_ decision: PendingDecision) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(decision.topic.title)
                 .font(HCFont.callout)
-                .foregroundStyle(HCColor.mistBody)
+                .foregroundStyle(HCColor.textBody)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 6) {
                 Text(decision.current.text)
                     .font(HCFont.caption)
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 6)
                 DecisionStatusChip(status: decision.current.status)
                 Text(HCDate.list.string(from: decision.current.recordedAt))
                     .font(HCFont.monospacedDigit(.caption1))
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
                     .frame(width: 40, alignment: .trailing)
             }
         }
@@ -493,8 +491,8 @@ struct LevelMeter: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.12))
-                Capsule().fill(HCColor.cinnamon)
+                Capsule().fill(HCColor.lift(0.12))
+                Capsule().fill(HCColor.accent)
                     .frame(width: max(0, geo.size.width * normalized))
             }
         }

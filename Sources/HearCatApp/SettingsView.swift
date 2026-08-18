@@ -1106,6 +1106,7 @@ struct HotkeyRecorderField: View {
 
     @State private var recording = false
     @State private var monitor: Any?
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1171,7 +1172,7 @@ struct HotkeyRecorderField: View {
             .frame(minWidth: 96)
             .background(
                 HCRadius.shape(HCRadius.chip)
-                    .fill(HCColor.mistDarkSurface.opacity(0.4)))
+                    .fill(slotSurface.opacity(0.4)))
             .overlay(
                 HCRadius.shape(HCRadius.chip)
                     .strokeBorder(HCColor.cinnamon.opacity(0.65), lineWidth: 1.2))
@@ -1185,20 +1186,21 @@ struct HotkeyRecorderField: View {
     private var emptySlot: some View {
         Text("未設定")
             .font(HCFont.monospaced(size: 12))
-            .foregroundStyle(HCColor.mistWhiteDim)
+            .foregroundStyle(colorScheme == .dark ? HCColor.mistWhiteDim : HCColor.mistPlaceholder)
             .padding(.horizontal, 14)
             .padding(.vertical, 4)
             .frame(minWidth: 96)
             .background(
                 HCRadius.shape(HCRadius.chip)
-                    .fill(HCColor.mistDarkSurface.opacity(0.4)))
+                    .fill(slotSurface.opacity(0.4)))
             .overlay(
                 // 破線は「空スロット」の中立的表現。cinnamon で描くと「割り当てるべき箇所」
                 // というアクションを催促する印象が強すぎて違和感が出る。灰系で目立たせつつ
-                // 意味を持たせない: white opacity 0.3 で mistDark 上でもちゃんと視認できる。
+                // 意味を持たせない。primary(labelColor)はダークでも元から半透明で、
+                // opacity を重ねると沈むため、白/黒の 0.3 を外観で切り替える。
                 HCRadius.shape(HCRadius.chip)
                     .strokeBorder(
-                        Color.white.opacity(0.3),
+                        (colorScheme == .dark ? Color.white : Color.black).opacity(0.3),
                         style: StrokeStyle(lineWidth: 1.2, dash: [4, 4])))
     }
 
@@ -1207,15 +1209,25 @@ struct HotkeyRecorderField: View {
     private func keyCap(_ text: String) -> some View {
         Text(text)
             .font(HCFont.monospaced(size: 12))
-            .foregroundStyle(HCColor.mistWhite)
+            .foregroundStyle(colorScheme == .dark ? HCColor.mistWhite : HCColor.mistDark)
             .frame(minWidth: 22, minHeight: 22)
             .padding(.horizontal, 4)
             .background(
                 HCRadius.shape(HCRadius.chip)
-                    .fill(HCColor.mistDarkSurface))
+                    .fill(slotSurface))
             .overlay(
                 HCRadius.shape(HCRadius.chip)
-                    .stroke(HCColor.mistDarkStroke, lineWidth: 1))
+                    .stroke(slotStroke, lineWidth: 1))
+    }
+
+    /// キーキャップ・スロットの面色。ダークは既存の mist 面、ライトはその明側トークン。
+    private var slotSurface: Color {
+        colorScheme == .dark ? HCColor.mistDarkSurface : HCColor.mistLightSurface
+    }
+
+    /// キーキャップの縁色。ダークは既存の mist 縁、ライトはその明側トークン。
+    private var slotStroke: Color {
+        colorScheme == .dark ? HCColor.mistDarkStroke : HCColor.mistLightStroke
     }
 
     private var clearable: Bool {

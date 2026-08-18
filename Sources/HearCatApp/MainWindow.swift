@@ -8,6 +8,7 @@ import SwiftUI
 struct MainWindow: View {
     let model: AppModel
     /// 一覧の選択。単一選択と複数選択(Cmd/Shift+クリック)の両方を扱うため Set で持つ。
+    @Environment(\.colorScheme) private var colorScheme
     @State private var selection: Set<String> = []
     /// 折りたたんだフォルダ。既定は全部展開。
     @State private var collapsedFolders: Set<String> = []
@@ -406,8 +407,10 @@ struct MainWindow: View {
                 .font(HCFont.callout)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(HCRadius.shape(HCRadius.chip).fill(HCColor.mistDarkSurface))
-                .foregroundStyle(HCColor.mistWhite)
+                .background(
+                    HCRadius.shape(HCRadius.chip)
+                        .fill(colorScheme == .dark ? HCColor.mistDarkSurface : HCColor.mistLightSurface))
+                .foregroundStyle(colorScheme == .dark ? HCColor.mistWhite : HCColor.mistDark)
                 .fixedSize()
         }
         .contextMenu {

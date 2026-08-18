@@ -126,7 +126,7 @@ private struct CodeImpactOverlayView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 16)
                 .padding(.bottom, 12)
-            Rectangle().fill(HCColor.mistDivider).frame(height: 1)
+            Rectangle().fill(HCColor.divider).frame(height: 1)
             // 左右の余白は content 側に一括で付けない。turnsScrollView(ScrollView)を
             // 通る内容はスクロールバーがパネルの右端に付くよう ScrollView 自体を幅いっぱいに
             // 広げ、余白は内側の LazyVStack に持たせる。ScrollView を通らない状態ビュー
@@ -137,7 +137,7 @@ private struct CodeImpactOverlayView: View {
                 .padding(.top, 14)
                 .padding(.bottom, 8)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            Rectangle().fill(HCColor.mistDivider).frame(height: 1)
+            Rectangle().fill(HCColor.divider).frame(height: 1)
             VStack(alignment: .leading, spacing: 6) {
                 inputField
                 keyHintRow
@@ -148,10 +148,10 @@ private struct CodeImpactOverlayView: View {
         }
         .frame(minWidth: 460, minHeight: 360)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(HCColor.mistDark)
+        .background(HCColor.panel)
         .overlay(
             HCRadius.shape(HCRadius.panel)
-                .stroke(HCColor.mistDarkStroke, lineWidth: 1))
+                .stroke(HCColor.strokeLine, lineWidth: 1))
         .clipShape(HCRadius.shape(HCRadius.panel))
         .onExitCommand { model.dismissCodeImpactOverlay() }
         .onAppear { inputFocused = true }
@@ -163,24 +163,24 @@ private struct CodeImpactOverlayView: View {
         HStack(alignment: .center, spacing: 10) {
             ZStack {
                 Circle()
-                    .fill(HCColor.mistDarkSurface)
+                    .fill(HCColor.surface)
                     .frame(width: 18, height: 18)
                 Circle()
-                    .stroke(HCColor.cinnamonStroke, lineWidth: 1)
+                    .stroke(HCColor.accentStroke, lineWidth: 1)
                     .frame(width: 18, height: 18)
                 Text("?")
                     .font(HCFont.style(.caption1, weight: .semibold))
-                    .foregroundStyle(HCColor.cinnamon)
+                    .foregroundStyle(HCColor.accentText)
             }
             HStack(spacing: 6) {
                 Text("会話について質問")
                     .font(HCFont.style(.subheadline, weight: .semibold))
-                    .foregroundStyle(HCColor.mistWhite)
+                    .foregroundStyle(HCColor.textPrimary)
                 // 過去セッションが対象のときだけ名前を添える。ライブとの取り違えを防ぐため。
                 if let targetName = model.codeImpactTargetSessionName {
                     Text("· \(targetName)")
                         .font(HCFont.style(.caption1, weight: .semibold))
-                        .foregroundStyle(HCColor.cinnamon)
+                        .foregroundStyle(HCColor.accentText)
                         .lineLimit(1)
                 }
             }
@@ -205,7 +205,7 @@ private struct CodeImpactOverlayView: View {
         HStack(spacing: 10) {
             Text("›")
                 .font(HCFont.body)
-                .foregroundStyle(HCColor.mistPlaceholder)
+                .foregroundStyle(HCColor.placeholderText)
             // SwiftUI の TextField(axis: .vertical) + onKeyPress(.return) で組んだ初版は、
             // 日本語 IME の変換中に Return を押すと変換確定より先に onKeyPress が発火し、
             // 入力欄が空扱いのまま送信されてしまう実害があった。onKeyPress に「変換中かどうか」
@@ -225,10 +225,10 @@ private struct CodeImpactOverlayView: View {
         .padding(.vertical, 10)
         .background(
             HCRadius.shape(HCRadius.control)
-                .fill(HCColor.mistDarkSurface))
+                .fill(HCColor.surface))
         .overlay(
             HCRadius.shape(HCRadius.control)
-                .stroke(inputFocused ? HCColor.cinnamonStroke : HCColor.mistDarkStroke,
+                .stroke(inputFocused ? HCColor.accentStroke : HCColor.strokeLine,
                         lineWidth: inputFocused ? 1.2 : 1))
     }
 
@@ -346,7 +346,7 @@ private struct CodeImpactOverlayView: View {
             if let activity = model.codeImpactActivity {
                 Text(activity)
                     .font(HCFont.caption)
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
                     .lineLimit(1)
             }
             Spacer()
@@ -365,7 +365,7 @@ private struct CodeImpactOverlayView: View {
             .font(HCFont.caption)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
-            .foregroundStyle(HCColor.mistWhiteDim)
+            .foregroundStyle(HCColor.textDim)
             .pointingHandOnHover()
     }
 
@@ -409,7 +409,7 @@ private struct CodeImpactOverlayView: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(model.codeImpactTurns.enumerated()), id: \.element.id) { index, turn in
                             if index > 0 {
-                                Rectangle().fill(HCColor.mistDivider).frame(height: 1)
+                                Rectangle().fill(HCColor.divider).frame(height: 1)
                                     .padding(.vertical, 12)
                             }
                             let isLatest = !streaming && index == model.codeImpactTurns.count - 1
@@ -424,7 +424,7 @@ private struct CodeImpactOverlayView: View {
                         }
                         if streaming {
                             if !model.codeImpactTurns.isEmpty {
-                                Rectangle().fill(HCColor.mistDivider).frame(height: 1)
+                                Rectangle().fill(HCColor.divider).frame(height: 1)
                                     .padding(.vertical, 12)
                             }
                             turnView(
@@ -438,7 +438,7 @@ private struct CodeImpactOverlayView: View {
                         // 切り替わらないように。履歴が無い初回失敗だけ failedView が出る)。
                         if let turnError = model.codeImpactTurnError {
                             if !model.codeImpactTurns.isEmpty {
-                                Rectangle().fill(HCColor.mistDivider).frame(height: 1)
+                                Rectangle().fill(HCColor.divider).frame(height: 1)
                                     .padding(.vertical, 12)
                             }
                             questionBubble(for: model.codeImpactQuestion)
@@ -508,7 +508,7 @@ private struct CodeImpactOverlayView: View {
                     } label: {
                         Text("資料フォルダを紐付けると、コードや資料とも照合できます")
                             .font(HCFont.caption)
-                            .foregroundStyle(HCColor.cinnamon)
+                            .foregroundStyle(HCColor.accentText)
                     }
                     .buttonStyle(.plain)
                     .pointingHandOnHover()
@@ -630,7 +630,7 @@ private struct CodeImpactOverlayView: View {
     /// - 質問なし(ダイジェスト): 資料の有無に関わらず「直近の文字起こしを調査」
     /// - 質問あり + 資料フォルダあり: 「質問への回答」
     /// - 質問あり + 資料フォルダなし: 「文字起こしから回答」(コード・資料は見ていないと伝える)
-    /// 情報表示であって押せる要素ではないため、色はニュートラル(mistWhiteDim)にする。
+    /// 情報表示であって押せる要素ではないため、色はニュートラル(textDim)にする。
     /// 過去ターンにも同じ構成を出し(情報粒度を揃える)、コピーボタンも各ターンの result を渡す。
     private func statusBadgeRow(
         cli: AgentCLI, hasQuestion: Bool, result: String
@@ -645,10 +645,10 @@ private struct CodeImpactOverlayView: View {
             statusText = "\(cli.displayName) · 文字起こしから回答"
         }
         return HStack(spacing: 8) {
-            Circle().fill(HCColor.mistWhiteDim).frame(width: 6, height: 6)
+            Circle().fill(HCColor.textDim).frame(width: 6, height: 6)
             Text(statusText)
                 .font(HCFont.style(.caption1, weight: .semibold))
-                .foregroundStyle(HCColor.mistWhiteDim)
+                .foregroundStyle(HCColor.textDim)
             Spacer()
             CopyButton { result }
         }
@@ -661,14 +661,14 @@ private struct CodeImpactOverlayView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "exclamationmark.triangle")
                 .font(HCFont.style(.caption1, weight: .semibold))
-                .foregroundStyle(HCColor.cinnamon)
+                .foregroundStyle(HCColor.accentText)
             VStack(alignment: .leading, spacing: 2) {
                 Text("調査できませんでした")
                     .font(HCFont.style(.caption1, weight: .semibold))
-                    .foregroundStyle(HCColor.mistWhite)
+                    .foregroundStyle(HCColor.textPrimary)
                 Text(error)
                     .font(HCFont.caption)
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
@@ -677,17 +677,17 @@ private struct CodeImpactOverlayView: View {
                 .font(HCFont.caption)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
-                .foregroundStyle(HCColor.cinnamon)
+                .foregroundStyle(HCColor.accentText)
                 .overlay(
                     HCRadius.shape(HCRadius.chip)
-                        .stroke(HCColor.cinnamonStroke, lineWidth: 1))
+                        .stroke(HCColor.accentStroke, lineWidth: 1))
                 .pointingHandOnHover()
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             HCRadius.shape(HCRadius.control)
-                .fill(HCColor.mistDarkSurface))
+                .fill(HCColor.surface))
         .padding(.top, 8)
     }
 
@@ -722,22 +722,22 @@ private struct CodeImpactOverlayView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .foregroundStyle(HCColor.mistBody)
+            .foregroundStyle(HCColor.textBody)
     }
 
     private func messageBlock(icon: String, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
                 .font(HCFont.title3)
-                .foregroundStyle(HCColor.cinnamon)
+                .foregroundStyle(HCColor.accentText)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(HCFont.style(.subheadline, weight: .semibold))
-                    .foregroundStyle(HCColor.mistWhite)
+                    .foregroundStyle(HCColor.textPrimary)
                 Text(detail)
                     .font(HCFont.callout)
-                    .foregroundStyle(HCColor.mistWhiteDim)
+                    .foregroundStyle(HCColor.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -755,16 +755,16 @@ private struct CodeImpactOverlayView: View {
             keyCap("Esc")
             Text("閉じる")
                 .font(HCFont.caption)
-                .foregroundStyle(HCColor.mistWhiteDim)
+                .foregroundStyle(HCColor.textDim)
                 .padding(.trailing, 10)
             keyCap("↩")
             Text("送信")
                 .font(HCFont.caption)
-                .foregroundStyle(HCColor.mistWhiteDim)
+                .foregroundStyle(HCColor.textDim)
             Spacer(minLength: 10)
             Text(currentEngineLabel)
                 .font(HCFont.caption)
-                .foregroundStyle(HCColor.cinnamon)
+                .foregroundStyle(HCColor.accentText)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity)
@@ -788,12 +788,12 @@ private struct CodeImpactOverlayView: View {
     private func keyCap(_ label: String) -> some View {
         Text(label)
             .font(HCFont.monospaced(size: 11))
-            .foregroundStyle(HCColor.mistKeyText)
+            .foregroundStyle(HCColor.keyText)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
                 HCRadius.shape(HCRadius.keycap)
-                    .fill(HCColor.mistKeyCap))
+                    .fill(HCColor.keyCap))
     }
 }
 
@@ -844,8 +844,8 @@ private struct MultilineInputField: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.font = HCFont.nsFont(forTextStyle: .callout)
-        textView.textColor = NSColor(HCColor.mistBody)
-        textView.insertionPointColor = NSColor(HCColor.mistBody)
+        textView.textColor = NSColor(HCColor.textBody)
+        textView.insertionPointColor = NSColor(HCColor.textBody)
         textView.string = text
 
         let scrollView = NSScrollView()
@@ -858,7 +858,7 @@ private struct MultilineInputField: NSViewRepresentable {
 
         let placeholderLabel = coordinator.placeholderLabel
         placeholderLabel.font = textView.font
-        placeholderLabel.textColor = NSColor(HCColor.mistPlaceholder)
+        placeholderLabel.textColor = NSColor(HCColor.placeholderText)
         placeholderLabel.maximumNumberOfLines = 1
         placeholderLabel.lineBreakMode = .byTruncatingTail
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1011,7 +1011,7 @@ private struct ThinkingDots: View {
         HStack(spacing: 4) {
             ForEach(0..<Self.dotCount, id: \.self) { index in
                 Circle()
-                    .fill(HCColor.mistWhiteDim)
+                    .fill(HCColor.textDim)
                     .frame(width: Self.dotSize, height: Self.dotSize)
                     .opacity(pulsing ? 1 : 0.3)
                     // 明滅だけだと変化が乏しいため、点灯側で少しだけ大きくして脈動させる。
@@ -1037,7 +1037,7 @@ private struct ThinkingDots: View {
 /// 伸びないよう最大幅を行の幅の8割程度に抑えて折り返す。
 /// 自分の親からどれだけ幅を貰えるかは実行時にしか分からないため、`.frame(maxWidth: .infinity)`
 /// で行いっぱいに広がった状態を GeometryReader を .background として重ねて計測し
-/// (LevelMeter / micLevelMeter と同じ「幅だけ読む」書き方)、その8割を折り返しの上限として
+/// (LevelMeter と同じ「幅だけ読む」書き方)、その8割を折り返しの上限として
 /// バブル側の `.frame(maxWidth:)` に渡す。計測前(初回描画)は上限なしで一旦描画し、
 /// 幅が判明した次のフレームで上限が効く。
 private struct QuestionBubbleRow: View {
@@ -1047,13 +1047,13 @@ private struct QuestionBubbleRow: View {
     var body: some View {
         Text(text)
             .font(HCFont.style(.subheadline, weight: .semibold))
-            .foregroundStyle(HCColor.mistWhite)
+            .foregroundStyle(HCColor.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
                 HCRadius.shape(HCRadius.control)
-                    .fill(HCColor.mistDarkSurface))
+                    .fill(HCColor.surface))
             .frame(maxWidth: rowWidth.map { $0 * 0.8 }, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
             .background(
@@ -1447,11 +1447,11 @@ private struct CodeImpactResultView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: "chevron.right")
                                 .font(HCFont.style(.caption1, weight: .semibold))
-                                .foregroundStyle(HCColor.mistWhiteDim)
+                                .foregroundStyle(HCColor.textDim)
                                 .rotationEffect(.degrees(isExpanded(title: title) ? 90 : 0))
                             Text(title)
                                 .font(HCFont.style(.callout, weight: .semibold))
-                                .foregroundStyle(HCColor.mistWhite)
+                                .foregroundStyle(HCColor.textPrimary)
                             Spacer(minLength: 0)
                         }
                         .padding(.top, 10)
@@ -1497,11 +1497,11 @@ private struct CodeImpactResultView: View {
             // 一番見せたい行としての例外)。
             Image(systemName: "arrow.right")
                 .font(HCFont.style(.callout, weight: .semibold))
-                .foregroundStyle(HCColor.cinnamon)
+                .foregroundStyle(HCColor.accentText)
             VStack(alignment: .leading, spacing: 4) {
                 Text("次の一手")
                     .font(HCFont.style(.caption1, weight: .semibold))
-                    .foregroundStyle(HCColor.cinnamon)
+                    .foregroundStyle(HCColor.accentText)
                 segmentBlock(segments)
             }
         }
@@ -1509,7 +1509,7 @@ private struct CodeImpactResultView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             HCRadius.shape(HCRadius.control)
-                .fill(HCColor.mistDarkSurface))
+                .fill(HCColor.surface))
         .padding(.top, 10)
     }
 
@@ -1579,14 +1579,14 @@ private struct CodeImpactResultView: View {
         } else if text.hasPrefix("### ") {
             Text(String(text.dropFirst(4)))
                 .font(HCFont.style(.caption1, weight: .semibold))
-                .foregroundStyle(HCColor.mistWhite)
+                .foregroundStyle(HCColor.textPrimary)
                 .padding(.top, 4)
         } else if raw.trimmingCharacters(in: .whitespaces).isEmpty {
             Spacer().frame(height: 2)
         } else {
             Text(linkedInlineMarkdown(raw))
                 .font(HCFont.body)
-                .foregroundStyle(HCColor.mistBody)
+                .foregroundStyle(HCColor.textBody)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1604,11 +1604,11 @@ private struct CodeImpactResultView: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text("•")
                 .font(HCFont.body)
-                .foregroundStyle(HCColor.mistPlaceholder)
+                .foregroundStyle(HCColor.placeholderText)
             leading()
             Text(linkedInlineMarkdown(body))
                 .font(HCFont.body)
-                .foregroundStyle(HCColor.mistBody)
+                .foregroundStyle(HCColor.textBody)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1630,18 +1630,18 @@ private struct CodeImpactResultView: View {
     private func pathBulletRow(pathToken: String, description: String, url: URL) -> some View {
         var pathRun = AttributedString(pathToken)
         pathRun.font = HCFont.monospaced(size: 12)
-        pathRun.foregroundColor = HCColor.cinnamon
+        pathRun.foregroundColor = HCColor.accentText
         pathRun.underlineStyle = Text.LineStyle.single
         pathRun.link = url
 
         var descriptionRun = AttributedString(" — \(description)")
         descriptionRun.font = HCFont.body
-        descriptionRun.foregroundColor = HCColor.mistBody
+        descriptionRun.foregroundColor = HCColor.textBody
 
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text("•")
                 .font(HCFont.body)
-                .foregroundStyle(HCColor.mistPlaceholder)
+                .foregroundStyle(HCColor.placeholderText)
             Text(pathRun + descriptionRun)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1696,7 +1696,7 @@ private struct CodeImpactResultView: View {
     /// 解消したため、視認性の良いチップ表示(bulletRow の leading にチップボタンを渡す
     /// 2 列構成)に戻した。チップは押せる要素で、クリックすると model.revealTranscript(atTime:)
     /// で文字起こしの該当時刻へジャンプする(押せることが分かるよう、文字色はリンクと
-    /// 同じ cinnamon にする)。
+    /// 同じ accentText にする)。
 
     /// チップの開始時刻(範囲表記なら前半)を取り出す。model.revealTranscript(atTime:) は
     /// 文字起こしの stamp(壁時計)と突き合わせて該当行へジャンプするため、経過時間表示
@@ -1814,16 +1814,16 @@ private struct CodeImpactResultView: View {
     }
 
     /// タイムスタンプチップの見た目そのもの(押せる/押せないの両方から使う)。
-    /// 押せる要素として文字色は cinnamon にする。角丸面は HCRadius.chip(チップ寸法の面)。
+    /// 押せる要素として文字色は accentText にする。角丸面は HCRadius.chip(チップ寸法の面)。
     private func chipLabel(_ text: String) -> some View {
         Text(text)
             .font(HCFont.monospaced(size: 10.5))
-            .foregroundStyle(HCColor.cinnamon)
+            .foregroundStyle(HCColor.accentText)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
                 HCRadius.shape(HCRadius.chip)
-                    .fill(HCColor.mistDarkSurface))
+                    .fill(HCColor.surface))
     }
 
     /// inlineMarkdownText(SummaryView.swift 側の共通実装)に加えて、本文中の
@@ -1848,7 +1848,7 @@ private struct CodeImpactResultView: View {
             }
             var linkRun = AttributedString(String(text[token.range]))
             linkRun.link = token.url
-            linkRun.foregroundColor = HCColor.cinnamon
+            linkRun.foregroundColor = HCColor.accentText
             linkRun.underlineStyle = Text.LineStyle.single
             result += linkRun
             cursor = token.range.upperBound
@@ -1899,7 +1899,7 @@ private struct CodeImpactResultView: View {
 /// AI 側が ```choices フェンスで出した選択肢を提示し、ユーザーの回答(選択肢のラベル、
 /// または「その他」の自由入力)を追加質問として model.requestFollowUpCodeImpact(question:) に
 /// 渡す。Claude Code の AskUserQuestion に近い見た目(質問文 + ラジオ風の選択行 + 送信)を、
-/// パネルのトーン(mistDarkSurface の面・cinnamon のアクセント)に合わせて描く。
+/// パネルのトーン(surface の面・accent のアクセント)に合わせて描く。
 ///
 /// isInteractive が false の間(過去ターン・最新でも調査中・未完了)は全体を disabled にし、
 /// 既存の過去ターン opacity(0.75)に馴染むよう半透明にする。選択状態はこのビューの @State
@@ -1920,7 +1920,7 @@ private struct ChoicesView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(prompt.question)
                 .font(HCFont.style(.callout, weight: .semibold))
-                .foregroundStyle(HCColor.mistWhite)
+                .foregroundStyle(HCColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(spacing: 6) {
@@ -2000,8 +2000,8 @@ private struct ChoicesView: View {
         }
     }
 
-    /// 通常の選択肢 1 行。ラジオ風の丸 + label + 薄い detail。選択中は枠(cinnamonStroke)+
-    /// 丸の塗り(cinnamon)で示す(押せる要素なのでアクセント色ルールに適合)。
+    /// 通常の選択肢 1 行。ラジオ風の丸 + label + 薄い detail。選択中は枠(accentStroke)+
+    /// 丸の塗り(accent)で示す(押せる要素なのでアクセント色ルールに適合)。
     private func optionRow(
         label: String, detail: String?, isSelected: Bool, action: @escaping () -> Void
     ) -> some View {
@@ -2015,11 +2015,11 @@ private struct ChoicesView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label)
                         .font(HCFont.style(.callout, weight: .semibold))
-                        .foregroundStyle(HCColor.mistWhite)
+                        .foregroundStyle(HCColor.textPrimary)
                     if let detail {
                         Text(detail)
                             .font(HCFont.caption)
-                            .foregroundStyle(HCColor.mistWhiteDim)
+                            .foregroundStyle(HCColor.textDim)
                     }
                 }
                 Spacer(minLength: 0)
@@ -2028,10 +2028,10 @@ private struct ChoicesView: View {
             .padding(.vertical, 9)
             .background(
                 HCRadius.shape(HCRadius.control)
-                    .fill(HCColor.mistDarkSurface))
+                    .fill(HCColor.surface))
             .overlay(
                 HCRadius.shape(HCRadius.control)
-                    .stroke(isSelected ? HCColor.cinnamonStroke : Color.clear, lineWidth: 1.2))
+                    .stroke(isSelected ? HCColor.accentStroke : Color.clear, lineWidth: 1.2))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2051,17 +2051,17 @@ private struct ChoicesView: View {
                     radioMark(isSelected: isOtherSelected)
                     Text("その他")
                         .font(HCFont.style(.callout, weight: .semibold))
-                        .foregroundStyle(HCColor.mistWhite)
+                        .foregroundStyle(HCColor.textPrimary)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .background(
                     HCRadius.shape(HCRadius.control)
-                        .fill(HCColor.mistDarkSurface))
+                        .fill(HCColor.surface))
                 .overlay(
                     HCRadius.shape(HCRadius.control)
-                        .stroke(isOtherSelected ? HCColor.cinnamonStroke : Color.clear, lineWidth: 1.2))
+                        .stroke(isOtherSelected ? HCColor.accentStroke : Color.clear, lineWidth: 1.2))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -2071,15 +2071,15 @@ private struct ChoicesView: View {
                 TextField("自由に入力", text: $otherText)
                     .textFieldStyle(.plain)
                     .font(HCFont.callout)
-                    .foregroundStyle(HCColor.mistBody)
+                    .foregroundStyle(HCColor.textBody)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(
                         HCRadius.shape(HCRadius.control)
-                            .fill(HCColor.mistDark))
+                            .fill(HCColor.panel))
                     .overlay(
                         HCRadius.shape(HCRadius.control)
-                            .stroke(HCColor.mistDarkStroke, lineWidth: 1))
+                            .stroke(HCColor.strokeLine, lineWidth: 1))
                     .padding(.leading, 26)
                     .onSubmit {
                         if canSubmit { submit() }
@@ -2091,11 +2091,11 @@ private struct ChoicesView: View {
     private func radioMark(isSelected: Bool) -> some View {
         ZStack {
             Circle()
-                .stroke(isSelected ? HCColor.cinnamonStroke : HCColor.mistDarkStroke, lineWidth: 1.2)
+                .stroke(isSelected ? HCColor.accentStroke : HCColor.strokeLine, lineWidth: 1.2)
                 .frame(width: 16, height: 16)
             if isSelected {
                 Circle()
-                    .fill(HCColor.cinnamon)
+                    .fill(HCColor.accent)
                     .frame(width: 8, height: 8)
             }
         }
@@ -2189,13 +2189,13 @@ private final class ResolvedPathCache {
 private func fenceCodeView(_ code: String) -> some View {
     Text(code)
         .font(HCFont.monospaced(size: 11))
-        .foregroundStyle(HCColor.mistBody)
+        .foregroundStyle(HCColor.textBody)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
         .background(
             HCRadius.shape(HCRadius.control)
-                .fill(HCColor.mistDarkSurface))
+                .fill(HCColor.surface))
 }
 
 /// mermaid セグメント 1 つ分の描画。MermaidDiagramView(WKWebView)に描画を任せ、
