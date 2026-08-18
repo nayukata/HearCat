@@ -665,7 +665,13 @@ struct SessionDetailView: View {
                 ProgressView().controlSize(.small)
             } else {
                 HStack(spacing: 4) {
-                    Label("共有", systemImage: "square.and.arrow.up")
+                    // square.and.arrow.up は矢印ぶん字形の箱が縦に高く(実測 18pt、隣のボタンは 15pt)、
+                    // Label のままだとボタンの箱が上に膨らんで文字が中心より下に押される。
+                    // 高さ 0 の枠でレイアウト高さを文字側に決めさせ、字形は上下にはみ出させる。
+                    // Label の外に出すと VoiceOver がシンボル名を英語で読み上げるため、装飾扱いを明示する。
+                    Image(systemName: "square.and.arrow.up").frame(height: 0)
+                        .accessibilityHidden(true)
+                    Text("共有")
                     Image(systemName: "chevron.down").imageScale(.small)
                 }
             }
