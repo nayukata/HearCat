@@ -33,12 +33,6 @@ struct SessionRecorderTests {
         return buffer
     }
 
-    private func rms(_ samples: [Float]) -> Float {
-        guard !samples.isEmpty else { return 0 }
-        let sumSquares = samples.reduce(Float(0)) { $0 + $1 * $1 }
-        return (sumSquares / Float(samples.count)).squareRoot()
-    }
-
     private func readOverallRMS(url: URL) throws -> Float {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
@@ -75,7 +69,7 @@ struct SessionRecorderTests {
         }
         await recorder.close()
 
-        let inputRMS = rms(allInput)
+        let inputRMS = rmsLevel(allInput)
         let outputRMS = try readOverallRMS(url: url)
 
         #expect(inputRMS > 0.0015 && inputRMS < 0.003, "テスト前提の入力RMSが想定範囲外: \(inputRMS)")
@@ -236,7 +230,7 @@ struct SessionRecorderTests {
         }
         await recorder.close()
 
-        let inputRMS = rms(allInput)
+        let inputRMS = rmsLevel(allInput)
         let outputRMS = try readOverallRMS(url: url)
 
         #expect(

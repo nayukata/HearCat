@@ -170,14 +170,7 @@ public actor ChannelTranscriber {
         guard startFrame < endFrame, let slice = ring.slice(start: startFrame, end: endFrame) else {
             return false
         }
-        return Self.rms(slice) < Self.hallucinationRms
-    }
-
-    private static func rms(_ samples: [Float]) -> Float {
-        guard !samples.isEmpty else { return 0 }
-        var sumSq: Float = 0
-        for v in samples { sumSq += v * v }
-        return (sumSq / Float(samples.count)).squareRoot()
+        return rmsLevel(slice) < Self.hallucinationRms
     }
 
     /// 「あ」「M」のような句読点も無い単独1文字の確定を判定する。
@@ -225,7 +218,7 @@ public actor ChannelTranscriber {
         }
         let analysis = QuestionDetector.risingPitchAnalysis(tail: tail, sampleRate: sampleRate)
         if hearcatDebug {
-            debugLog("\(speaker) 疑問判定: '\(text)' rising=\(analysis.rising) voiced=\(analysis.voicedFrames)/\(analysis.totalVoiced)/\(analysis.windows) head=\(Int(analysis.headF0)) tail=\(Int(analysis.tailF0)) sliceRms=\(Self.rms(tail)) range=\(String(format: "%.2f", range.start.seconds))-\(String(format: "%.2f", endSeconds))")
+            debugLog("\(speaker) 疑問判定: '\(text)' rising=\(analysis.rising) voiced=\(analysis.voicedFrames)/\(analysis.totalVoiced)/\(analysis.windows) head=\(Int(analysis.headF0)) tail=\(Int(analysis.tailF0)) sliceRms=\(rmsLevel(tail)) range=\(String(format: "%.2f", range.start.seconds))-\(String(format: "%.2f", endSeconds))")
         }
         if analysis.rising {
             return QuestionDetector.markAsQuestion(text)
@@ -296,7 +289,7 @@ public actor ChannelTranscriber {
         var offset = 0
         while offset < slice.count {
             let windowEnd = min(offset + window, slice.count)
-            if Self.rms(Array(slice[offset..<windowEnd])) >= Self.voicedStartRms {
+            if rmsLevel(Array(slice[offset..<windowEnd])) >= Self.voicedStartRms {
                 return rangeStart + offset
             }
             offset = windowEnd
