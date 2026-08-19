@@ -5,6 +5,7 @@ import SwiftUI
 /// メニューバーから開くパネル。開始/停止・トグル・入力メーターをここに集約する。
 /// (MenuBarExtra の .window スタイルで表示するリッチ版メニュー)
 struct MenuPanel: View {
+    @Environment(\.colorScheme) private var colorScheme
     let model: AppModel
 
     /// 「まだ決まっていないこと」カードの中身。UnresolvedDecisionsCard 側に
@@ -51,8 +52,13 @@ struct MenuPanel: View {
         .background(HCColor.panel)
         .tint(HCColor.accent)
         .background(WindowAccessor { window in
-            model.panelWindow = window
+            model.adoptPanelWindow(window)
         })
+        // initial: true で初回表示から流し込む。窓の解決(WindowAccessor は非同期)と
+        // どちらが先でも、モデル側で最後の値が適用される。
+        .onChange(of: colorScheme, initial: true) { _, scheme in
+            model.panelSchemeChanged(isDark: scheme == .dark)
+        }
     }
 
     private var divider: some View {

@@ -244,6 +244,31 @@ final class AppModel {
     @ObservationIgnored weak var settingsWindow: NSWindow?
     /// メニューバーのパネル。ウィンドウを開く前に明示的に閉じるために保持する。
     @ObservationIgnored weak var panelWindow: NSWindow?
+    /// パネルの中身が SwiftUI の描画に使っている明暗。窓より後から届いても反映できるよう保持する。
+    @ObservationIgnored private var panelIsDark: Bool?
+
+    /// メニューバーのパネルの窓の外観を、SwiftUI の描画と同じ明暗へ揃える。
+    /// MenuBarExtra の窓はメニューバー(壁紙の明暗で決まる)の外観を継ぎ、SwiftUI 側の
+    /// 描画(システム外観に追従)と食い違うことがある。選択肢の文字などの AppKit 部品は
+    /// 窓の外観で描かれるため、割れたままだと「暗い地に黒文字」の混成になる。
+    /// NSApp.effectiveAppearance は常駐アプリだと更新がイベント待ちで遅れ、開いた瞬間に
+    /// 古い値を掴むため使わない。SwiftUI が描画に使った colorScheme を正とし、
+    /// 窓と明暗のどちらが後から届いても最後の値で揃うよう、両方の入口から同じ適用を通す。
+    func adoptPanelWindow(_ window: NSWindow?) {
+        panelWindow = window
+        applyPanelAppearance()
+    }
+
+    func panelSchemeChanged(isDark: Bool) {
+        panelIsDark = isDark
+        applyPanelAppearance()
+    }
+
+    private func applyPanelAppearance() {
+        guard let isDark = panelIsDark else { return }
+        panelWindow?.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+    }
+
     /// openWindow は SwiftUI の Environment からしか取れないため、
     /// 常に生きているメニューバーのラベルビューから注入してもらう。
     /// 注入より前に来た履歴ウィンドウの表示要求は、注入された時点で改めて実行する。
