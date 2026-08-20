@@ -119,7 +119,7 @@ public struct DecisionLog: Codable, Sendable, Equatable {
 
     public var version: Int
     public var topics: [DecisionTopic]
-    /// 決定事項の取り込み処理(相乗り抽出・バックフィル)を実行済みのセッションディレクトリ名。
+    /// 決定事項の取り込み処理(要約後の専用抽出・バックフィル)を実行済みのセッションディレクトリ名。
     /// 決定が1つも見つからなかったセッションもここに入れる。これが無いと「決定ゼロのセッション」が
     /// 毎回バックフィルの対象に数えられ続けてしまう。
     public var extractedSessionDirectories: [String]

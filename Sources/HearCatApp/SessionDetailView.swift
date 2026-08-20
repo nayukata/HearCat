@@ -5,7 +5,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import os
 
-/// 決定事項ログ(decisions.json)の読み書き失敗を残すための内部ログ。要約の相乗り抽出側
+/// 決定事項ログ(decisions.json)の読み書き失敗を残すための内部ログ。決定事項の抽出側
 /// (AppModel.swift の decisionExtractionLogger)とは別カテゴリにする(取り込み時の失敗と、
 /// この画面での閲覧・検品操作の失敗は原因が別なので、ログ上でも分けて追える方がよい)。
 private let decisionInspectionLogger = Logger(

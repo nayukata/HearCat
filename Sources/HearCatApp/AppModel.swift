@@ -6,8 +6,9 @@ import HearCatSummarize
 import UniformTypeIdentifiers
 import os
 
-/// 決定事項ログ(DecisionLogStore)の相乗り抽出まわりの内部ログ。デコード失敗・マージ失敗は
-/// 要約自体を失敗させない(記録は要約の付録のため)ので、握りつぶす代わりにここへ残す。
+/// 決定事項ログ(DecisionLogStore)の抽出(要約成功後の専用呼び出し・バックフィル)まわりの
+/// 内部ログ。デコード失敗・マージ失敗は要約自体を失敗させない(記録は要約の付録のため)ので、
+/// 握りつぶす代わりにここへ残す。
 private let decisionExtractionLogger = Logger(
     subsystem: SessionStore.bundleIdentifier, category: "decision-extraction")
 
@@ -947,7 +948,8 @@ final class AppModel {
     /// 入力は cleaned.md(あれば)を優先し、無ければ生の文字起こしを使う
     /// (清書済みのほうが音声認識の誤変換が少なく、要約の質が上がるため)。
     /// 自動要約(autoSummarize)・詳細画面からの手動再生成の両方がここを通るため、
-    /// 決定事項ログへの相乗り抽出(グループ所属セッションのみ)もここに実装すれば両方に効く。
+    /// 決定事項ログへの抽出(グループ所属セッションのみ、専用の2回目呼び出し)も
+    /// ここに実装すれば両方に効く。
     func generateAgentSummary(for session: SessionInfo, using cli: AgentCLI) async throws -> String {
         summarizingSessionID = session.id
         defer { summarizingSessionID = nil }
@@ -958,45 +960,62 @@ final class AppModel {
             throw AgentSummarizeError.noTranscript
         }
         let referenceFolder = session.folder.flatMap { settings.referenceFolders[$0] }
+        let model = settings.summaryAgentModel(for: cli)
 
-        // グループ(セッションフォルダ)に属さないセッションには decisions.json の記録先が無いため、
-        // 抽出そのものを無効にする(プロンプトに ```decisions の指示を足さない)。
-        let decisionExtraction = session.folder.map { folder in
-            let existingLog = DecisionLogStore.loadOrEmpty(folder: folder)
-            return DecisionExtractionContext(existingTopics: DecisionLogStore.promptTopicList(existingLog))
-        }
+        let summaryBody = try await AgentSummarizer.summarize(
+            using: cli, model: model, transcript: transcript, referenceFolder: referenceFolder)
 
-        let rawResult = try await AgentSummarizer.summarize(
-            using: cli,
-            model: settings.summaryAgentModel(for: cli),
-            transcript: transcript,
-            referenceFolder: referenceFolder,
-            decisionExtraction: decisionExtraction)
-
-        // フェンスを除いた本文だけを summary.md へ保存する。フェンスが無ければ json は nil
-        // (AI が形式に従わなかった場合、置換マージで過去の記録を消さないよう merge 自体をしない)。
-        let (summaryBody, decisionsJSON) = AgentSummarizer.extractDecisionsFence(from: rawResult)
         let url = session.directory.appendingPathComponent("summary.md")
         try summaryBody.write(to: url, atomically: true, encoding: .utf8)
         try? SessionStore.writeSummaryEngine(cli.summaryEngine, for: session)
         clearAutoSummaryFailure(for: session)
 
-        if let folder = session.folder, let decisionsJSON, let jsonData = decisionsJSON.data(using: .utf8) {
-            do {
-                let delta = try JSONDecoder().decode(DecisionDelta.self, from: jsonData)
-                try DecisionLogStore.merge(
-                    delta: delta, folder: folder,
-                    sessionDirectoryName: session.directory.lastPathComponent,
-                    sessionName: session.name, sessionStartedAt: session.startDate)
-            } catch {
-                // 記録は要約の付録であり、ここで要約自体を失敗扱いにはしない。
-                decisionExtractionLogger.error(
-                    "decisions フェンスの取り込みに失敗: \(error.localizedDescription, privacy: .public)")
-            }
+        // 決定事項の抽出は要約に相乗りさせず、専用の2回目の呼び出しにする(相乗りは実測で
+        // 捕捉率が低かったため)。グループ(セッションフォルダ)に属さないセッションには
+        // decisions.json の記録先が無いため呼ばない。失敗しても要約は既に保存済みなので、
+        // ここでは例外を投げずログに残すだけにする。
+        if let folder = session.folder {
+            await extractAndMergeDecisions(
+                for: session, folder: folder, cli: cli, model: model,
+                transcript: transcript, referenceFolder: referenceFolder)
         }
 
         refreshSessions()
         return summaryBody
+    }
+
+    /// generateAgentSummary から要約成功後に呼ぶ、決定事項だけの抽出とログへの取り込み。
+    /// バックフィル(startDecisionBackfill)と同じ AgentSummarizer.extractDecisions を使い、
+    /// 挙動を揃える。
+    private func extractAndMergeDecisions(
+        for session: SessionInfo, folder: String, cli: AgentCLI, model: String?,
+        transcript: String, referenceFolder: String?
+    ) async {
+        let existingLog = DecisionLogStore.loadOrEmpty(folder: folder)
+        let decisionExtraction = DecisionExtractionContext(
+            existingTopics: DecisionLogStore.promptTopicList(existingLog))
+        do {
+            guard
+                let json = try await AgentSummarizer.extractDecisions(
+                    using: cli, model: model, transcript: transcript,
+                    referenceFolder: referenceFolder, decisionExtraction: decisionExtraction),
+                let jsonData = json.data(using: .utf8)
+            else {
+                decisionExtractionLogger.error(
+                    "decisions フェンスが出力されませんでした (\(session.directory.lastPathComponent, privacy: .public))"
+                )
+                return
+            }
+            let delta = try JSONDecoder().decode(DecisionDelta.self, from: jsonData)
+            try DecisionLogStore.merge(
+                delta: delta, folder: folder,
+                sessionDirectoryName: session.directory.lastPathComponent,
+                sessionName: session.name, sessionStartedAt: session.startDate)
+        } catch {
+            // 記録は要約の付録であり、ここで要約自体を失敗扱いにはしない。
+            decisionExtractionLogger.error(
+                "decisions フェンスの取り込みに失敗: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// 手動で作り直せたセッションについては、自動要約の失敗表示を取り下げる。
