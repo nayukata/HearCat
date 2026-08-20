@@ -146,6 +146,7 @@ struct SettingsView: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginMessage: String?
     @State private var updateCheck: UpdateCheckResult = .checking
+    @State private var updateStartFailureMessage: String?
     @State private var codexModelOptions: [AgentModelOption] = []
     /// Claude/Codex を自動要約に選ぶ際の外部送信同意確認。ダイアログでキャンセルされたら
     /// pending の選択に戻さず、元の選択を保つためにここへ待避する。
@@ -291,6 +292,25 @@ struct SettingsView: View {
                     }
                 }
                 HStack(spacing: 8) {
+                    Button("今すぐアップデート") { performUpdateNow() }
+                        .controlSize(.small)
+                        .disabled(!updateAvailable || model.status.active)
+                    if model.status.active {
+                        Text("セッション中はアップデートできません")
+                            .font(HCFont.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let updateStartFailureMessage {
+                        Text(updateStartFailureMessage)
+                            .font(HCFont.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                // 失敗表示は直前の押下に対する結果としてだけ意味を持つ。セッションを
+                // 挟んで戻ってきた時に古い失敗が再表示されないよう、状態が動いたら消す。
+                .onChange(of: model.status.active) {
+                    updateStartFailureMessage = nil
+                }
+                HStack(spacing: 8) {
                     Text(UpdateCheck.command)
                         .font(HCFont.callout)
                         .foregroundStyle(.secondary)
@@ -304,7 +324,9 @@ struct SettingsView: View {
             } header: {
                 Text("アップデート")
             } footer: {
-                settingsFooter("このコマンドをターミナルで実行すると、最新版に入れ替わります。実行中は HearCat がいったん終了するので、録音していないときに行ってください。確認するのは公開されているバージョン番号だけで、こちらからは何も送りません。")
+                settingsFooter(
+                    "「今すぐアップデート」は上のコマンドをこの場で実行し、HearCat をすぐに終了します。取得とビルドは終了後もバックグラウンドで進み、完了後にもう一度開くと新しい版で起動します。",
+                    "手元のターミナルで実行する場合も、録音していないときに行ってください。確認するのは公開されているバージョン番号だけで、こちらからは何も送りません。")
             }
             .onAppear { checkForUpdate() }
 
@@ -1067,6 +1089,33 @@ struct SettingsView: View {
         updateCheck = .checking
         let current = appVersion
         Task { updateCheck = await UpdateCheck.run(currentVersion: current) }
+    }
+
+    private var updateAvailable: Bool {
+        if case .available = updateCheck { return true }
+        return false
+    }
+
+    /// 設定画面に表示している curl コマンド(UpdateCheck.command、bootstrap.sh の実行)と
+    /// 同じ内容を、アプリから切り離したプロセスで実行してからアプリを終了する。
+    /// 先にアプリを終了しても、install.sh 側は対象が無くても安全に進む作りのため、
+    /// 二重の終了指示にはならない。
+    /// 標準入出力をアプリに繋いだままにすると、アプリの終了と同時にパイプが失われて
+    /// プロセス側が書き込みに失敗し得るため、実行前に切り離す。
+    private func performUpdateNow() {
+        updateStartFailureMessage = nil
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", UpdateCheck.command]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            NSApp.terminate(nil)
+        } catch {
+            updateStartFailureMessage = "アップデートを開始できませんでした"
+        }
     }
 
     private var appVersion: String {
