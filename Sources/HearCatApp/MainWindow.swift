@@ -3,15 +3,21 @@ import HearCatKit
 import SwiftUI
 
 /// 履歴ウィンドウ。左にセッション一覧(進行中は先頭に固定)、右に詳細。
-/// 左はプロジェクトフォルダでグループ化できる。フォルダは折りたたみ式の行で、
-/// セッションのドラッグ&ドロップ、右クリックでの名前変更・削除に対応する。
+/// 左はプロジェクトフォルダでグループ化できる。フォルダは見出し1行だけで中身は展開せず、
+/// 中身を見るにはグループ画面(右ペイン)を開く。フォルダの行はセッションのドラッグ&ドロップ、
+/// 右クリックでの名前変更・削除に対応する。未分類セッションは開始日時で日付区分に分けて出す。
 struct MainWindow: View {
     let model: AppModel
     /// 一覧の選択。単一選択と複数選択(Cmd/Shift+クリック)の両方を扱うため Set で持つ。
     @Environment(\.colorScheme) private var colorScheme
     @State private var selection: Set<String> = []
-    /// 折りたたんだフォルダ。既定は全部展開。
-    @State private var collapsedFolders: Set<String> = []
+    /// 未分類の日付区分ごとの折りたたみ状態。既定は今日・昨日・今週が展開、
+    /// 今月・それ以前が折りたたみ(init で計算、永続化はしない)。
+    @State private var collapsedDateSections: Set<DateBucket>
+    /// collapsedDateSections を最後に既定へ計算し直した日。ウィンドウを開いたまま日付が
+    /// 変わると「今日」「昨日」の区分の中身が入れ替わるため、この値と実際の日付がずれたら
+    /// 既定を計算し直す(同じ日のうちはユーザーの開閉操作を上書きしない)。
+    @State private var dateSectionsDay: Date
     /// ドラッグ中にドロップ先として狙われているグループ。行のハイライトに使う
     /// (自前の dropDestination は List 標準の挿入インジケータが出ないため、自前で見せる)。
     @State private var dropTargetFolder: String?
@@ -68,6 +74,55 @@ struct MainWindow: View {
     private static func groupName(fromSelectionTag tag: String) -> String? {
         guard tag.hasPrefix(groupSelectionPrefix) else { return nil }
         return String(tag.dropFirst(groupSelectionPrefix.count))
+    }
+
+    /// 未分類セッションを開始日時で振り分ける区分。並び順がそのまま表示順になる。
+    private enum DateBucket: CaseIterable, Hashable {
+        case today, yesterday, thisWeek, thisMonth, older
+
+        var title: String {
+            switch self {
+            case .today: return "今日"
+            case .yesterday: return "昨日"
+            case .thisWeek: return "今週"
+            case .thisMonth: return "今月"
+            case .older: return "それ以前"
+            }
+        }
+    }
+
+    private static func dateBucket(for date: Date, now: Date = Date()) -> DateBucket {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return .today }
+        if calendar.isDateInYesterday(date) { return .yesterday }
+        if calendar.isDate(date, equalTo: now, toGranularity: .weekOfYear) { return .thisWeek }
+        if calendar.isDate(date, equalTo: now, toGranularity: .month) { return .thisMonth }
+        return .older
+    }
+
+    /// 今日・昨日・今週がすべて0件なら、最初に中身のある区分(今月→それ以前の順)を
+    /// 開いた状態にする。それ以外は今日・昨日・今週だけ開いた既定に従う。
+    private static func initialCollapsedDateSections(unclassified: [SessionInfo]) -> Set<DateBucket> {
+        var collapsed: Set<DateBucket> = [.thisMonth, .older]
+        let buckets = unclassified.map { dateBucket(for: $0.startDate) }
+        let hasRecent = buckets.contains { [.today, .yesterday, .thisWeek].contains($0) }
+        if !hasRecent {
+            for bucket: DateBucket in [.thisMonth, .older] where buckets.contains(bucket) {
+                collapsed.remove(bucket)
+                break
+            }
+        }
+        return collapsed
+    }
+
+    init(model: AppModel) {
+        self.model = model
+        let unclassified = model.sessions.filter {
+            $0.id != model.status.sessionID && $0.folder == nil
+        }
+        _collapsedDateSections = State(
+            initialValue: Self.initialCollapsedDateSections(unclassified: unclassified))
+        _dateSectionsDay = State(initialValue: Calendar.current.startOfDay(for: Date()))
     }
 
     var body: some View {
@@ -181,9 +236,6 @@ struct MainWindow: View {
             Button("変更") {
                 if let newName = model.renameFolder(folder, to: folderRenameText) {
                     remapSelection(fromFolder: folder, to: newName)
-                    if collapsedFolders.remove(folder) != nil {
-                        collapsedFolders.insert(newName)
-                    }
                 }
             }
             Button("キャンセル", role: .cancel) {}
@@ -196,7 +248,6 @@ struct MainWindow: View {
             Button("グループを削除", role: .destructive) {
                 if model.deleteFolder(folder) {
                     remapSelection(fromFolder: folder, to: nil)
-                    collapsedFolders.remove(folder)
                 }
             }
         } message: { _ in
@@ -217,47 +268,27 @@ struct MainWindow: View {
                             .tag(Self.liveID)
                     }
                 }
-                if !model.folders.isEmpty {
-                    Section("グループ") {
+                Section("グループ") {
+                    if model.folders.isEmpty {
+                        Text("下の「新しいグループ」から作れます")
+                            .foregroundStyle(.tertiary)
+                            .font(HCFont.caption)
+                    } else {
                         ForEach(model.folders, id: \.self) { folder in
                             folderGroup(folder)
                         }
                     }
                 }
-                // フォルダ分けが始まったら、直下は「未分類」という位置づけになる。
-                Section {
-                    ForEach(pastSessions.filter { $0.folder == nil }) { session in
-                        sessionRow(session)
-                    }
-                } header: {
-                    // グループの並べ替えでは「このグループの後ろが無い = 末尾へ」の受け皿を兼ねる。
-                    Text(model.folders.isEmpty ? "履歴" : "未分類")
-                        .dropDestination(for: String.self) { ids, _ in
-                            debugLog("dnd " + "drop on=end ids=\(ids)")
-                            defer { endFolderDrag() }
-                            if let dragged = ids.compactMap(Self.folderName(fromDragPayload:)).first {
-                                return moveFolderToEnd(dragged)
-                            }
-                            return moveSessions(ids, toFolder: nil)
-                        } isTargeted: { targeting in
-                            debugLog("dnd " + 
-                                "target end targeting=\(targeting) dragging=\(draggingFolder ?? "nil")")
-                            guard draggingFolder != nil else { return }
-                            setInsertionTarget(nil, end: true, targeting: targeting)
-                        }
-                        .overlay(alignment: .top) {
-                            if insertionTargetEnd {
-                                Capsule().fill(HCColor.cinnamon).frame(height: 2.5)
-                                    .offset(y: -3)
-                            }
-                        }
-                }
+                unclassifiedSection(pastSessions.filter { $0.folder == nil })
             }
         }
         .searchable(text: $searchText, placement: .sidebar, prompt: "名前と本文を検索")
         // 検索中の名前変更や移動で一覧が変わっても、結果が古いまま残らないようにする。
         .onChange(of: searchText) { refreshSearch() }
         .onChange(of: model.sessions) { refreshSearch() }
+        // 一覧が動くたびに日付が変わっていないか見る。ウィンドウを開いたままにしていると
+        // 「今日」「昨日」の中身が日をまたいで入れ替わるため、そのときだけ開閉を既定へ戻す。
+        .onChange(of: model.sessionsVersion) { resetDateSectionsIfDayChanged() }
         .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             newFolderBar
@@ -284,6 +315,107 @@ struct MainWindow: View {
                 }
             }
         }
+    }
+
+    /// 未分類節。セッションが1件もなければ案内文だけ、未分類が0件で全部フォルダ入りなら
+    /// 節ごと隠す(ただしフォルダの並べ替えドラッグ中は末尾受け皿として見出しだけ出す)、
+    /// それ以外は開始日時で分けた区分ごとにセッションを並べる。
+    @ViewBuilder
+    private func unclassifiedSection(_ unclassified: [SessionInfo]) -> some View {
+        if pastSessions.isEmpty {
+            Section {
+                Text("録音したセッションがここに並びます")
+                    .foregroundStyle(.tertiary)
+                    .font(HCFont.caption)
+            } header: {
+                unclassifiedHeader
+            }
+        } else if !unclassified.isEmpty {
+            Section {
+                ForEach(DateBucket.allCases, id: \.self) { bucket in
+                    let sessions = unclassified.filter { Self.dateBucket(for: $0.startDate) == bucket }
+                    if !sessions.isEmpty {
+                        dateSectionHeader(bucket, count: sessions.count)
+                        if !collapsedDateSections.contains(bucket) {
+                            ForEach(sessions) { session in
+                                sessionRow(session)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                unclassifiedHeader
+            }
+        } else if draggingFolder != nil {
+            Section {
+            } header: {
+                unclassifiedHeader
+            }
+        }
+    }
+
+    /// 未分類節の見出し。グループの並べ替えでは「このグループの後ろが無い = 末尾へ」の
+    /// 受け皿を兼ねる。
+    private var unclassifiedHeader: some View {
+        Text("未分類")
+            .dropDestination(for: String.self) { ids, _ in
+                debugLog("dnd " + "drop on=end ids=\(ids)")
+                defer { endFolderDrag() }
+                if let dragged = ids.compactMap(Self.folderName(fromDragPayload:)).first {
+                    return moveFolderToEnd(dragged)
+                }
+                return moveSessions(ids, toFolder: nil)
+            } isTargeted: { targeting in
+                debugLog("dnd " +
+                    "target end targeting=\(targeting) dragging=\(draggingFolder ?? "nil")")
+                guard draggingFolder != nil else { return }
+                setInsertionTarget(nil, end: true, targeting: targeting)
+            }
+            .overlay(alignment: .top) {
+                if insertionTargetEnd {
+                    Capsule().fill(HCColor.cinnamon).frame(height: 2.5)
+                        .offset(y: -3)
+                }
+            }
+    }
+
+    /// 日付区分の小見出し。クリックで開閉する。閉じているときだけ件数を薄く出す
+    /// (開いているときは中の行が件数の代わりになる)。
+    private func dateSectionHeader(_ bucket: DateBucket, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .rotationEffect(.degrees(collapsedDateSections.contains(bucket) ? 0 : 90))
+                .foregroundStyle(.secondary)
+                .font(HCFont.caption)
+                .frame(width: 16, height: 16)
+            Text(bucket.title)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if collapsedDateSections.contains(bucket) {
+                Text("\(count)")
+                    .font(HCFont.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation { toggleDateSection(bucket) } }
+    }
+
+    private func toggleDateSection(_ bucket: DateBucket) {
+        if collapsedDateSections.contains(bucket) {
+            collapsedDateSections.remove(bucket)
+        } else {
+            collapsedDateSections.insert(bucket)
+        }
+    }
+
+    /// 開いたままのウィンドウで日付が変わったら、日付区分の開閉を既定に計算し直す。
+    private func resetDateSectionsIfDayChanged() {
+        let today = Calendar.current.startOfDay(for: Date())
+        guard today != dateSectionsDay else { return }
+        dateSectionsDay = today
+        let unclassified = pastSessions.filter { $0.folder == nil }
+        collapsedDateSections = Self.initialCollapsedDateSections(unclassified: unclassified)
     }
 
     /// サイドバー下部の常設ボタン。グループ分けできることと、
@@ -315,75 +447,29 @@ struct MainWindow: View {
         .overlay(alignment: .top) { Divider() }
     }
 
-    /// グループのヘッダー行と、展開中ならそのグループのセッション行。
-    /// DisclosureGroup にしないのは、そのラベル行が draggable/onDrag のどちらでも
-    /// ドラッグ元にならず、並べ替えの DnD が始められないため。開閉は行頭の
-    /// chevron ボタンで自前管理する (collapsedFolders の意味は従来どおり)。
-    @ViewBuilder
+    /// グループの見出し行1行だけを出す(サイドバーではグループの中身を展開しない。
+    /// 中身を見るにはグループ画面を開く)。
     private func folderGroup(_ folder: String) -> some View {
-        let sessions = pastSessions.filter { $0.folder == folder }
-        let hasVisibleChildren = !collapsedFolders.contains(folder) && !sessions.isEmpty
-        folderHeader(folder, count: sessions.count, hasVisibleChildren: hasVisibleChildren)
-        if !collapsedFolders.contains(folder) {
-            ForEach(sessions) { session in
-                sessionRow(session)
-                    .padding(.leading, 16)
-                    // グループをドラッグ中は、展開中の子行もヘッダーと同じ受け皿にする。
-                    // ヘッダー行だけだと展開時の的が細く、行間をピンポイントで狙う操作になるため。
-                    // セッションのドラッグには反応させない (folderName が nil なら何もしない)。
-                    .dropDestination(for: String.self) { ids, _ in
-                        guard let dragged = ids.compactMap(Self.folderName(fromDragPayload:)).first
-                        else { return false }
-                        defer { endFolderDrag() }
-                        debugLog("dnd " + "drop on=child-of-\(folder) ids=\(ids)")
-                        return insertFolder(dragged, onto: folder)
-                    } isTargeted: { targeting in
-                        guard draggingFolder != nil, insertionEdge(for: folder) != nil else { return }
-                        setInsertionTarget(folder, targeting: targeting)
-                    }
-                    // グループを下から上へドラッグしているとき、展開中のブロックの下端は
-                    // 最後の子行の下にしか付けられない (ヘッダー直下だと途中の行に見えてしまう)。
-                    .overlay(alignment: .bottom) {
-                        if session.id == sessions.last?.id,
-                            insertionTargetFolder == folder,
-                            insertionEdge(for: folder) == .bottom {
-                            insertionLine.offset(y: 3)
-                        }
-                    }
-            }
-        }
+        let count = pastSessions.filter { $0.folder == folder }.count
+        return folderHeader(folder, count: count)
     }
 
-    /// グループの見出し行。開閉の chevron、フォルダ名、関連フォルダ chip、件数 badge を持つ。
-    /// 行名(chevron 以外の部分)をクリックするとグループ画面を選択する。開閉は chevron の
-    /// クリックだけに限る(以前は行のどこでも開閉できたが、選択と競合するため分離した)。
+    /// グループの見出し行。フォルダ名、関連フォルダ chip、件数 badge を持つ。
+    /// 行をクリックするとグループ画面を選択する。
     /// ドラッグ&ドロップ(並べ替え・セッションの受け入れ)と右クリックメニューはこの行に付く。
-    private func folderHeader(_ folder: String, count: Int, hasVisibleChildren: Bool) -> some View {
-        HStack(spacing: 6) {
-            // Button にしないのは、この行がドラッグ元(.onDrag)でもあり、macOS の List では
-            // ドラッグ元の行内の Button がクリックを受け取れないため。onTapGesture は
-            // ドラッグより優先されるので確実に効く(以前の「行全体クリックで開閉」も
-            // この仕組みで動いていた)。
-            Image(systemName: "chevron.right")
-                .rotationEffect(.degrees(collapsedFolders.contains(folder) ? 0 : 90))
-                .foregroundStyle(.secondary)
-                .font(HCFont.caption)
-                .frame(width: 16, height: 16)
-                .contentShape(Rectangle())
-                .onTapGesture { withAnimation { toggleCollapsed(folder) } }
-            Label {
-                HStack(spacing: 6) {
-                    Text(folder)
-                    // どのグループに関連フォルダが設定済みかをサイドバーで一目で
-                    // 分かるようにする。badge(セッション数)と喧嘩しないよう、
-                    // タイトル側の HStack に収めて右端は badge に譲る。
-                    if let path = model.settings.referenceFolders[folder] {
-                        referenceFolderChip(path: path)
-                    }
+    private func folderHeader(_ folder: String, count: Int) -> some View {
+        Label {
+            HStack(spacing: 6) {
+                Text(folder)
+                // どのグループに関連フォルダが設定済みかをサイドバーで一目で
+                // 分かるようにする。badge(セッション数)と喧嘩しないよう、
+                // タイトル側の HStack に収めて右端は badge に譲る。
+                if let path = model.settings.referenceFolders[folder] {
+                    referenceFolderChip(path: path)
                 }
-            } icon: {
-                Image(systemName: "folder")
             }
+        } icon: {
+            Image(systemName: "folder")
         }
         .badge(count)
         // tag は List の選択ハイライト表示用。ただしドラッグ元の行は List のクリック選択が
@@ -391,8 +477,8 @@ struct MainWindow: View {
         // (接頭辞 group: は folderDragPrefix (ドラッグのペイロード) とは別物)。
         .tag(Self.groupSelectionTag(folder))
         .contentShape(Rectangle())
-        // 行名クリックでグループ画面を選択する (開閉は chevron 専任)。onTapGesture なのは
-        // 上の chevron と同じ理由 (ドラッグ元の行では List 任せのクリック選択が死ぬため)。
+        // 行名クリックでグループ画面を選択する。onTapGesture なのは、この行が
+        // ドラッグ元(.onDrag)でもあり、そこでは List 任せのクリック選択が死ぬため。
         .onTapGesture { selection = [Self.groupSelectionTag(folder)] }
         // ドラッグ元は contentShape の後ろに置き、名前ラベルだけでなく行のどこからでも
         // 掴めるようにする。onDrag なのは、draggable(_:preview:) がログ上ドロップ判定を
@@ -476,10 +562,8 @@ struct MainWindow: View {
                 insertionLine.offset(y: -3)
             }
         }
-        // 下端の線は、子行が見えているときは最後の子行側 (folderGroup) に出すのでここでは出さない。
         .overlay(alignment: .bottom) {
-            if insertionTargetFolder == folder, insertionEdge(for: folder) == .bottom,
-                !hasVisibleChildren {
+            if insertionTargetFolder == folder, insertionEdge(for: folder) == .bottom {
                 insertionLine.offset(y: 3)
             }
         }
@@ -703,15 +787,6 @@ struct MainWindow: View {
         model.reorderFolders(order)
     }
 
-    /// グループの開閉を切り替える。集合の意味(入っていれば折りたたみ中)は従来どおり。
-    private func toggleCollapsed(_ folder: String) {
-        if collapsedFolders.contains(folder) {
-            collapsedFolders.remove(folder)
-        } else {
-            collapsedFolders.insert(folder)
-        }
-    }
-
 }
 
 /// 「対象が入っていたら表示」のダイアログ用 Binding。閉じる時に対象を空にする。
@@ -841,7 +916,7 @@ struct SessionRow: View {
             if let preview, !preview.isEmpty {
                 Text(preview)
                     .font(HCFont.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }

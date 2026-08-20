@@ -22,8 +22,8 @@ struct GroupDetailView: View {
         case decisions = "決まったこと"
     }
 
-    // 既定は「決まったこと」。決定事項の記録を見返す方が主目的の画面のため。
-    @State private var selectedTab: Tab = .decisions
+    // 既定は「セッション」。この画面がグループ内セッションの一覧を担うため、まず一覧を出す。
+    @State private var selectedTab: Tab = .sessions
 
     @State private var decisionLog: DecisionLog = .empty
     @State private var searchText = ""
@@ -172,24 +172,33 @@ struct GroupDetailView: View {
 
     // MARK: - セッションタブ
 
+    @ViewBuilder
     private var sessionsTabContent: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(groupSessions) { session in
-                    Button {
-                        onSelectSession(session.id)
-                    } label: {
-                        SessionRow(session: session, sessionsVersion: model.sessionsVersion)
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                    .padding(.vertical, 4)
-                    if session.id != groupSessions.last?.id {
-                        Divider()
+        if groupSessions.isEmpty {
+            ContentUnavailableView(
+                "まだセッションがありません",
+                systemImage: "folder",
+                description: Text("未分類のセッションをこのグループへドラッグすると追加できます。"))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(groupSessions) { session in
+                        Button {
+                            onSelectSession(session.id)
+                        } label: {
+                            SessionRow(session: session, sessionsVersion: model.sessionsVersion)
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .padding(.vertical, 4)
+                        if session.id != groupSessions.last?.id {
+                            Divider()
+                        }
                     }
                 }
+                .padding()
             }
-            .padding()
         }
     }
 
