@@ -32,6 +32,9 @@ app: check-identity build
 	cp -R distribution/hearcat $(APP)/Contents/Resources/skills/hearcat
 	cp -R distribution/hearcat-clean $(APP)/Contents/Resources/skills/hearcat-clean
 	cp Sources/HearCatApp/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
+	# 設定画面の「更新」が読む変更履歴。通信できないときの控えなので、
+	# 普段は GitHub の main にある新しい方を読む(ReleaseNotes.swift)。
+	cp CHANGELOG.md $(APP)/Contents/Resources/CHANGELOG.md
 	# SwiftPM のリソースバンドル(同梱フォント)。HCFont.registerBundledFonts() が
 	# Bundle.main.resourceURL(= ここ)を自前で探して読む(Bundle.module は使わない。
 	# Bundle.module はビルド時の絶対パスに依存し配布後は必ず見つからず fatalError するため)。

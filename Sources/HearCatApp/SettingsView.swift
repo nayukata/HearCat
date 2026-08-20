@@ -135,6 +135,43 @@ private struct AgentModelComboBox: NSViewRepresentable {
 }
 
 /// 設定ウィンドウ。用途別のタブに分け、関連する設定を同じ場所へ集約する。
+/// 設定の左の一覧に並ぶページ。並び順は使う頻度ではなく、
+/// 「アプリ全体 → 1回の記録 → 入力 → AI → 操作 → 保守」の順にする。
+enum SettingsPage: String, CaseIterable, Identifiable {
+    case general
+    case session
+    case audio
+    case ai
+    case hotkey
+    case update
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "一般"
+        // 「会議」にしないのは、通話でも独り言の口述でも使えるアプリで、用途を会議に
+        // 狭めて見せてしまうため。アプリが画面で使っている呼び名に揃える。
+        case .session: "セッション"
+        case .audio: "音声"
+        case .ai: "AI"
+        case .hotkey: "ホットキー"
+        case .update: "アップデート"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .session: "record.circle"
+        case .audio: "mic"
+        case .ai: "sparkles"
+        case .hotkey: "keyboard"
+        case .update: "arrow.down.circle"
+        }
+    }
+}
+
 struct SettingsView: View {
     let model: AppModel
     @Bindable var settings: AppSettings
@@ -145,8 +182,12 @@ struct SettingsView: View {
     @State private var inputDevices: [MicDeviceOption] = [MicDeviceOption(uid: nil, name: "システム標準")]
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var launchAtLoginMessage: String?
+    /// 左の一覧で選んでいるページ。List の選択は空にできる型を求めるため Optional にし、
+    /// 空になった場合は一般として描く。
+    @State private var page: SettingsPage? = .general
     @State private var updateCheck: UpdateCheckResult = .checking
     @State private var updateStartFailureMessage: String?
+    @State private var releaseNotes: ReleaseNotesState = .loading
     @State private var codexModelOptions: [AgentModelOption] = []
     /// Claude/Codex を自動要約に選ぶ際の外部送信同意確認。ダイアログでキャンセルされたら
     /// pending の選択に戻さず、元の選択を保つためにここへ待避する。
@@ -173,24 +214,35 @@ struct SettingsView: View {
 
     var body: some View {
         // 1本の長いスクロールだと下のセクションが見落とされるため、macOS の
-        // 設定アプリと同じタブで分ける。各タブが一画面に収まる高さにする。
-        TabView {
-            Tab("一般", systemImage: "gearshape") { generalTab }
-            Tab("セッション", systemImage: "record.circle") { sessionTab }
-            Tab("音声", systemImage: "mic") { audioTab }
-            Tab("AI", systemImage: "sparkles") { aiTab }
-            Tab("ホットキー", systemImage: "keyboard") { hotkeyTab }
+        // 設定アプリと同じ形で分ける。左の一覧で選んだものだけを右に出す。
+        NavigationSplitView {
+            // 選んでいる行の帯を自前で塗る。List に任せるとシステムのアクセント色
+            // (既定は青)になり、アプリが他の操作で使っている色と揃わない。
+            // tint を渡しても帯の色までは変わらない。
+            List(SettingsPage.allCases, selection: $page) { item in
+                Label(item.title, systemImage: item.symbol)
+                    .foregroundStyle(page == item ? Color.white : HCColor.textPrimary)
+                    .tag(item)
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: HCRadius.control)
+                            .fill(page == item ? HCColor.cinnamon : Color.clear))
+            }
+            .navigationSplitViewColumnWidth(176)
+        } detail: {
+            switch page ?? .general {
+            case .general: generalTab
+            case .session: sessionTab
+            case .audio: audioTab
+            case .ai: aiTab
+            case .hotkey: hotkeyTab
+            case .update: updateTab
+            }
         }
-        // タブの並びは本文ではなくタイトルバーの中に描かれる。幅が足りないと、
-        // 並びは省略されずに丸ごと畳まれて何も見えなくなるため、必要な幅を必ず確保する。
-        //
-        // 実測(タイトルバーを画面外に描いて計測): タブ5つの帯は約 430pt、左端の信号機
-        // ボタンが約 98pt で、合計 528pt が下限。520pt だと 8pt 足りずに畳まれていた。
-        // 560pt はその下限に 32pt の余裕を持たせた値。タブの文言を長くする時はここも見直す。
-        //
+        .navigationSplitViewStyle(.balanced)
         // 幅を固定するのは、下限だけにすると折り返してほしい長い説明文の幅に
         // ウィンドウが合わせてしまい、際限なく横に伸びるため。
-        .frame(width: 560, height: 480)
+        // 内訳は一覧 176pt + 本文 560pt(タブ時代に長い footer が窮屈にならないと確かめた幅)。
+        .frame(width: 736, height: 520)
         // Toggle の switch トラック(on 側の色)は Window レベルの tint だけでは
         // system accent が優先されて青のまま残ることがある。SwitchToggleStyle に
         // 直接 tint を渡すことで、切替スイッチのトラック色を確実にシナモン茶へ。
@@ -222,9 +274,7 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 1回の記録の始まり方・名前の付き方・終わり方をまとめるタブ。
-    /// タブ名を「会議」にしないのは、通話でも独り言の口述でも使えるアプリで、
-    /// 用途を会議に狭めて見せてしまうため。アプリが画面で使っている呼び名(セッション)に揃える。
+    /// 1回の記録の始まり方・名前の付き方・終わり方をまとめるページ。
     private var sessionTab: some View {
         Form {
             Section {
@@ -283,6 +333,29 @@ struct SettingsView: View {
                 settingsFooter("Mac にログインしたとき、メニューバーに自動で常駐します。システム設定 > 一般 > ログイン項目からも変更できます。")
             }
 
+            storageSection
+
+            Section {
+                // ボタンの言葉は、開く画面の名前(ようこそ)ではなく、そこで何ができるかにする。
+                // 内部の呼び名をそのまま出しても、押した先に何があるか伝わらない。
+                Button("使い方と権限を確認") {
+                    model.openWindowAction?("welcome")
+                }
+                .controlSize(.small)
+            } header: {
+                Text("サポート")
+            } footer: {
+                settingsFooter("HearCat にできることの紹介と、マイク・音声認識・カレンダーの許可の状態を見直せます。")
+            }
+
+        }
+        .formStyle(.grouped)
+        .onAppear { refreshStorageUsage() }
+    }
+
+    /// 手元のバージョン・更新の実行・最近何が変わったかをまとめるページ。
+    private var updateTab: some View {
+        Form {
             Section {
                 LabeledContent("バージョン") {
                     HStack(spacing: 8) {
@@ -321,33 +394,109 @@ struct SettingsView: View {
                     CopyButton { UpdateCheck.command }
                 }
                 Toggle("毎日 11 時に確認", isOn: $settings.autoUpdateCheck)
-            } header: {
-                Text("アップデート")
             } footer: {
                 settingsFooter(
-                    "「今すぐアップデート」は上のコマンドをこの場で実行し、HearCat をすぐに終了します。取得とビルドは終了後もバックグラウンドで進み、完了後にもう一度開くと新しい版で起動します。",
+                    "「今すぐアップデート」は上のコマンドをこの場で実行し、HearCat をすぐに終了します。取得とビルドは終了後もバックグラウンドで進み、完了後にもう一度開くと新しいバージョンで起動します。",
                     "手元のターミナルで実行する場合も、録音していないときに行ってください。確認するのは公開されているバージョン番号だけで、こちらからは何も送りません。")
             }
-            .onAppear { checkForUpdate() }
 
-            storageSection
-
-            Section {
-                // ボタンの言葉は、開く画面の名前(ようこそ)ではなく、そこで何ができるかにする。
-                // 内部の呼び名をそのまま出しても、押した先に何があるか伝わらない。
-                Button("使い方と権限を確認") {
-                    model.openWindowAction?("welcome")
-                }
-                .controlSize(.small)
-            } header: {
-                Text("サポート")
-            } footer: {
-                settingsFooter("HearCat にできることの紹介と、マイク・音声認識・カレンダーの許可の状態を見直せます。")
-            }
-
+            releaseNotesSection
         }
         .formStyle(.grouped)
-        .onAppear { refreshStorageUsage() }
+        .onAppear {
+            checkForUpdate()
+            loadReleaseNotes()
+        }
+    }
+
+    /// 最近何が変わったか。手元のバージョンと、まだ入っていないバージョンに印を付けて、
+    /// 更新すると何が入るのかを一覧の中で見分けられるようにする。
+    @ViewBuilder
+    private var releaseNotesSection: some View {
+        Section {
+            switch releaseNotes {
+            case .loading:
+                ProgressView()
+                    .controlSize(.small)
+            case .failed:
+                HStack(spacing: 8) {
+                    Text("読み込めませんでした")
+                        .font(HCFont.caption)
+                        .foregroundStyle(.secondary)
+                    Button("再読み込み") { loadReleaseNotes() }
+                        .controlSize(.small)
+                }
+            case .loaded(let notes):
+                ForEach(notes) { note in
+                    releaseNoteRow(note)
+                }
+            }
+        } header: {
+            Text("変更履歴")
+        } footer: {
+            settingsFooter("新しい順に \(ReleaseNotes.displayCount) 件まで出します。まだ手元に入っていないバージョンの内容も含みます。")
+        }
+    }
+
+    private func releaseNoteRow(_ note: ReleaseNote) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(note.version)
+                    .font(HCFont.headline)
+                if note.version == appVersion {
+                    releaseNoteBadge("使用中", color: HCColor.textDim)
+                } else if AppVersion.isNewer(note.version, than: appVersion) {
+                    releaseNoteBadge("未適用", color: HCColor.accentText)
+                }
+            }
+            if let summary = note.summary {
+                Text(summary)
+                    .font(HCFont.callout)
+                    .foregroundStyle(HCColor.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(note.groups) { group in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(group.kind)
+                        .font(HCFont.caption)
+                        .foregroundStyle(.secondary)
+                    // 題は変更履歴そのままなので、同じ題が同じバージョンに並ぶこともある。
+                    // 位置を id にして、重なっても行が消えないようにする。
+                    ForEach(Array(group.changes.enumerated()), id: \.offset) { _, change in
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let title = change.title {
+                                Text(title)
+                                    .font(HCFont.style(.body, weight: .semibold))
+                                    .foregroundStyle(HCColor.textPrimary)
+                            }
+                            Text(change.detail)
+                                .font(HCFont.callout)
+                                .foregroundStyle(HCColor.textBright)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func releaseNoteBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(HCFont.badge)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: HCRadius.chip)
+                    .fill(HCColor.keyCap))
+    }
+
+    private func loadReleaseNotes() {
+        releaseNotes = .loading
+        Task { releaseNotes = await ReleaseNotes.load() }
     }
 
     /// 録音・文字起こしなどの合計使用量と、古い録音の削除。
