@@ -2,6 +2,40 @@ import AppKit
 import HearCatKit
 import SwiftUI
 
+/// GUI の開始ボタンで選べる録音/文字起こしの組み合わせ。
+enum SessionStartMode: String, CaseIterable {
+    case recordAndTranscribe
+    case transcribeOnly
+    case recordOnly
+
+    var buttonLabel: String {
+        switch self {
+        case .recordAndTranscribe: return "録音 ＋ 文字起こしを開始"
+        case .transcribeOnly: return "文字起こしのみ開始"
+        case .recordOnly: return "録音のみ開始"
+        }
+    }
+
+    var menuLabel: String {
+        switch self {
+        case .recordAndTranscribe: return "録音 ＋ 文字起こし"
+        case .transcribeOnly: return "文字起こしのみ"
+        case .recordOnly: return "録音のみ"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .recordAndTranscribe: return "record.circle"
+        case .transcribeOnly: return "text.quote"
+        case .recordOnly: return "mic"
+        }
+    }
+
+    var record: Bool { self != .transcribeOnly }
+    var transcribe: Bool { self != .recordOnly }
+}
+
 /// メニューバーから開くパネル。開始/停止・トグル・入力メーターをここに集約する。
 /// (MenuBarExtra の .window スタイルで表示するリッチ版メニュー)
 struct MenuPanel: View {
@@ -118,37 +152,41 @@ struct MenuPanel: View {
             if let recent = model.recentlyEndedSession {
                 recentSessionCard(recent)
             }
-            groupPicker
-                // 今の予定に紐づくグループへ選択を寄せる。会議が始まっているのに
-                // 前回のグループのままだと、そのまま開始して別のグループへ入ってしまう。
-                .task {
-                    await model.syncGroupSelectionWithCurrentEvent()
-                    // 起動直後に検出が失敗していた場合の取り戻し(検出済みなら何もしない)。
-                    AgentCLIDetector.shared.detectIfNeeded()
-                }
-            if let target = referenceFolderLinkTarget {
-                referenceFolderHint(target: target)
-            }
+            startButtonRow
+            savingDestinationRow
+        }
+        .disabled(model.busy)
+    }
 
+    /// 大きい開始ボタン(前回選んだモードを反映)+ モード切替。
+    /// この環境は Tab キーがボタンに止まらない設定のため、モードの選択肢一覧は
+    /// 自前のカスタム UI で組まず、NSMenu 裏付けの Menu にする。
+    private var startButtonRow: some View {
+        let mode = model.settings.lastSessionStartMode
+        return HStack(spacing: 6) {
             Button {
-                Task { await model.startSession(record: true, transcribe: true) }
+                Task { await model.startSession(record: mode.record, transcribe: mode.transcribe) }
             } label: {
-                Label("録音 ＋ 文字起こしを開始", systemImage: "record.circle")
+                Label(mode.buttonLabel, systemImage: mode.systemImage)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .pointingHandOnHover()
 
-            Button {
-                Task { await model.startSession(record: false, transcribe: true) }
+            Menu {
+                ForEach(SessionStartMode.allCases, id: \.self) { candidate in
+                    Button(candidate.menuLabel) {
+                        model.settings.lastSessionStartMode = candidate
+                    }
+                }
             } label: {
-                Label("文字起こしのみ開始", systemImage: "text.quote")
-                    .frame(maxWidth: .infinity)
+                Image(systemName: "chevron.down")
             }
+            .menuStyle(.button)
             .buttonStyle(.hcSecondary)
+            .help("開始する内容を選ぶ")
         }
-        .disabled(model.busy)
     }
 
     /// 直前に終わったセッションへ戻るための行。停止したあと画面上では何も起きないため、
@@ -197,16 +235,78 @@ struct MenuPanel: View {
     }
 
     /// 開始するセッションを入れるグループの選択。表示は「次のセッションが入る先」で、
-    /// 今の予定から推測した結果もここに出る。手で選び直すと、その予定の間はその選択が
-    /// 優先され、同時に「予定が無いときの既定」としても覚える(AppModel.selectFolder)。
-    private var groupPicker: some View {
-        Picker("グループ", selection: groupBinding) {
-            Text("未分類").tag(String?.none)
-            ForEach(model.folders, id: \.self) { folder in
-                Text(folder).tag(String?.some(folder))
+    /// 保存先グループの確認・切替と資料フォルダ誘導を1行にまとめた控えめな行。
+    /// 開始ボタンが主役なので、キャプション調のフォント・薄い色で脇役として添える。
+    private var savingDestinationRow: some View {
+        HStack(spacing: 4) {
+            Text("保存先: ")
+                .foregroundStyle(HCColor.textDim)
+
+            // グループ名だけ本文色にして押せることを示す。この環境は Tab キーが
+            // ボタンに止まらない設定のため、選択肢一覧は自前で組まず NSMenu 裏付けの
+            // Menu にする(startButtonRow のモード切替と同じ理由)。
+            Menu {
+                // 素の Button の羅列だと選択中の印が出ない。Picker を入れ子にして、
+                // 選択中項目へのチェックマーク描画をシステムに任せる。
+                Picker("グループ", selection: groupBinding) {
+                    Text("未分類").tag(String?.none)
+                    ForEach(model.folders, id: \.self) { folder in
+                        Text(folder).tag(String?.some(folder))
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                HStack(spacing: 2) {
+                    Text(model.plannedFolder ?? "未分類")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .medium))
+                }
+                .foregroundStyle(HCColor.textPrimary)
+                // 短いグループ名でも一定の幅を占め、後ろの資料フォルダ誘導の位置が
+                // 名前の長さで動かないようにする。
+                .frame(minWidth: 60, alignment: .leading)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            // 標準の矢印はラベル内の手動シェブロン(名前の後ろ)と二重になるため消す。
+            // パネル全体の accent tint がラベルへ乗るのも、ここだけ本文色へ戻す。
+            .menuIndicator(.hidden)
+            .tint(HCColor.textPrimary)
+            // 行が狭いときはこのグループ名側から先に縮む(隣の固定文言は保つ)。
+            .layoutPriority(-1)
+            .pointingHandOnHover()
+
+            if let target = referenceFolderLinkTarget {
+                Text("・")
+                    .foregroundStyle(HCColor.textDim)
+                Button {
+                    openReferenceFolderLink(target: target)
+                } label: {
+                    Text("資料フォルダを紐付ける")
+                        .underline(pattern: .dot)
+                        // グループ名の最低幅と両立させる。幅が足りない極端な場面でも
+                        // 2 行に折り返さず 1 行を維持する。
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .pointingHandOnHover()
+                .foregroundStyle(HCColor.textDim)
             }
         }
-        .pickerStyle(.menu)
+        .font(HCFont.caption)
+        // 行を左端に固定する。固定しないと VStack の中央寄せになり、グループ名の
+        // 長さやリンクの有無で幅が変わるたびに行全体の位置がずれる。
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 今の予定に紐づくグループへ選択を寄せる。会議が始まっているのに
+        // 前回のグループのままだと、そのまま開始して別のグループへ入ってしまう。
+        .task {
+            await model.syncGroupSelectionWithCurrentEvent()
+            // 起動直後に検出が失敗していた場合の取り戻し(検出済みなら何もしない)。
+            AgentCLIDetector.shared.detectIfNeeded()
+        }
     }
 
     private var groupBinding: Binding<String?> {
@@ -234,34 +334,22 @@ struct MenuPanel: View {
         return model.settings.referenceFolders[folder] == nil ? .existingGroup(folder) : nil
     }
 
-    /// 録音を始める前、グループ選択の直下に添える控えめな誘導。ラベルは機能名(関連フォルダ)
-    /// でなく効能(要約精度が上がる)で語る。押した先(ReferenceFolderPicker)の
-    /// NSOpenPanel.message で「紐付けるとどう良くなるか」を1〜2文説明する
-    /// (ここでは専用のチュートリアル画面は作らない)。
-    private func referenceFolderHint(target: ReferenceFolderLinkTarget) -> some View {
-        Button {
-            // このパネルはフォーカスが移ると閉じるため、パネルの親にはできない。
-            // 貼り付け先を渡さず、FilePanel 側の保険(今フォーカスのあるスクリーンへ寄せる)に委ねる。
-            switch target {
-            case .existingGroup(let folder):
-                Task { await ReferenceFolderPicker.pick(forGroup: folder, from: nil) }
-            case .newGroupFromUnclassified:
-                // 選んだフォルダから新規グループを作り、次回からの既定グループにする。
-                Task {
-                    guard let folder = await ReferenceFolderPicker.pickForNewGroup(from: nil)
-                    else { return }
-                    model.selectFolder(folder)
-                    model.refreshSessions()
-                }
+    /// 資料フォルダ誘導を押した時の遷移。このパネルはフォーカスが移ると閉じるため、
+    /// パネルの親にはできない。貼り付け先を渡さず、FilePanel 側の保険
+    /// (今フォーカスのあるスクリーンへ寄せる)に委ねる。
+    private func openReferenceFolderLink(target: ReferenceFolderLinkTarget) {
+        switch target {
+        case .existingGroup(let folder):
+            Task { await ReferenceFolderPicker.pick(forGroup: folder, from: nil) }
+        case .newGroupFromUnclassified:
+            // 選んだフォルダから新規グループを作り、次回からの既定グループにする。
+            Task {
+                guard let folder = await ReferenceFolderPicker.pickForNewGroup(from: nil)
+                else { return }
+                model.selectFolder(folder)
+                model.refreshSessions()
             }
-        } label: {
-            Label("資料フォルダと紐付けて要約精度を上げる", systemImage: "link")
-                .font(HCFont.caption)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.plain)
-        .pointingHandOnHover()
-        .foregroundStyle(HCColor.textDim)
     }
 
     // MARK: - セッション中
@@ -371,12 +459,16 @@ struct MenuPanel: View {
                 Label("設定", systemImage: "gearshape")
                     .frame(maxWidth: .infinity)
             }
-            Button {
-                NSApp.terminate(nil)
+            // 終了は誤クリック1回で押されないよう、他の操作と同列には置かず
+            // メニューの奥(NSMenu 裏付けの Menu)に隔離する。
+            Menu {
+                Button("HearCat を終了", role: .destructive) {
+                    NSApp.terminate(nil)
+                }
             } label: {
-                Image(systemName: "power")
+                Image(systemName: "ellipsis")
             }
-            .help("HearCat を終了")
+            .menuStyle(.button)
         }
         .buttonStyle(.hcSecondary)
     }

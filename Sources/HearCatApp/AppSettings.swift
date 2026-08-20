@@ -152,6 +152,13 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(hotkeyGroupPicker, forKey: Self.hotkeyGroupPickerKey) }
     }
 
+    /// パネルの開始ボタンで最後に選んだ録音/文字起こしの組み合わせ。次回の既定にする。
+    var lastSessionStartMode: SessionStartMode {
+        didSet {
+            UserDefaults.standard.set(lastSessionStartMode.rawValue, forKey: Self.lastSessionStartModeKey)
+        }
+    }
+
     /// 無音(マイクとシステム音声の両方)が5分続いたら、セッションを止めるか確認するか。
     /// 保存キーは自動終了だった頃のまま(既存ユーザーのオン/オフを引き継ぐため)。
     var confirmStopOnSilence: Bool {
@@ -227,6 +234,7 @@ final class AppSettings {
     private static let legacyCodeImpactModelsKey = "codeImpactModels"
     private static let autoSummaryEngineKey = "autoSummaryEngine"
     private static let hotkeyGroupPickerKey = "hotkeyGroupPicker"
+    private static let lastSessionStartModeKey = "lastSessionStartMode"
     /// 「無音が5分続いたら自動で終了」だった頃からのキー。挙動は確認ダイアログに
     /// 変わったが、ユーザーが選んだオン/オフは引き継ぐためキー名は変えない。
     private static let confirmStopOnSilenceKey = "autoStopOnSilence"
@@ -296,6 +304,8 @@ final class AppSettings {
         // セッションが溜まり続ける原因になるため、保存値ごと掃除する。
         defaults.removeObject(forKey: "defaultSessionGroup")
         hotkeyGroupPicker = defaults.object(forKey: Self.hotkeyGroupPickerKey) as? Bool ?? true
+        lastSessionStartMode = defaults.string(forKey: Self.lastSessionStartModeKey)
+            .flatMap(SessionStartMode.init(rawValue:)) ?? .recordAndTranscribe
         confirmStopOnSilence = defaults.object(forKey: Self.confirmStopOnSilenceKey) as? Bool ?? true
         meetingAutoStart = defaults.object(forKey: Self.meetingAutoStartKey) as? Bool ?? false
         autoUpdateCheck = defaults.object(forKey: Self.autoUpdateCheckKey) as? Bool ?? true
