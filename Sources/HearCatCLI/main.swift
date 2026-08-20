@@ -6,6 +6,7 @@ import HearCatKit
 
 let usage = """
 使い方:
+  hearcat help | --help | -h                     このヘルプを表示する
   hearcat start [--no-record] [--no-transcribe]  セッションを開始する(アプリ未起動なら起動する)
   hearcat stop                                   セッションを停止して保存する
   hearcat status                                 現在の状態を表示する
@@ -15,7 +16,9 @@ let usage = """
   hearcat set autostart on|off                   ログイン時の自動起動を切り替える
   hearcat sessions [--folder <name>]             セッション一覧を TSV で出す
   hearcat read [<session>] [--summary|--cleaned] [--tail <N>]
-                                                 原文/要約/清書を stdout に出す
+                                                 原文/要約/清書を stdout に出す。
+                                                 <session> は id・ディレクトリ名・フルパスの他、
+                                                 セッション名の完全一致・部分一致でも指定できる
   hearcat write-cleaned [<session>]              標準入力の清書を cleaned.md に書く(原文には触れない)
   hearcat write-summary [<session>]              標準入力の要約を summary.md に書く(原文には触れない)
 """
@@ -23,6 +26,16 @@ let usage = """
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
     exit(1)
+}
+
+/// 使い方の間違い(未知コマンド・引数の形式不正)をまとめて処理する。実行時エラー(fail、exit 1)
+/// とは exit code を分け、呼び出し側(agent)がリトライすべきかを区別できるようにする。
+func failUsage(_ message: String? = nil) -> Never {
+    if let message {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+    FileHandle.standardError.write(Data((usage + "\n").utf8))
+    exit(64)
 }
 
 func send(_ request: IPCRequest) -> IPCResponse? {
@@ -90,16 +103,44 @@ func requireResponse(_ request: IPCRequest) -> IPCResponse {
     return response
 }
 
-/// セッション指定を SessionInfo に解決する。ID / ディレクトリ名 / フルパスの
-/// いずれでも受ける。空 or nil なら最新セッションを返す。write-cleaned と
-/// read で共用する。
+/// セッション指定を SessionInfo に解決する。解決順は
+/// 1) id・ディレクトリ名・フルパスの完全一致(従来通り、あれば最優先)
+/// 2) セッション名の完全一致
+/// 3) セッション名の部分一致
+/// 空 or nil なら最新セッションを返す。read / write-cleaned / write-summary で共用する。
 func resolveSession(_ query: String?) -> SessionInfo? {
     guard let query, !query.isEmpty else { return SessionStore.latest() }
-    return SessionStore.list().first {
-        $0.id == query
-            || $0.directory.lastPathComponent == query
-            || $0.directory.path == query
+    let sessions = SessionStore.list()
+    if let exact = sessions.first(where: {
+        $0.id == query || $0.directory.lastPathComponent == query || $0.directory.path == query
+    }) {
+        return exact
     }
+    if let byName = resolveUnique(sessions.filter { $0.name == query }) {
+        return byName
+    }
+    return resolveUnique(sessions.filter { $0.name.localizedCaseInsensitiveContains(query) })
+}
+
+/// 候補が0件なら nil、1件ならそれを返す。2件以上は曖昧な指定として一覧を出して終了する。
+func resolveUnique(_ candidates: [SessionInfo]) -> SessionInfo? {
+    switch candidates.count {
+    case 0: return nil
+    case 1: return candidates[0]
+    default:
+        let list = candidates.map { "  \($0.id)\t\($0.name)" }.joined(separator: "\n")
+        fail("複数のセッションが一致します:\n\(list)")
+    }
+}
+
+/// TSV の1列として安全な形にする。内部にタブ・改行が残ると列がずれるため、
+/// 保存データ自体は変えずに出力時だけ半角スペースへ潰す。
+func sanitizeTSVField(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "\r\n", with: " ")
+        .replacingOccurrences(of: "\r", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+        .replacingOccurrences(of: "\t", with: " ")
 }
 
 /// 引数から --tail <N> を取り出して残りを返す。値が数値でなければエラーで終了。
@@ -108,7 +149,7 @@ func extractTail(_ args: [String]) -> (tail: Int?, rest: [String]) {
     var tail: Int?
     if let index = rest.firstIndex(of: "--tail") {
         guard index + 1 < rest.count, let n = Int(rest[index + 1]), n > 0 else {
-            fail("--tail には 1 以上の整数を指定してください。")
+            failUsage("--tail には 1 以上の整数を指定してください。")
         }
         tail = n
         rest.removeSubrange(index...(index + 1))
@@ -118,12 +159,15 @@ func extractTail(_ args: [String]) -> (tail: Int?, rest: [String]) {
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else {
-    print(usage)
-    exit(64)
+    failUsage()
 }
 arguments.removeFirst()
 
 switch command {
+case "help", "--help", "-h":
+    print(usage)
+    exit(0)
+
 case "start":
     let record = !arguments.contains("--no-record")
     let transcribe = !arguments.contains("--no-transcribe")
@@ -165,7 +209,7 @@ case "latest":
 case "set":
     guard arguments.count == 2, let on = ["on": true, "off": false][arguments[1]],
           ["record", "transcribe", "autostart"].contains(arguments[0]) else {
-        fail(usage)
+        failUsage()
     }
     // autostart の登録はアプリ内でしか行えないため、未起動なら起動して届ける。
     // record/transcribe はセッション中の操作なので、未起動ならそのままエラーでよい。
@@ -189,9 +233,12 @@ case "sessions":
     var folder: String?
     if let index = arguments.firstIndex(of: "--folder") {
         guard index + 1 < arguments.count else {
-            fail("--folder にフォルダ名を指定してください。")
+            failUsage("--folder にフォルダ名を指定してください。")
         }
         folder = arguments[index + 1]
+    }
+    if let folder, !SessionStore.listFolders().contains(folder) {
+        fail("フォルダが見つかりません: \(folder)")
     }
     let formatter = ISO8601DateFormatter()
     for session in SessionStore.list() {
@@ -199,7 +246,7 @@ case "sessions":
         let cols = [
             session.id, formatter.string(from: session.startDate),
             session.name, session.folder ?? "",
-        ]
+        ].map(sanitizeTSVField)
         print(cols.joined(separator: "\t"))
     }
 
@@ -214,7 +261,7 @@ case "read":
     }
     if let index = rest.firstIndex(of: "--cleaned") {
         if kind != "transcript" {
-            fail("--summary と --cleaned は同時に指定できません。")
+            failUsage("--summary と --cleaned は同時に指定できません。")
         }
         kind = "cleaned"
         rest.remove(at: index)
@@ -306,6 +353,5 @@ case "write-summary":
     print(out.path)
 
 default:
-    print(usage)
-    exit(64)
+    failUsage("不明なコマンド: \(command)")
 }
