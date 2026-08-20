@@ -18,6 +18,11 @@ private let decisionExtractionLogger = Logger(
 private let decisionInspectionLogger = Logger(
     subsystem: SessionStore.bundleIdentifier, category: "decision-inspection")
 
+/// セッションのリネームに伴う決定記録の参照追従(DecisionLogStore.retargetSessionDirectory)の
+/// 内部ログ。追従に失敗してもリネーム自体は成功扱いにするため、握りつぶす代わりにここへ残す。
+private let decisionLogRetargetLogger = Logger(
+    subsystem: SessionStore.bundleIdentifier, category: "decision-log-retarget")
+
 enum CodeImpactAnalysisState {
     case idle
     case requiresConsent(AgentCLI)
@@ -1922,8 +1927,26 @@ final class AppModel {
     }
 
     /// セッション名を変更し、変更後の ID を返す(履歴の選択の維持に使う)。失敗時は nil。
+    /// GUI の名前変更・自動題名付け(autoSummarize)の共通経路。
     func rename(_ session: SessionInfo, to name: String) -> String? {
-        mutateSession(session) { try SessionStore.rename($0, to: name) }
+        mutateSession(session) { original in
+            let renamed = try SessionStore.rename(original, to: name)
+            // ディレクトリ名(=決定記録の参照キー)が実際に変わった場合だけ追従させる。
+            // 失敗してもリネーム自体は成功扱いにする(ログに残すだけ)。
+            let oldDirectoryName = original.directory.lastPathComponent
+            let newDirectoryName = renamed.directory.lastPathComponent
+            if let folder = original.folder, oldDirectoryName != newDirectoryName {
+                do {
+                    try DecisionLogStore.retargetSessionDirectory(
+                        folder: folder, from: oldDirectoryName, to: newDirectoryName,
+                        newSessionName: renamed.name)
+                } catch {
+                    decisionLogRetargetLogger.error(
+                        "決定記録の参照追従に失敗: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            return renamed
+        }
     }
 
     /// セッションをプロジェクトフォルダへ移動し、移動後の ID を返す。nil で未分類へ戻す。

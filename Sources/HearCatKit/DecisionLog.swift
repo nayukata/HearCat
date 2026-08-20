@@ -496,6 +496,39 @@ public enum DecisionLogStore {
             recordedAt: sessionStartedAt, timeSeconds: timeSeconds, by: by, reason: reason)
     }
 
+    /// セッションのリネーム後、このグループの記録内で旧ディレクトリ名を指している参照
+    /// (履歴エントリの sessionDirectoryName・表示用の sessionName と extractedSessionDirectories)を
+    /// 新しい値へ書き換える。追従させないと、リネーム後にバックフィルが未抽出と誤判定して再抽出し
+    /// (旧名・新名で履歴が重複する)、セッション詳細画面や履歴ジャンプの照合も切れ、変遷カードの
+    /// 由来表示も古いままになる。該当が1件も無ければ保存せずそのまま返す。
+    @discardableResult
+    public static func retargetSessionDirectory(
+        folder: String, from oldDirectoryName: String, to newDirectoryName: String,
+        newSessionName: String
+    ) throws -> DecisionLog {
+        var log = try load(folder: folder)
+        guard oldDirectoryName != newDirectoryName else { return log }
+
+        var changed = false
+        for topicIndex in log.topics.indices {
+            for entryIndex in log.topics[topicIndex].history.indices
+            where log.topics[topicIndex].history[entryIndex].sessionDirectoryName == oldDirectoryName {
+                log.topics[topicIndex].history[entryIndex].sessionDirectoryName = newDirectoryName
+                log.topics[topicIndex].history[entryIndex].sessionName = newSessionName
+                changed = true
+            }
+        }
+        for index in log.extractedSessionDirectories.indices
+        where log.extractedSessionDirectories[index] == oldDirectoryName {
+            log.extractedSessionDirectories[index] = newDirectoryName
+            changed = true
+        }
+
+        guard changed else { return log }
+        try save(log, folder: folder)
+        return log
+    }
+
     /// 会話の外(Slack や PR レビュー等)で決まった・不要になったことを、ユーザーが手動で記録する。
     /// 状態を直接書き換えるのではなく、history へ手動エントリを1件追記する
     /// (経緯を消さずに「前回の決定 → 今回の決定」の変遷として残す、既存の history の

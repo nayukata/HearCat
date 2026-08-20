@@ -530,6 +530,58 @@ extension SessionPackageTests {
         }
     }
 
+    // MARK: - retargetSessionDirectory(セッションのリネーム追従)
+
+    @Test func retargetSessionDirectoryで対象セッションだけ新名になり他セッションは不変() throws {
+        try withTemporaryDecisionStore {
+            let later = decisionTestSessionStart.addingTimeInterval(60 * 60 * 24)
+
+            let first = try DecisionLogStore.merge(
+                delta: makeDecisionDelta(text: "無料プランのみ60回/分"), folder: decisionTestFolder,
+                sessionDirectoryName: "old-name", sessionName: "第1回",
+                sessionStartedAt: decisionTestSessionStart)
+            _ = try DecisionLogStore.merge(
+                delta: makeDecisionDelta(
+                    topicId: first.topics[0].id, text: "無料プランのみ30回/分"),
+                folder: decisionTestFolder, sessionDirectoryName: "other-session",
+                sessionName: "第2回", sessionStartedAt: later)
+
+            let retargeted = try DecisionLogStore.retargetSessionDirectory(
+                folder: decisionTestFolder, from: "old-name", to: "new-name",
+                newSessionName: "定例ミーティング")
+
+            let history = retargeted.topics[0].history
+            #expect(history.count == 2)
+            #expect(history[0].sessionDirectoryName == "new-name")
+            #expect(history[0].sessionName == "定例ミーティング")
+            #expect(history[1].sessionDirectoryName == "other-session")
+            #expect(history[1].sessionName == "第2回")
+            #expect(retargeted.extractedSessionDirectories == ["new-name", "other-session"])
+
+            // 保存内容にも反映されていること。
+            let reloaded = try DecisionLogStore.load(folder: decisionTestFolder)
+            #expect(reloaded.extractedSessionDirectories == ["new-name", "other-session"])
+            #expect(reloaded.topics[0].history[0].sessionName == "定例ミーティング")
+        }
+    }
+
+    @Test func retargetSessionDirectoryで該当が無ければ保存されない() throws {
+        try withTemporaryDecisionStore {
+            _ = try DecisionLogStore.merge(
+                delta: makeDecisionDelta(text: "無料プランのみ60回/分"), folder: decisionTestFolder,
+                sessionDirectoryName: "unrelated-session", sessionName: "定例",
+                sessionStartedAt: decisionTestSessionStart)
+
+            let result = try DecisionLogStore.retargetSessionDirectory(
+                folder: decisionTestFolder, from: "old-name", to: "new-name",
+                newSessionName: "定例ミーティング")
+
+            #expect(result.extractedSessionDirectories == ["unrelated-session"])
+            #expect(result.topics[0].history[0].sessionDirectoryName == "unrelated-session")
+            #expect(result.topics[0].history[0].sessionName == "定例")
+        }
+    }
+
     // MARK: - 同一会議内の複数決定の束ね
 
     @Test func 同一delta内で同じtitleのitem2件が1エントリに束なる() throws {
