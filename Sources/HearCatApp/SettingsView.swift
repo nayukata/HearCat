@@ -439,49 +439,80 @@ struct SettingsView: View {
     }
 
     private func releaseNoteRow(_ note: ReleaseNote) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text(note.version)
-                    .font(HCFont.headline)
-                if note.version == appVersion {
-                    releaseNoteBadge("使用中", color: HCColor.textDim)
-                } else if AppVersion.isNewer(note.version, than: appVersion) {
-                    releaseNoteBadge("未適用", color: HCColor.accentText)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(note.version)
+                        .font(HCFont.headline)
+                    if note.version == appVersion {
+                        releaseNoteBadge("使用中", color: HCColor.textDim)
+                    } else if AppVersion.isNewer(note.version, than: appVersion) {
+                        releaseNoteBadge("未適用", color: HCColor.accentText)
+                    }
+                }
+                if let summary = note.summary {
+                    // そのバージョンを一言で言う行。前後を空けて、下に続く箇条書きと
+                    // 地続きに見えないようにする。
+                    Text(summary)
+                        .font(HCFont.callout)
+                        .foregroundStyle(HCColor.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 6)
+                        .padding(.bottom, 8)
                 }
             }
-            if let summary = note.summary {
-                Text(summary)
-                    .font(HCFont.callout)
-                    .foregroundStyle(HCColor.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            ForEach(note.groups) { group in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(group.kind)
-                        .font(HCFont.caption)
-                        .foregroundStyle(.secondary)
-                    // 題は変更履歴そのままなので、同じ題が同じバージョンに並ぶこともある。
-                    // 位置を id にして、重なっても行が消えないようにする。
-                    ForEach(Array(group.changes.enumerated()), id: \.offset) { _, change in
-                        VStack(alignment: .leading, spacing: 2) {
-                            if let title = change.title {
-                                Text(title)
-                                    .font(HCFont.style(.body, weight: .semibold))
-                                    .foregroundStyle(HCColor.textPrimary)
-                            }
-                            Text(change.detail)
-                                .font(HCFont.callout)
-                                .foregroundStyle(HCColor.textBright)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+            VStack(alignment: .leading, spacing: 18) {
+                ForEach(note.groups) { group in
+                    releaseNoteGroup(group)
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// 追加・変更・修正のまとまり。種別は項目の上ではなく左の欄に置き、縦の罫線で中身と分ける。
+    /// 大きさで上下関係を付けようとすると、まとめ役の種別(2文字)が中身の題より弱く見えるため、
+    /// 種別は控えめなままにして、位置と罫線でまとまりを示す。
+    private func releaseNoteGroup(_ group: ReleaseNote.Group) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(group.kind)
+                .font(HCFont.style(.subheadline, weight: .semibold))
+                .foregroundStyle(HCColor.textDim)
+                .frame(width: Self.releaseNoteKindWidth, alignment: .leading)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 16) {
+                // 題は変更履歴そのままなので、同じ題が同じバージョンに並ぶこともある。
+                // 位置を id にして、重なっても行が消えないようにする。
+                ForEach(Array(group.changes.enumerated()), id: \.offset) { _, change in
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let title = change.title {
+                            Text(title)
+                                .font(HCFont.style(.body, weight: .semibold))
+                                .foregroundStyle(HCColor.textPrimary)
+                        }
+                        Text(change.detail)
+                            .font(HCFont.callout)
+                            .foregroundStyle(HCColor.textBright)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            // 罫の 1 と、罫から本文までの 16。
+            .padding(.leading, 17)
+            // 罫は項目の列そのものに張り付ける。並びの部品として置くと、
+            // 列より高くも低くもなって上下が余る。
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(HCColor.divider)
+                    .frame(width: 1)
+            }
+        }
+    }
+
+    /// 種別を置く左の欄の幅。罫の位置と本文の始まりがここから決まるので 1 か所で持つ。
+    private static let releaseNoteKindWidth: CGFloat = 48
 
     private func releaseNoteBadge(_ text: String, color: Color) -> some View {
         Text(text)
