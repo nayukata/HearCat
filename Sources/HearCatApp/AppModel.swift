@@ -1607,12 +1607,13 @@ final class AppModel {
                 !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return }
             do {
+                let summaryText: String
                 switch engine {
                 case .appleIntelligence:
                     if let reason = OnDeviceModel.unavailableReason() {
                         throw AutoSummaryError.onDeviceUnavailable(reason)
                     }
-                    _ = try await generateSummary(for: session, transcript: transcript)
+                    summaryText = try await generateSummary(for: session, transcript: transcript)
                 case .claude, .codex:
                     // エージェント要約は文字起こしを外部へ送るため、明示的に同意した人だけ動かす。
                     // 選択の同意が未取得(古い設定を持ち込んだケース)ならスキップ。
@@ -1621,15 +1622,45 @@ final class AppModel {
                     // 検出済み一覧(起動時に1回だけ走る)で門番をしない。検出が失敗して
                     // いるだけで自動要約が黙って止まるより、実行して「見つからない」と
                     // 報告するほうが直せる。
-                    _ = try await generateAgentSummary(for: session, using: cli)
+                    summaryText = try await generateAgentSummary(for: session, using: cli)
                 }
                 autoSummaryFailure = nil
+                // カレンダー予定にも紐づかず手動でも変えていない(=名称未設定)セッションだけ、
+                // 要約から題名を付ける。既に名前が付いていれば触らないため、要約の再生成では
+                // 前回付けた題名(手動改名も含む)がそのまま保持される。
+                if session.name.isEmpty, let title = deriveSessionTitle(fromSummary: summaryText),
+                    let renamedID = rename(session, to: title), lastEndedSessionID == session.id
+                {
+                    // rename はディレクトリ名と紐づく id を変えるため、停止時に控えた
+                    // lastEndedSessionID も追従させないと recentlyEndedSession が引けなくなる。
+                    lastEndedSessionID = renamedID
+                }
             } catch {
                 autoSummaryFailure = AutoSummaryFailure(
                     sessionID: session.id, message: error.localizedDescription)
                 lastError = "自動要約に失敗しました: \(error.localizedDescription)"
             }
         }
+    }
+
+    /// 要約本文から短い題名を作る。要約の先頭付近から短い一文を抜き出す
+    /// (具体的な出力形式は summarizer 側に依存する)。見つからなければ
+    /// 最初の非見出し・非箇条書き行にフォールバックする。全て見出しや空行なら nil。
+    private func deriveSessionTitle(fromSummary summary: String, maxLength: Int = 30) -> String? {
+        let lines = summary
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let overviewIndex = lines.firstIndex { $0.hasPrefix("## 概要") }
+        let searchStart = overviewIndex.map { $0 + 1 } ?? 0
+        guard searchStart < lines.count else { return nil }
+        guard
+            let candidate = lines[searchStart...].first(where: {
+                !$0.hasPrefix("#") && !$0.hasPrefix("-") && !$0.hasPrefix(">")
+            })
+        else { return nil }
+        guard candidate.count > maxLength else { return candidate }
+        return String(candidate.prefix(maxLength)) + "…"
     }
 
     func setRecording(_ on: Bool) {
