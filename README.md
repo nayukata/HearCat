@@ -65,6 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/nayukata/HearCat/main/bootstrap.sh 
 5. 変更履歴とバージョンは同じコミットに入れる（更新を促しておいて中身が分からない状態にしない）
 6. main へ push する。push した時点で、全利用者の設定画面に新しいバージョンと変更履歴が出る
 7. 手元へ入れるのは `./install.sh`。実行前に `hearcat status` でセッション中でないことを確かめる（記録中に入れ替えると録音が途切れる）
+8. `open ~/Applications/HearCat.app` で起動する。`install.sh` は配置までで起動はしないので、忘れるとメニューバーからアイコンが消えたままになる
 
 ### 変更履歴を書くとき
 
