@@ -168,6 +168,15 @@ final class AppSettings {
         }
     }
 
+    /// 会議の終わりの挨拶が聞こえたら、セッションを止めるか確認するか。
+    /// 無音の確認と揃えて既定はオン。止めるかどうかは必ず確かめるので、
+    /// 判定を外しても記録が途中で切れることはない。
+    var confirmStopOnClosing: Bool {
+        didSet {
+            UserDefaults.standard.set(confirmStopOnClosing, forKey: Self.confirmStopOnClosingKey)
+        }
+    }
+
     /// カレンダーの会議が始まる時刻に、録音を自動で開始するか。
     /// 既定はオフ。勝手に録音が始まる機能は、ユーザーが自分で入れる形にする。
     var meetingAutoStart: Bool {
@@ -238,6 +247,7 @@ final class AppSettings {
     /// 「無音が5分続いたら自動で終了」だった頃からのキー。挙動は確認ダイアログに
     /// 変わったが、ユーザーが選んだオン/オフは引き継ぐためキー名は変えない。
     private static let confirmStopOnSilenceKey = "autoStopOnSilence"
+    private static let confirmStopOnClosingKey = "confirmStopOnClosing"
     private static let meetingAutoStartKey = "meetingAutoStart"
     private static let excludedMeetingsKey = "excludedMeetings"
     private static let excludedMeetingKeywordsKey = "excludedMeetingKeywords"
@@ -307,6 +317,7 @@ final class AppSettings {
         lastSessionStartMode = defaults.string(forKey: Self.lastSessionStartModeKey)
             .flatMap(SessionStartMode.init(rawValue:)) ?? .recordAndTranscribe
         confirmStopOnSilence = defaults.object(forKey: Self.confirmStopOnSilenceKey) as? Bool ?? true
+        confirmStopOnClosing = defaults.object(forKey: Self.confirmStopOnClosingKey) as? Bool ?? true
         meetingAutoStart = defaults.object(forKey: Self.meetingAutoStartKey) as? Bool ?? false
         autoUpdateCheck = defaults.object(forKey: Self.autoUpdateCheckKey) as? Bool ?? true
         excludedMeetingKeywords = defaults.stringArray(forKey: Self.excludedMeetingKeywordsKey) ?? []

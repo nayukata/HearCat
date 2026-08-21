@@ -345,6 +345,16 @@ final class AppModel {
     /// 無関係な合図で消してしまわないために持つ。
     @ObservationIgnored private var activeNudge: NudgeKind?
 
+    /// 締めの確認を出している間に届いた、無音の知らせ。
+    /// エンジンは一度知らせたら、発話が戻るまで同じ知らせを繰り返さない。
+    /// ここで受け止めておかないと、締めの確認を閉じた後にどちらの確認も出なくなる。
+    @ObservationIgnored private var silenceNudgeDeferred = false
+
+    /// 終わりの挨拶での確認を、このセッションではもう出さないか。
+    /// 一度「録音を続ける」を選んだ人に、締めの言葉のたびに聞き直すのは邪魔になる。
+    /// 無音の確認は別枠なので、こちらを伏せても止め忘れの受け皿は残る。
+    @ObservationIgnored private var closingNudgeSilenced = false
+
     /// 1日1回、新しいバージョンが出ていないかを見に行く見張り役。設定がオフの間は止めておく。
     @ObservationIgnored private var updateCheckScheduler: UpdateCheckScheduler?
 
@@ -353,6 +363,8 @@ final class AppModel {
         case meetingStart
         /// 無音が続いたので止めるか、という確認。
         case silence
+        /// 会議の終わりの挨拶が聞こえたので止めるか、という確認。
+        case closing
         /// 新しいバージョンが出ている、という知らせ。
         case updateAvailable
     }
@@ -422,7 +434,16 @@ final class AppModel {
             self?.presentSilenceNudge()
         }
         engine.onSilenceEnded = { [weak self] in
+            self?.silenceNudgeDeferred = false
             self?.dismissNudge(.silence)
+        }
+        engine.onClosingDetected = { [weak self] in
+            self?.presentClosingNudge()
+        }
+        engine.onClosingCancelled = { [weak self] in
+            // 会話が戻った証拠なので、伏せておいた無音の知らせもここで捨てる。
+            self?.silenceNudgeDeferred = false
+            self?.dismissNudge(.closing)
         }
         // 相手だけが無音のまま続くのは、耳では気づけない片側だけの欠落の兆候。
         // 会議中に割り込むほどではないので、パネルのバナーとしてだけ出す。
@@ -665,6 +686,9 @@ final class AppModel {
         // 前のセッションの異常を持ち越さない。
         healthIssues = []
         collapsedHealthIssues = []
+        // 終わりの挨拶での確認も、前の会議で伏せたままにしない。
+        closingNudgeSilenced = false
+        silenceNudgeDeferred = false
         // プローブ稼働中(設定画面のメーターが動いている)にセッションを始めると、
         // 同じマイクを二重に掴んでしまうため、セッション側を優先してプローブを止める。
         stopMicProbe()
@@ -842,6 +866,13 @@ final class AppModel {
     /// 無音が続いたので止めるか確認する。返事があるまで録音は続く。
     private func presentSilenceNudge() {
         guard status.active else { return }
+        // 締めの挨拶の確認が先に出ているなら、そちらに任せる。用件は同じなので、
+        // 差し替えると押そうとしていたボタンが入れ替わる。
+        guard activeNudge != .closing else {
+            silenceNudgeDeferred = true
+            return
+        }
+        silenceNudgeDeferred = false
         presentNudge(
             .silence,
             prompt: NudgePrompt(
@@ -856,6 +887,32 @@ final class AppModel {
                     NudgeAction(title: "停止して要約", isPrimary: true) { [weak self] in
                         guard let self else { return }
                         self.dismissNudge(.silence)
+                        Task { await self.stopSession() }
+                    },
+                ]))
+    }
+
+    /// 会議の終わりの挨拶が聞こえたので、止めるか確認する。返事があるまで録音は続く。
+    private func presentClosingNudge() {
+        guard status.active, settings.confirmStopOnClosing, !closingNudgeSilenced else { return }
+        guard activeNudge != .silence else { return }
+        presentNudge(
+            .closing,
+            prompt: NudgePrompt(
+                icon: "hand.wave",
+                title: "会議が終わったようです",
+                detail: "終わりの挨拶が聞こえました。録音は続いています。ここで止めて要約まで進められます。",
+                deadline: nil,
+                actions: [
+                    NudgeAction(title: "録音を続ける") { [weak self] in
+                        guard let self else { return }
+                        self.closingNudgeSilenced = true
+                        self.dismissNudge(.closing)
+                        if self.silenceNudgeDeferred { self.presentSilenceNudge() }
+                    },
+                    NudgeAction(title: "停止して要約", isPrimary: true) { [weak self] in
+                        guard let self else { return }
+                        self.dismissNudge(.closing)
                         Task { await self.stopSession() }
                     },
                 ]))
@@ -901,8 +958,9 @@ final class AppModel {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        // 止めた以上、無音の確認は用済み。
+        // 止めた以上、止めるかどうかの確認は用済み。
         dismissNudge(.silence)
+        dismissNudge(.closing)
         // 停止完了後は status.sessionID が消えるため、遷移先として使えるよう先に控える。
         lastEndedSessionID = status.sessionID
         await engine.stop()

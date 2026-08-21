@@ -300,6 +300,13 @@ public final class SessionEngine {
     /// onProlongedSilence を通知したあと、また発話が戻ってきた時の通知。
     /// 会議が再開したなら停止の確認は用済みなので、UI から引っ込めるために使う。
     public var onSilenceEnded: (() -> Void)?
+    /// 会議の終わりの挨拶が聞こえた時の通知。MainActor 上で呼ばれる。
+    /// 無音監視と目的は同じだが、拾える場面が違う。会議の後もそのまま音が鳴り続ける
+    /// (別のアプリの音、退出し忘れた通話)場合、無音にはならないのでこちらでしか気づけない。
+    public var onClosingDetected: (() -> Void)?
+    /// 終わりの挨拶を知らせた後、会話が続いていた時の通知。締めの言葉の後に別の相談が
+    /// 始まることがあるため、その場合は確認を引っ込める。
+    public var onClosingCancelled: (() -> Void)?
     /// 自分の声は届いているのに、相手のチャンネルだけが長く無音のままになっている。
     /// タップは音を止めずに枝分かれさせて取るため、取得が死んでいても相手の声は普通に
     /// 聞こえ続ける。耳では気づけない片側だけの欠落を拾う最後の網。MainActor 上で呼ばれる。
@@ -471,6 +478,16 @@ public final class SessionEngine {
         let gateSettings = self.micGateSettings
         eventTask = Task { [weak self] in
             var echoTextFilter = EchoTextFilter()
+            // 終わりの挨拶の判定。記録に残った確定文だけを渡す(エコーとして捨てた文は
+            // 相手の声の写しなので、数えると同じ挨拶を二重に数えることになる)。
+            var closingDetector = ClosingDetector()
+            @MainActor func noteForClosing(_ text: String, engine: SessionEngine?) {
+                switch closingDetector.note(text, at: Date(), startedAt: startedAt) {
+                case .closing: engine?.onClosingDetected?()
+                case .resumed: engine?.onClosingCancelled?()
+                case .none: break
+                }
+            }
             for await event in events {
                 // 確定文が出た = 誰かが実際に話した。無音監視の起点を更新する。
                 if case .final = event { lastVoiceAt.withLock { $0 = Date() } }
@@ -480,6 +497,7 @@ public final class SessionEngine {
                     // 遅れた長い発話では保持期間の判定上すでに古すぎることがある)。
                     echoTextFilter.noteOther(segment.text)
                     await writer.append(segment)
+                    noteForClosing(segment.text, engine: self)
                     self?.onEvent?(event)
                 case .final(let segment):
                     if gateSettings.snapshot().echoRemoval, echoTextFilter.isEcho(segment.text) {
@@ -490,6 +508,7 @@ public final class SessionEngine {
                         self?.onEvent?(.volatile(speaker: segment.speaker, text: "", startedAt: segment.timestamp))
                     } else {
                         await writer.append(segment)
+                        noteForClosing(segment.text, engine: self)
                         self?.onEvent?(event)
                     }
                 case .volatile(let speaker, let text, _) where speaker == "相手":

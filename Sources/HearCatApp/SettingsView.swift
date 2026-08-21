@@ -298,10 +298,11 @@ struct SettingsView: View {
 
             Section {
                 Toggle("無音が5分続いたら停止するか確認", isOn: $settings.confirmStopOnSilence)
+                Toggle("終わりの挨拶が聞こえたら停止するか確認", isOn: $settings.confirmStopOnClosing)
             } header: {
-                Text("無音の確認")
+                Text("停止の確認")
             } footer: {
-                settingsFooter("マイクとシステム音声の両方が5分間無音のとき、画面右上で停止するかを尋ねます。返事があるまで録音は続くので、会議が再開しても記録は途切れません。")
+                settingsFooter("マイクとシステム音声の両方が5分間無音のとき、画面右上で停止するかを尋ねます。「お疲れ様でした」「失礼します」のような締めの言葉が聞こえたときも同じように尋ねます。会議の後も音が鳴り続ける場合は無音になりませんが、こちらなら気づけます。どちらも返事があるまで録音は続くので、会議が再開しても記録は途切れません。")
             }
         }
         .formStyle(.grouped)
