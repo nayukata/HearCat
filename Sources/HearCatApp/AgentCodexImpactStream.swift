@@ -52,6 +52,8 @@ enum AgentCodexImpactStream {
         previousResult: String?,
         decisionContext: String?,
         resumeSessionID: String?,
+        transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
+        isGroupTarget: Bool = false,
         onEvent: @escaping @Sendable (CodeImpactStreamEvent) -> Void
     ) async throws -> (result: String, sessionID: String?) {
         guard let binaryPath = await AgentCLIResolver.resolve(.codex) else {
@@ -67,7 +69,8 @@ enum AgentCodexImpactStream {
         }()
         let hasReferenceFolder = validatedReferenceFolder != nil
 
-        let fullTranscript = AgentCodeImpactAnalyzer.recentTranscript(from: transcript)
+        let fullTranscript = AgentCodeImpactAnalyzer.recentTranscript(
+            from: transcript, limit: transcriptCharacterLimit)
 
         var attemptKinds: [AttemptKind] = []
         if let resumeSessionID {
@@ -110,7 +113,8 @@ enum AgentCodexImpactStream {
 
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: continuity,
-                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext)
+                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
+                isGroupTarget: isGroupTarget)
 
             let arguments = arguments(
                 prompt: prompt, model: model, resumeSessionID: resumeSessionIDForAttempt,
@@ -171,7 +175,8 @@ enum AgentCodexImpactStream {
             referenceFolder: referenceFolder,
             prompt: AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: .fresh,
-                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext),
+                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
+                isGroupTarget: isGroupTarget),
             outputPrefix: "code-impact-stream-fallback",
             model: model,
             extraction: AgentSummarizer.extractCodeImpactMarkdown)

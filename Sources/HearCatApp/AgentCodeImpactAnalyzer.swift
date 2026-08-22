@@ -7,6 +7,13 @@ enum AgentCodeImpactAnalyzer {
     /// 行単位で切ることで、時刻と話者を壊さずに保つ。
     static let maximumTranscriptCharacters = 24_000
 
+    /// グループ対象の質問材料(複数セッションの要約を連ねたもの)の上限。単一セッションの
+    /// 文字起こし(maximumTranscriptCharacters)より広く取っているのは、こちらは既に
+    /// AppModel.groupQuestionMaterial 側でセッション単位に丸ごと間引いてあり、行単位で
+    /// 機械的に削るとセッションの境目で本文が壊れるため(recentTranscript の line 単位の
+    /// 切り出しは、この用途には向かない)。
+    static let maximumGroupTranscriptCharacters = 40_000
+
     /// 質問特化プロンプト(questionPrompt)が出力する見出し文字列。CodeImpactOverlay.swift の
     /// CodeImpactResultView が、この2つのセクションだけ特別な見た目(アコーディオンにしない等)に
     /// 分岐するため、プロンプト側と View 側で文字列がずれないよう定数を共有する。
@@ -23,7 +30,8 @@ enum AgentCodeImpactAnalyzer {
         referenceFolder: String?,
         question: String? = nil,
         previousResult: String? = nil,
-        decisionContext: String? = nil
+        decisionContext: String? = nil,
+        isGroupTarget: Bool = false
     ) async throws -> String {
         try await AgentSummarizer.execute(
             using: cli,
@@ -31,7 +39,8 @@ enum AgentCodeImpactAnalyzer {
             referenceFolder: referenceFolder,
             prompt: buildPrompt(
                 question: question, previousResult: previousResult, continuity: .fresh,
-                hasReferenceFolder: referenceFolder != nil, decisionContext: decisionContext),
+                hasReferenceFolder: referenceFolder != nil, decisionContext: decisionContext,
+                isGroupTarget: isGroupTarget),
             outputPrefix: "code-impact",
             model: model,
             // 質問応答は要約と違い、応答が「## 」見出しから始まらなくても本文として表示したいため、
@@ -72,13 +81,18 @@ enum AgentCodeImpactAnalyzer {
     /// decisionContext は「決まったことの記録」(DecisionLogStore)への索引添付
     /// (AppModel.codeImpactDecisionContext 参照)。質問が無いダイジェスト調査には
     /// 決定の経緯を answer する概念自体が無いため、質問がある場合にだけ使う。
+    ///
+    /// isGroupTarget はグループ全体が対象か(true)、進行中の会議または過去の1セッションが
+    /// 対象か(false)。標準入力の中身が「1会議の文字起こし」から「複数会議の要約の連なり」に
+    /// 変わるため、書き出しの文言(basePrompt / questionPrompt の intro)だけを差し替える
+    /// (AppModel.groupQuestionMaterial 参照)。
     static func buildPrompt(
         question: String?, previousResult: String?, continuity: TranscriptContinuity,
-        hasReferenceFolder: Bool, decisionContext: String? = nil
+        hasReferenceFolder: Bool, decisionContext: String? = nil, isGroupTarget: Bool
     ) -> String {
         let trimmedQuestion = question?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmedQuestion.isEmpty else {
-            let base = basePrompt(hasReferenceFolder: hasReferenceFolder)
+            let base = basePrompt(hasReferenceFolder: hasReferenceFolder, isGroupTarget: isGroupTarget)
             guard let note = resumeNote(for: continuity) else { return base }
             return "\(base)\n\n\(note)"
         }
@@ -105,7 +119,7 @@ enum AgentCodeImpactAnalyzer {
         parts.append(
             questionPrompt(
                 question: trimmedQuestion, hasReferenceFolder: hasReferenceFolder,
-                hasDecisionIndex: hasDecisionIndex))
+                hasDecisionIndex: hasDecisionIndex, isGroupTarget: isGroupTarget))
         return parts.joined(separator: "\n\n")
     }
 
@@ -155,14 +169,17 @@ enum AgentCodeImpactAnalyzer {
         return recentTranscript(from: diff)
     }
 
-    static func recentTranscript(from transcript: String) -> String {
-        guard transcript.count > maximumTranscriptCharacters else { return transcript }
+    /// limit 省略時は maximumTranscriptCharacters(単一セッション向け)。グループ対象は
+    /// AppModel 側で既に maximumGroupTranscriptCharacters に収めた材料を渡すため、
+    /// ここでの二重の切り詰めが効かないよう同じ値を limit に渡す(呼び出し側参照)。
+    static func recentTranscript(from transcript: String, limit: Int = maximumTranscriptCharacters) -> String {
+        guard transcript.count > limit else { return transcript }
 
         var selected: [Substring] = []
         var characterCount = 0
         for line in transcript.split(separator: "\n", omittingEmptySubsequences: false).reversed() {
             let nextCount = line.count + 1
-            guard characterCount + nextCount <= maximumTranscriptCharacters else { break }
+            guard characterCount + nextCount <= limit else { break }
             selected.append(line)
             characterCount += nextCount
         }
@@ -171,7 +188,7 @@ enum AgentCodeImpactAnalyzer {
             // 単に suffix で切ると先頭が「者: ...」のような壊れた発話行になり、AI が
             // 時刻や話者を誤って解釈してしまう。最初の改行の直後まで進め、次の行の頭から
             // 始まる整った状態で渡す。
-            let tail = transcript.suffix(maximumTranscriptCharacters)
+            let tail = transcript.suffix(limit)
             if let firstNewline = tail.firstIndex(of: "\n"),
                tail.index(after: firstNewline) < tail.endIndex {
                 return String(tail[tail.index(after: firstNewline)...])
@@ -245,7 +262,11 @@ enum AgentCodeImpactAnalyzer {
     /// 文字起こしだけを根拠にダイジェストを作らせる。共通部(1文目・見出しの先頭と末尾・
     /// bodyInstruction の書き出し)は1回だけ書き、変わる部分だけを挿入する
     /// (investigationRules と同じ組み方)。
-    private static func basePrompt(hasReferenceFolder: Bool) -> String {
+    private static func basePrompt(hasReferenceFolder: Bool, isGroupTarget: Bool) -> String {
+        let openingClause =
+            isGroupTarget
+            ? "標準入力で渡される、このグループの各会議の要約と決定事項を読み、決定・変更・疑問・確認事項を抽出してください。"
+            : "標準入力で渡される進行中の会議文字起こしの直近部分を読み、決定・変更・疑問・確認事項を抽出してください。"
         let referenceLine =
             hasReferenceFolder
             ? "\nカレントディレクトリの資料やコードを読み取り、発言内容と既存情報の一致点・相違点・影響箇所を確認してください。"
@@ -261,7 +282,7 @@ enum AgentCodeImpactAnalyzer {
             : ""
 
         return """
-            標準入力で渡される進行中の会議文字起こしの直近部分を読み、決定・変更・疑問・確認事項を抽出してください。\(referenceLine)
+            \(openingClause)\(referenceLine)
 
             調査規則:
             \(investigationRules(hasReferenceFolder: hasReferenceFolder))
@@ -284,12 +305,20 @@ enum AgentCodeImpactAnalyzer {
     /// 非 nil かつ非空)。true のときだけ decisionHistoryParagraph を末尾に挟む(索引が無いのに
     /// フェンスの出し方だけ指示しても、AI が答えられる議題自体が無い)。
     private static func questionPrompt(
-        question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool
+        question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool, isGroupTarget: Bool
     ) -> String {
-        let intro =
-            hasReferenceFolder
-            ? "標準入力で渡される進行中の会議文字起こしの直近部分と、カレントディレクトリの資料やコードを参照して、次の質問に答えてください。"
-            : "標準入力で渡される進行中の会議文字起こしの直近部分を読み、次の質問に答えてください。"
+        let intro: String
+        switch (isGroupTarget, hasReferenceFolder) {
+        case (true, true):
+            intro =
+                "標準入力で渡される、このグループの各会議の要約と決定事項、およびカレントディレクトリの資料やコードを参照して、次の質問に答えてください。"
+        case (true, false):
+            intro = "標準入力で渡される、このグループの各会議の要約と決定事項を読み、次の質問に答えてください。"
+        case (false, true):
+            intro = "標準入力で渡される進行中の会議文字起こしの直近部分と、カレントディレクトリの資料やコードを参照して、次の質問に答えてください。"
+        case (false, false):
+            intro = "標準入力で渡される進行中の会議文字起こしの直近部分を読み、次の質問に答えてください。"
+        }
         let referencedFileLine =
             hasReferenceFolder
             ? "\n- 参照したファイルは 1 行ずつ「- 相対パス — 内容の一言」の形で書く"

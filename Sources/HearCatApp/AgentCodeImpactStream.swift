@@ -73,6 +73,11 @@ enum AgentCodeImpactStream {
     ///   - decisionContext: 「決まったことの記録」への索引添付(AgentCodeImpactAnalyzer.buildPrompt
     ///     参照)。質問が無ければ buildPrompt 側で使われない。
     ///   - resumeSessionID: 継続したい claude セッション ID。nil なら新規会話。
+    ///   - transcriptCharacterLimit: transcript を直近部分へ切り詰める際の上限文字数。
+    ///     グループ対象は AppModel 側で既にセッション単位に間引いた材料を渡すため、
+    ///     単一セッション用の既定値より広い上限(AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters)
+    ///     を渡し、ここでの行単位の再切り詰めが実質効かないようにする。
+    ///   - isGroupTarget: プロンプトの書き出し文言の切り替えに使う(buildPrompt 参照)。
     ///   - onEvent: ストリーム中の通知。@Sendable(バックグラウンドの読み取りキューから呼ぶ)。
     /// - Returns: 抽出済み Markdown と、今回判明したセッション ID(セッションが尽きて
     ///   非ストリーミングへ落ちた場合は nil)。
@@ -85,6 +90,8 @@ enum AgentCodeImpactStream {
         previousResult: String?,
         decisionContext: String?,
         resumeSessionID: String?,
+        transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
+        isGroupTarget: Bool = false,
         onEvent: @escaping @Sendable (CodeImpactStreamEvent) -> Void
     ) async throws -> (result: String, sessionID: String?) {
         guard let binaryPath = await AgentCLIResolver.resolve(.claude) else {
@@ -105,7 +112,8 @@ enum AgentCodeImpactStream {
         }()
         let hasReferenceFolder = validatedReferenceFolder != nil
 
-        let fullTranscript = AgentCodeImpactAnalyzer.recentTranscript(from: transcript)
+        let fullTranscript = AgentCodeImpactAnalyzer.recentTranscript(
+            from: transcript, limit: transcriptCharacterLimit)
 
         var config = AttemptConfig(
             includePartialMessages: true,
@@ -145,7 +153,8 @@ enum AgentCodeImpactStream {
             }
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: continuity,
-                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext)
+                hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
+                isGroupTarget: isGroupTarget)
 
             let arguments = arguments(
                 prompt: prompt, model: model, config: config,
@@ -206,7 +215,8 @@ enum AgentCodeImpactStream {
                     referenceFolder: referenceFolder,
                     prompt: AgentCodeImpactAnalyzer.buildPrompt(
                         question: question, previousResult: previousResult, continuity: .fresh,
-                        hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext),
+                        hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
+                        isGroupTarget: isGroupTarget),
                     outputPrefix: "code-impact-stream-fallback",
                     model: model,
                     extraction: AgentSummarizer.extractCodeImpactMarkdown)

@@ -125,6 +125,8 @@ struct DecisionBackfillProgress: Equatable {
 private enum CodeImpactContextError: LocalizedError {
     case inactive
     case sessionNotFound
+    /// グループ対象で、所属セッションのどれからも要約・文字起こしが1つも取れなかった。
+    case groupHasNoMaterial
 
     var errorDescription: String? {
         switch self {
@@ -132,6 +134,8 @@ private enum CodeImpactContextError: LocalizedError {
             return "文字起こし中のセッションで使えます"
         case .sessionNotFound:
             return "進行中のセッションを読み込めませんでした"
+        case .groupHasNoMaterial:
+            return "このグループには質問できる材料(要約や文字起こし)がありません"
         }
     }
 }
@@ -165,7 +169,11 @@ final class AppModel {
     /// 質問パネル(関連資料との照合)の対象。nil ならライブ(進行中の会議)、非 nil なら
     /// その過去セッションのディレクトリパス(status.sessionDirectory と同じ形式)。
     /// パネルの表示(ヘッダーの対象名)に使うため観測可能にする。
+    /// codeImpactTargetGroup と同時に非 nil にはならない(switchCodeImpactTarget が排他的に管理する)。
     private(set) var codeImpactTargetDirectory: String?
+    /// 質問パネルの対象がグループ全体のときの、そのグループ名。nil ならセッション単体
+    /// (codeImpactTargetDirectory)かライブが対象。パネルのヘッダー表示に使うため観測可能にする。
+    private(set) var codeImpactTargetGroup: String?
     /// 進行中の会議と関連コードを照合した結果。専用オーバーレイだけが表示する。
     private(set) var codeImpactAnalysisState: CodeImpactAnalysisState = .idle
     /// いま調査対象になっている質問。ホットキー・メニューからの初回調査(質問なし)なら nil、
@@ -191,9 +199,9 @@ final class AppModel {
     /// (実害: 資料フォルダの有無で挙動が変わるのと同種の事故を、エンジン跨ぎでも起こす)。
     /// codeImpactSessionID と同じタイミングでリセットする。
     @ObservationIgnored private var codeImpactSessionEngine: AgentCLI?
-    /// codeImpactSessionID がどのセッションディレクトリのものかの記録。
-    /// 会議が変わった(= セッションディレクトリが変わった)ら全てリセットする。
-    @ObservationIgnored private var codeImpactSessionDirectory: String?
+    /// codeImpactSessionID がどの対象(会議・過去セッション・グループ)のものかの記録。
+    /// effectiveCodeImpactTargetKey と同じ形式の鍵を持つ。対象が変わったら全てリセットする。
+    @ObservationIgnored private var codeImpactSessionTargetKey: String?
     /// claude セッションを継続する際、直近の成功実行時点で標準入力へ渡した transcript
     /// 全文の文字数。次回の追加質問はこの位置以降だけを差分として送る
     /// (AgentCodeImpactAnalyzer.incrementalTranscript)。codeImpactSessionID と同じ
@@ -1184,15 +1192,26 @@ final class AppModel {
 
     // MARK: - 進行中の会議を関連資料と照合する
 
-    /// 質問パネルの実効対象ディレクトリ。過去対象ならそのディレクトリ、ライブ対象なら
-    /// 進行中セッションのディレクトリ(無ければ nil)。会議切り替わり判定・対象切り替え判定は
-    /// 両方ともここを基準にする。
-    private var effectiveCodeImpactDirectory: String? {
-        codeImpactTargetDirectory ?? status.sessionDirectory
+    /// 質問パネルの実効対象セッションディレクトリ。過去セッション対象ならそのディレクトリ、
+    /// ライブ対象なら進行中セッションのディレクトリ(無ければ nil)。グループ対象には
+    /// 単一のディレクトリが無いため常に nil を返す
+    /// (codeImpactTargetSessionStartDate / codeImpactTargetSessionFolder が使う)。
+    private var effectiveCodeImpactSessionDirectory: String? {
+        guard codeImpactTargetGroup == nil else { return nil }
+        return codeImpactTargetDirectory ?? status.sessionDirectory
     }
 
-    /// パネルヘッダーに出す対象セッションの表示名。過去対象のときだけ非 nil を返す
-    /// (ライブはヘッダー側で従来どおりの文言のままにする)。
+    /// 進行中の会議・過去セッション・グループのいずれかを一意に表す鍵。会議切り替わり判定・
+    /// 対象切り替え判定(switchCodeImpactTarget・startCodeImpactAnalysis の継続可否)は
+    /// 両方ともここを基準にする。グループは "group:" を前置してセッションディレクトリの
+    /// パス(常に "/" から始まる絶対パス)と衝突しないようにしている。
+    private var effectiveCodeImpactTargetKey: String? {
+        if let group = codeImpactTargetGroup { return "group:\(group)" }
+        return effectiveCodeImpactSessionDirectory
+    }
+
+    /// パネルヘッダーに出す対象セッションの表示名。過去セッション対象のときだけ非 nil を返す
+    /// (ライブ・グループ対象はヘッダー側で別に文言を出す)。
     var codeImpactTargetSessionName: String? {
         guard let targetDirectory = codeImpactTargetDirectory,
             let session = sessions.first(where: { $0.directory.path == targetDirectory })
@@ -1200,20 +1219,39 @@ final class AppModel {
         return session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name
     }
 
-    /// 質問パネルの対象を切り替える。実効対象ディレクトリが実際に変わる場合だけ、
-    /// 進行中の調査をキャンセルし Q&A 履歴などをクリアする。実効対象が変わらないなら
-    /// 何もリセットしない(同じセッションのボタンを連打しても、進行中の調査や
+    /// 質問パネルの対象。switchCodeImpactTarget の引数専用(状態そのものは
+    /// codeImpactTargetDirectory / codeImpactTargetGroup の2つの optional で持つ。
+    /// UI 側からの参照は無いため private)。
+    private enum CodeImpactTargetKind: Equatable {
+        case live
+        case session(String)
+        case group(String)
+    }
+
+    /// 質問パネルの対象を切り替える。実効対象(effectiveCodeImpactTargetKey)が実際に変わる
+    /// 場合だけ、進行中の調査をキャンセルし Q&A 履歴などをクリアする。実効対象が変わらないなら
+    /// 何もリセットしない(同じセッション/グループのボタンを連打しても、進行中の調査や
     /// 完了済みスレッドが消えないようにするため)。
-    private func switchCodeImpactTarget(to newTarget: String?) {
-        let previousEffective = effectiveCodeImpactDirectory
-        codeImpactTargetDirectory = newTarget
-        guard effectiveCodeImpactDirectory != previousEffective else { return }
+    private func switchCodeImpactTarget(to newTarget: CodeImpactTargetKind) {
+        let previousKey = effectiveCodeImpactTargetKey
+        switch newTarget {
+        case .live:
+            codeImpactTargetDirectory = nil
+            codeImpactTargetGroup = nil
+        case .session(let path):
+            codeImpactTargetDirectory = path
+            codeImpactTargetGroup = nil
+        case .group(let folder):
+            codeImpactTargetDirectory = nil
+            codeImpactTargetGroup = folder
+        }
+        guard effectiveCodeImpactTargetKey != previousKey else { return }
         cancelCodeImpactAnalysis()
         codeImpactTurns = []
         codeImpactQuestion = nil
         codeImpactSessionID = nil
         codeImpactSessionEngine = nil
-        codeImpactSessionDirectory = nil
+        codeImpactSessionTargetKey = nil
         codeImpactSentTranscriptLength = nil
         codeImpactPartialText = ""
         codeImpactStreamedModel = nil
@@ -1261,7 +1299,7 @@ final class AppModel {
     /// 対象は常にライブへ切り替える(過去対象からホットキーで戻った場合に、
     /// 前の対象のスレッドが残ったままにならないように)。
     func openCodeImpactPanel() {
-        switchCodeImpactTarget(to: nil)
+        switchCodeImpactTarget(to: .live)
         presentCodeImpactPanelAfterTargetSwitch()
     }
 
@@ -1273,7 +1311,14 @@ final class AppModel {
             openCodeImpactPanel()
             return
         }
-        switchCodeImpactTarget(to: session.directory.path)
+        switchCodeImpactTarget(to: .session(session.directory.path))
+        presentCodeImpactPanelAfterTargetSwitch()
+    }
+
+    /// グループ画面からの入口。対象をそのグループ全体へ切り替えてパネルを出す
+    /// (セッション個別の openCodeImpactPanel(for:) と対になる)。
+    func openCodeImpactPanel(forGroup folder: String) {
+        switchCodeImpactTarget(to: .group(folder))
         presentCodeImpactPanelAfterTargetSwitch()
     }
 
@@ -1357,6 +1402,17 @@ final class AppModel {
     /// 移動できないため。過去セッションも、この画面から動かす必要はないので同じ扱いにする)。
     /// question は codeImpactQuestion を読む。
     func linkReferenceFolderForCodeImpact() {
+        // グループ対象はセッションを経由せず、グループ名そのものが紐付け先。
+        if let group = codeImpactTargetGroup {
+            Task { [weak self] in
+                guard let self else { return }
+                await ReferenceFolderPicker.pick(forGroup: group, from: nil)
+                // キャンセル等で紐付かなかった場合は failed 表示のまま何もしない。
+                guard self.settings.referenceFolders[group] != nil else { return }
+                self.resumeAfterCodeImpactReferenceFolderLink()
+            }
+            return
+        }
         let sessionDirectory: String?
         if let targetDirectory = codeImpactTargetDirectory {
             sessionDirectory = targetDirectory
@@ -1386,15 +1442,19 @@ final class AppModel {
                 // 既定グループ(plannedFolder)も変更しない。
                 self.codeImpactReferenceFolderOverride = (sessionDirectory, path)
             }
-            // 質問を入力して失敗していた場合だけ、その質問で自動再開する。
-            // 何も入力していなかった場合は、紐付けだけで調査(外部送信)を勝手に
-            // 始めず、入力待ちへ戻す(何を調べるかはユーザーが決める)。
-            let trimmedQuestion = self.codeImpactQuestion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if trimmedQuestion.isEmpty {
-                self.codeImpactAnalysisState = .idle
-            } else {
-                self.requestCodeImpactAnalysis(question: trimmedQuestion)
-            }
+            self.resumeAfterCodeImpactReferenceFolderLink()
+        }
+    }
+
+    /// linkReferenceFolderForCodeImpact の3経路(グループ紐付け・既存グループへの紐付け・
+    /// 新規グループ作成)が共有する、紐付け成功後の再開処理。質問を入力していた場合だけ
+    /// その質問で自動再開し、未入力なら外部送信(調査)を勝手に始めず入力待ちへ戻す。
+    private func resumeAfterCodeImpactReferenceFolderLink() {
+        let trimmedQuestion = codeImpactQuestion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmedQuestion.isEmpty {
+            codeImpactAnalysisState = .idle
+        } else {
+            requestCodeImpactAnalysis(question: trimmedQuestion)
         }
     }
 
@@ -1435,12 +1495,12 @@ final class AppModel {
         }
         codeImpactActiveReferenceFolder = context.referenceFolder
 
-        // 対象(会議、または過去セッション)が変わっていたら、前の対象の claude/codex セッションを
-        // 引き継がない。同じ対象のあいだは維持し、--resume / exec resume で会話を続ける。
-        if effectiveCodeImpactDirectory != codeImpactSessionDirectory {
+        // 対象(会議、過去セッション、またはグループ)が変わっていたら、前の対象の claude/codex
+        // セッションを引き継がない。同じ対象のあいだは維持し、--resume / exec resume で会話を続ける。
+        if effectiveCodeImpactTargetKey != codeImpactSessionTargetKey {
             codeImpactSessionID = nil
             codeImpactSessionEngine = nil
-            codeImpactSessionDirectory = effectiveCodeImpactDirectory
+            codeImpactSessionTargetKey = effectiveCodeImpactTargetKey
             codeImpactSentTranscriptLength = nil
             // 対象が変われば Q&A 履歴も前の対象のものなので持ち越さない。
             codeImpactTurns = []
@@ -1459,6 +1519,16 @@ final class AppModel {
         // ユーザーの選択として固定化されてしまう(希望の CLI が復帰しても Codex のまま等)。
         let model = settings.codeImpactAgentModel(for: cli)
         let question = codeImpactQuestion
+        let isGroupTarget = codeImpactTargetGroup != nil
+        // グループ対象は groupCodeImpactContext 側で既に予算管理済みの材料を渡しているため、
+        // ストリーム側の recentTranscript(行単位・末尾優先の切り詰め)を確実に発動させない
+        // よう、実際に組み立てた材料の長さ以上を limit として渡す(固定値だけを渡すと、
+        // 万一 groupCodeImpactContext 側の予算計算に将来ズレが生じたときに、行単位の
+        // 末尾優先トリムが「新しい順」の材料の先頭=最新会議を誤って削ってしまう)。
+        let transcriptCharacterLimit =
+            isGroupTarget
+            ? max(context.transcript.count, AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters)
+            : AgentCodeImpactAnalyzer.maximumTranscriptCharacters
         codeImpactAnalysisState = .analyzing(cli)
         codeImpactPartialText = ""
         codeImpactStreamedModel = nil
@@ -1480,8 +1550,11 @@ final class AppModel {
                 // 分かっていて、かつ今回読んだ transcript がその位置より短くなっていない
                 // (ファイルの巻き戻り等の異常が無い)場合だけ。それ以外は nil を渡し、
                 // ストリーミング側で全量渡し直しにフォールバックさせる。
+                // グループ対象は毎回セッション構成が変わり得る(要約の再生成・セッションの
+                // 増減)ため、差分計算はせず常に全量を渡し直す(材料自体は
+                // groupCodeImpactContext が既に予算内に収めている)。
                 let incrementalTranscript: String? = {
-                    guard resumeSessionID != nil, let sentTranscriptLength,
+                    guard !isGroupTarget, resumeSessionID != nil, let sentTranscriptLength,
                         context.transcript.count >= sentTranscriptLength
                     else { return nil }
                     return AgentCodeImpactAnalyzer.incrementalTranscript(
@@ -1523,6 +1596,8 @@ final class AppModel {
                         previousResult: previousResult,
                         decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
+                        transcriptCharacterLimit: transcriptCharacterLimit,
+                        isGroupTarget: isGroupTarget,
                         onEvent: onStreamEvent)
                 case .codex:
                     stream = try await AgentCodexImpactStream.run(
@@ -1534,6 +1609,8 @@ final class AppModel {
                         previousResult: previousResult,
                         decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
+                        transcriptCharacterLimit: transcriptCharacterLimit,
+                        isGroupTarget: isGroupTarget,
                         onEvent: onStreamEvent)
                 }
                 let result = stream.result
@@ -1567,6 +1644,9 @@ final class AppModel {
     private func codeImpactContext() throws -> (
         transcript: String, referenceFolder: String?, decisionContext: String?
     ) {
+        if let group = codeImpactTargetGroup {
+            return try groupCodeImpactContext(folder: group)
+        }
         let sessionDirectory: String
         if let targetDirectory = codeImpactTargetDirectory {
             // 過去対象は文字起こし中かどうかを問わない。セッションが引ければ調べられる。
@@ -1590,6 +1670,139 @@ final class AppModel {
         }
         return (transcript, referenceFolder, codeImpactDecisionContext(for: session))
     }
+
+    /// グループ対象の質問パネルが使う材料。所属セッションを新しい順に並べ、それぞれの
+    /// summary.md 全文(無ければ文字起こし末尾の抜粋)を groupQuestionMaterial で連ねる。
+    /// 資料フォルダはセッション個別の codeImpactReferenceFolderOverride の対象外
+    /// (グループには settings.referenceFolders[folder] という一次紐付けが既にあるため)。
+    private func groupCodeImpactContext(folder: String) throws -> (
+        transcript: String, referenceFolder: String?, decisionContext: String?
+    ) {
+        let groupSessions = sessions
+            .filter { $0.folder == folder }
+            .sorted { $0.startDate > $1.startDate }
+
+        let material = Self.groupQuestionMaterial(from: groupSessions)
+        guard !material.isEmpty else { throw CodeImpactContextError.groupHasNoMaterial }
+
+        let referenceFolder = settings.referenceFolders[folder].flatMap { path in
+            FileManager.default.fileExists(atPath: path) ? path : nil
+        }
+        return (material, referenceFolder, codeImpactDecisionContext(forFolder: folder))
+    }
+
+    /// グループ質問の材料候補1件。session から作れる範囲の完全な内容を持つ(まだ切り詰めていない)。
+    private struct GroupMaterialCandidate {
+        let name: String
+        let date: String
+        let body: String
+        /// "## 名前 (日付)\n本文" の完全体。まだ他ブロックとの結合区切り("\n\n")は含まない。
+        var block: String { "## \(name) (\(date))\n\(body)" }
+    }
+
+    /// グループ質問の材料本体。所属セッションを新しい順に「## セッション名 (開始日)」+
+    /// sessionMaterialBody で連ね、合計を AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters
+    /// までに収める。溢れる場合は古いセッションから丸ごと省く(行単位で機械的に削ると
+    /// セッションの境目で本文が壊れるため、会議単位で欠けるほうが読める材料になる)。
+    /// 省いた分は末尾に会議名と日付の一覧として明記する。
+    ///
+    /// 省略ノート自体の文字数も upper bound に含めて管理する: 採用ブロックだけで収めてから
+    /// ノートを後付けすると、ノートの分だけ limit を超えかねない(省略した会議が多いほど
+    /// ノートも長くなるため)。採用済みの中で最も古いものから1件ずつ省略へ回し、
+    /// 「採用ブロック + ノート」が limit に収まるまで繰り返す。
+    ///
+    /// 最新の1件だけで(ノート抜きでも)limit を超える場合は、その1件を「材料が無い」として
+    /// 弾くのではなく、頭から切り詰めて「(長いため冒頭のみ)」を付けて採用する
+    /// (最新の会議についてだけは何かしら答えられたほうがよいため)。
+    private static func groupQuestionMaterial(from sessionsNewestFirst: [SessionInfo]) -> String {
+        let limit = AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters
+        let candidates: [GroupMaterialCandidate] = sessionsNewestFirst.compactMap { session in
+            guard let body = sessionMaterialBody(for: session) else { return nil }
+            let name = session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name
+            let date = groupSessionDateFormatter.string(from: session.startDate)
+            return GroupMaterialCandidate(name: name, date: date, body: body)
+        }
+        guard !candidates.isEmpty else { return "" }
+
+        // 1. 収まるだけ新しい順に仮採用する(この時点ではまだノートの分を見ていない)。
+        var includedBlocks: [String] = []
+        var includedCosts: [Int] = []
+        var includedCost = 0
+        var cutIndex = 0
+        while cutIndex < candidates.count {
+            let block = candidates[cutIndex].block
+            let cost = includedBlocks.isEmpty ? block.count : block.count + 2
+            guard includedCost + cost <= limit else { break }
+            includedBlocks.append(block)
+            includedCosts.append(cost)
+            includedCost += cost
+            cutIndex += 1
+        }
+        var omitted: [(name: String, date: String)] = candidates[cutIndex...].map { ($0.name, $0.date) }
+
+        // 2. 省略が発生した場合、「採用ブロック + ノート」が limit に収まるまで、採用済みの
+        //    末尾(=最も古いもの)を1件ずつ省略へ回す(ノートが伸びるほど採用側を削る)。
+        while !omitted.isEmpty, includedCost + noteCost(for: omitted) > limit, !includedBlocks.isEmpty {
+            includedBlocks.removeLast()
+            includedCost -= includedCosts.removeLast()
+            let evicted = candidates[includedBlocks.count]
+            omitted.insert((evicted.name, evicted.date), at: 0)
+        }
+
+        // 3. 最新の1件すら(ノート込みで)収まらなかった場合は、その1件だけ頭から切り詰めて
+        //    採用する。2件目以降は通常どおりすべて省略扱いのまま。
+        if includedBlocks.isEmpty {
+            let newest = candidates[0]
+            let restOmitted = candidates.dropFirst().map { ($0.name, $0.date) }
+            let note = noteText(for: restOmitted)
+            let headerLine = "## \(newest.name) (\(newest.date)) (長いため冒頭のみ)"
+            let budgetForBody = max(limit - note.count - headerLine.count - 1, 0)
+            let truncatedBlock = "\(headerLine)\n\(newest.body.prefix(budgetForBody))"
+            return truncatedBlock + note
+        }
+
+        return includedBlocks.joined(separator: "\n\n") + noteText(for: omitted)
+    }
+
+    /// 省略ノートの本文(先頭の区切り "\n\n" を含む)。omitted が空なら空文字列。
+    private static func noteText(for omitted: [(name: String, date: String)]) -> String {
+        guard !omitted.isEmpty else { return "" }
+        let list = omitted.map { "\($0.name) (\($0.date))" }.joined(separator: "、")
+        return "\n\nこれより古い \(omitted.count) 件(\(list))は容量の都合で省略しました。"
+    }
+
+    /// noteText(for:) の文字数だけを、本文を組み立てずに知るための補助
+    /// (groupQuestionMaterial の予算判定はノート本文そのものを都度使わないため)。
+    private static func noteCost(for omitted: [(name: String, date: String)]) -> Int {
+        noteText(for: omitted).count
+    }
+
+    /// 1 セッション分の材料本文。summary.md があればその全文、無ければ文字起こし末尾 2,000 字の
+    /// 抜粋。どちらも無ければこのセッションは材料に含めない(nil)。
+    private static func sessionMaterialBody(for session: SessionInfo) -> String? {
+        if let summaryURL = session.summaryURL,
+            let summary = try? String(contentsOf: summaryURL, encoding: .utf8),
+            !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return summary
+        }
+        if let transcriptURL = session.transcriptURL,
+            let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8),
+            !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return "(要約が無いため文字起こし末尾の抜粋)\n" + transcript.suffix(2_000)
+        }
+        return nil
+    }
+
+    /// グループ質問材料の見出し用の日付書式(yyyy-MM-dd)。AI へ渡す材料の見出し用であり、
+    /// UI 表示用の HCDate(DesignTokens.swift)とは目的が違うため分けている。
+    private static let groupSessionDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
 
     /// 資料フォルダの解決。優先順は次のとおり:
     /// 1. セッションがグループ所属で、そのグループに資料フォルダが紐付いていればそれ。
@@ -1628,6 +1841,12 @@ final class AppModel {
     /// choices / mermaid が守られるのは出力仕様の内側に書かれているから)ため、こちらへ移した。
     private func codeImpactDecisionContext(for session: SessionInfo) -> String? {
         guard let folder = session.folder else { return nil }
+        return codeImpactDecisionContext(forFolder: folder)
+    }
+
+    /// codeImpactDecisionContext(for:) の実体。グループ対象(groupCodeImpactContext)は
+    /// セッションを経由せずグループ名を直接持っているため、こちらを直接呼ぶ。
+    private func codeImpactDecisionContext(forFolder folder: String) -> String? {
         let log = DecisionLogStore.loadOrEmpty(folder: folder)
         guard !log.topics.isEmpty else { return nil }
         let index = DecisionLogStore.compactIndex(log)
@@ -1867,8 +2086,12 @@ final class AppModel {
     /// 対象セッションが見つからない、またはライブが既に終了している(status.sessionDirectory が
     /// 無い)場合は何もしない。パネル側は表示中の回答から呼ぶだけなので、ここで
     /// エラー表示までは持たない。
+    ///
+    /// グループ対象は単一のセッションに紐付かないため、時刻ジャンプは提供しない
+    /// (根拠のタイムスタンプがどのセッション由来か一意に決められないため)。
     @MainActor
     func revealTranscript(atTime time: String) {
+        guard codeImpactTargetGroup == nil else { return }
         let normalizedTime = Self.normalizedRevealTime(time)
         if let targetDirectory = codeImpactTargetDirectory {
             guard let session = sessions.first(where: { $0.directory.path == targetDirectory })
@@ -1952,17 +2175,20 @@ final class AppModel {
 
     /// 質問応答パネルの根拠チップの経過時間表示の基準にする、対象セッションの開始時刻。
     /// 対象の解決は revealTranscript(atTime:) と同じ考え方(過去 = codeImpactTargetDirectory、
-    /// ライブ = status.sessionDirectory)。
+    /// ライブ = status.sessionDirectory)。グループ対象には単一の開始時刻が無いため、
+    /// effectiveCodeImpactSessionDirectory が常に nil を返し、自然に「変換できない」扱いになる。
     var codeImpactTargetSessionStartDate: Date? {
-        effectiveCodeImpactDirectory.flatMap(sessionStartDate(forDirectory:))
+        effectiveCodeImpactSessionDirectory.flatMap(sessionStartDate(forDirectory:))
     }
 
     /// 経緯回答のタイムラインカード(DecisionHistoryCardsView)が decisions.json を読むための
-    /// グループ(セッションフォルダ)。対象の解決は codeImpactTargetSessionStartDate と同じ考え方
-    /// (過去 = codeImpactTargetDirectory、ライブ = status.sessionDirectory)。対象セッションが
+    /// グループ(セッションフォルダ)。グループ対象はそのグループ名をそのまま返す。それ以外は
+    /// codeImpactTargetSessionStartDate と同じ考え方(過去 = codeImpactTargetDirectory、
+    /// ライブ = status.sessionDirectory)で対象セッションの所属を引く。対象セッションが
     /// グループに属さない場合は nil(呼び出し側はカードを描画しない)。
     var codeImpactTargetSessionFolder: String? {
-        guard let directory = effectiveCodeImpactDirectory else { return nil }
+        if let group = codeImpactTargetGroup { return group }
+        guard let directory = effectiveCodeImpactSessionDirectory else { return nil }
         return sessions.first(where: { $0.directory.path == directory })?.folder
     }
 
@@ -2069,6 +2295,25 @@ final class AppModel {
         }
         if plannedFolder == folder {
             plannedFolder = newName
+        }
+        // 質問パネルがこのグループを対象にしたまま開いていた場合の追従。
+        if codeImpactTargetGroup == folder {
+            if let newName {
+                // 改名: 新しい名前へ追従させないと、次の質問で groupCodeImpactContext の
+                // 絞り込み(sessions.folder == 旧名)が1件も当たらなくなり、「材料がありません」に
+                // 失敗する(セッション自体は refreshSessions() で新しい名前へ移っているだけなので、
+                // 実際には材料はある)。会話の継続(--resume)を保つため、
+                // codeImpactSessionTargetKey も同じ名前で追従させる。
+                codeImpactTargetGroup = newName
+                if codeImpactSessionTargetKey == "group:\(folder)" {
+                    codeImpactSessionTargetKey = "group:\(newName)"
+                }
+            } else {
+                // 削除: 対象そのものが無くなるため、直接 nil を代入せず switchCodeImpactTarget と
+                // 同じリセット(会話ターン・resume 用セッション ID・分析状態のクリア)を通す。
+                // 直接代入すると、削除されたグループの Q&A 履歴がライブ対象の画面に残ってしまう。
+                switchCodeImpactTarget(to: .live)
+            }
         }
     }
 

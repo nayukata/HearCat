@@ -100,10 +100,29 @@ struct GroupDetailView: View {
                 Label(folder, systemImage: "folder")
                     .font(HCFont.headline)
                 Spacer()
+                codeImpactButton
             }
             summaryRow
         }
         .padding()
+    }
+
+    /// このグループの会話について AI に質問するパネルを開くボタン。SessionDetailView の
+    /// 同名ボタンと同じ「エージェント CLI が1つも無ければ出さない」判定に揃える。
+    /// セッションが1件も無いグループは質問できる材料が無いため無効化する。
+    @ViewBuilder
+    private var codeImpactButton: some View {
+        if !availableAgentCLIs.isEmpty {
+            let hasMaterial = !groupSessions.isEmpty
+            Button {
+                model.openCodeImpactPanel(forGroup: folder)
+            } label: {
+                Label("質問", systemImage: "questionmark.bubble")
+            }
+            .buttonStyle(.hcSecondary)
+            .disabled(!hasMaterial)
+            .help(hasMaterial ? "このグループの会話について AI に質問します" : "セッションがありません")
+        }
     }
 
     /// 概要行。「・」区切りをやめ、HStack の余白だけで項目を分ける。パスは他の項目より
@@ -188,9 +207,13 @@ struct GroupDetailView: View {
                             onSelectSession(session.id)
                         } label: {
                             SessionRow(session: session, sessionsVersion: model.sessionsVersion)
+                                // 文字の右の余白まで行全体をクリックできるように、ラベル自体を
+                                // 全幅へ広げてから当たり判定を付ける(.plain ではラベルの実寸が
+                                // そのまま当たり判定になるため、外側に付けても広がらない)。
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .contentShape(Rectangle())
                         .padding(.vertical, 4)
                         if session.id != groupSessions.last?.id {
                             Divider()
