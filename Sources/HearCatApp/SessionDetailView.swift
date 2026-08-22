@@ -65,12 +65,43 @@ struct SessionDetailView: View {
     /// body 側の .task(id: session.id) からもジャンプを試したいが、そこは ScrollViewReader の
     /// スコープの外にあるため、ここに控えて共有する。
     @State private var scrollProxy: ScrollViewProxy?
+    /// クリックによる行選択(TranscriptLine.id)。複数行コピーの対象。空なら行内の
+    /// 文字単位選択(.textSelection)だけが有効な通常状態。
+    @State private var selectedLineIDs: Set<TranscriptLine.ID> = []
+    /// Shift+クリックで範囲選択する起点。単独クリック・Cmd+クリックのたびに選んだ行へ更新する。
+    @State private var selectionAnchorID: TranscriptLine.ID?
+    /// ドラッグ範囲選択(handleRowDragChanged)のために測った各行の表示位置
+    /// (transcriptRowsSpace 基準)。LazyVStack でまだ実体化していない行は含まれない。
+    @State private var rowFrames: [TranscriptLine.ID: CGRect] = [:]
+    /// ドラッグ範囲選択の起点。ドラッグ中だけ値を持ち、指を離すと nil に戻す。
+    @State private var dragSelectionAnchorID: TranscriptLine.ID?
+    /// 行選択がある間だけ張る Cmd+C / Esc の監視。このアプリは LSUIElement(メニューバー
+    /// 非表示)で Edit メニューを持たないため、選択中の Cmd+C は標準メニュー経由では届かない
+    /// (前例: SettingsView.swift の HotkeyRecorderField)。選択が空の間は張らず、行内の
+    /// 文字選択の既定の Cmd+C を妨げない。
+    @State private var lineSelectionMonitor: Any?
     /// この会議で決まった・変わったこと(検品ブロック)の表示行。所属グループが無い、
     /// このセッション由来のエントリが1件も無い、decisions.json が壊れている、のいずれかで
     /// 空のまま(見出しだけの空ブロックは出さない)。
     @State private var decisionRows: [DecisionRow] = []
     /// 「内容を修正…」で開くシートの対象。nil でない間だけ出る。
     @State private var editingDecision: DecisionRow?
+
+    /// Cmd+F のページ内検索バーを表示中か。
+    @State private var searchBarVisible = false
+    @State private var searchQuery = ""
+    @FocusState private var searchFieldFocused: Bool
+    /// 検索語に一致した行の ID。transcriptLines の表示順のまま保持する。
+    @State private var searchMatchIDs: [TranscriptLine.ID] = []
+    /// searchMatchIDs 内での現在位置。0件、または未検索なら nil。
+    @State private var currentMatchOrdinal: Int?
+    /// Cmd+F・検索バー表示中の Enter 以外のキー操作(Esc・Cmd+G 系)を拾う監視。
+    /// lineSelectionMonitor と違い、この画面が表示されている間ずっと張る
+    /// (Cmd+F はいつでも押せる必要があるため)。
+    @State private var searchKeyMonitor: Any?
+    /// ヒット行への収束スクロール(jumpToCurrentMatch)を実行中のタスク。新しいジャンプが
+    /// 割り込んだら前回分をキャンセルする(RevealCoordinator.reveal と同じ理屈)。
+    @State private var searchScrollTask: Task<Void, Never>?
 
     private struct ShareNotice: Equatable {
         let message: String
@@ -119,6 +150,8 @@ struct SessionDetailView: View {
                     }
                 Divider()
             }
+            // 検索は本文 (文字起こし) に対する操作なので、再生バーより本文側に置く。
+            searchBar
             content
         }
         .task(id: session.id) {
@@ -141,7 +174,21 @@ struct SessionDetailView: View {
         // 停止直後に詳細へ遷移した場合、最後の発話の確定はまだファイルに
         // 書かれていないことがある。refreshSessions のたびに読み直して追従する。
         .onChange(of: model.sessionsVersion) { load(forceNewPlayer: false) }
-        .onDisappear { player?.teardown() }
+        .onChange(of: selectedLineIDs.isEmpty) { updateLineSelectionMonitor() }
+        .onChange(of: searchQuery) { updateSearchMatches() }
+        // ライブ中に文字起こしが追記された場合、新しい行も検索対象に含める。
+        // 現在位置(currentMatchOrdinal)はジャンプさせず据え置く。
+        .onChange(of: transcriptLines.count) {
+            guard searchBarVisible, !searchQuery.isEmpty else { return }
+            updateSearchMatches(preserveCurrent: true)
+        }
+        .onAppear { installSearchKeyMonitor() }
+        .onDisappear {
+            player?.teardown()
+            removeLineSelectionMonitor()
+            removeSearchKeyMonitor()
+            searchScrollTask?.cancel()
+        }
         .sheet(item: $editingDecision) { row in
             DecisionEditSheet(row: row) { newText in
                 updateDecision(row, newText: newText)
@@ -212,8 +259,217 @@ struct SessionDetailView: View {
         .controlSize(.regular)
     }
 
+    /// Cmd+F で開くページ内検索バー。文字起こしの本文(body)だけを対象にする
+    /// (要約・検品ブロックは対象外)。0件でも移動ボタンは disabled にするだけで、
+    /// バー自体は開いたままにする(閉じると入力途中の語が消えてしまうため)。
+    @ViewBuilder
+    private var searchBar: some View {
+        if searchBarVisible {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("文字起こしを検索", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .focused($searchFieldFocused)
+                        .onSubmit {
+                            let backwards = NSEvent.modifierFlags.contains(.shift)
+                            jumpToMatch(direction: backwards ? -1 : 1)
+                        }
+                        .onExitCommand { closeSearch() }
+                    Text(searchMatchCountLabel)
+                        .font(HCFont.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    Button {
+                        jumpToMatch(direction: -1)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .disabled(searchMatchIDs.isEmpty)
+                    Button {
+                        jumpToMatch(direction: 1)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .disabled(searchMatchIDs.isEmpty)
+                    Button {
+                        closeSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                Divider()
+            }
+        }
+    }
+
+    private var searchMatchCountLabel: String {
+        guard !searchMatchIDs.isEmpty else { return "0 件" }
+        let ordinal = (currentMatchOrdinal ?? 0) + 1
+        return "\(searchMatchIDs.count) 件中 \(ordinal) 件目"
+    }
+
+    /// 検索対象の行 ID を今のヒット位置を跨いで指す(現在ヒットの持続点灯に使う)。
+    private var currentSearchMatchID: TranscriptLine.ID? {
+        guard let currentMatchOrdinal, searchMatchIDs.indices.contains(currentMatchOrdinal)
+        else { return nil }
+        return searchMatchIDs[currentMatchOrdinal]
+    }
+
+    private func openSearch() {
+        searchBarVisible = true
+        searchFieldFocused = true
+        // 検索バー表示中は Esc を検索を閉じる操作として確定させたいため、行選択の
+        // Esc/Cmd+C 監視(lineSelectionMonitor)と競合しないよう選択を解除する。
+        if !selectedLineIDs.isEmpty {
+            clearLineSelection()
+        }
+    }
+
+    private func closeSearch() {
+        searchScrollTask?.cancel()
+        searchBarVisible = false
+        searchFieldFocused = false
+        searchQuery = ""
+        searchMatchIDs = []
+        currentMatchOrdinal = nil
+    }
+
+    /// searchQuery(または追記された文字起こし)からヒット行を作り直す。
+    /// preserveCurrent: true の場合、今指している行が新しい結果にまだ含まれていれば
+    /// その位置を維持してジャンプしない(追記によるヒット再計算で表示位置が飛ばないように)。
+    /// それ以外は先頭のヒットへジャンプする。
+    private func updateSearchMatches(preserveCurrent: Bool = false) {
+        let keepID = preserveCurrent ? currentSearchMatchID : nil
+        let query = searchQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else {
+            searchMatchIDs = []
+            currentMatchOrdinal = nil
+            return
+        }
+        searchMatchIDs = transcriptLines
+            .filter { $0.body.localizedCaseInsensitiveContains(query) }
+            .map(\.id)
+        guard !searchMatchIDs.isEmpty else {
+            currentMatchOrdinal = nil
+            return
+        }
+        if let keepID, let idx = searchMatchIDs.firstIndex(of: keepID) {
+            currentMatchOrdinal = idx
+            return
+        }
+        currentMatchOrdinal = 0
+        jumpToCurrentMatch()
+    }
+
+    /// 次(direction: 1)/前(direction: -1)のヒットへ移動する。末尾から次へ進むと先頭へ、
+    /// 先頭から前へ戻ると末尾へ循環する(サイドバー検索など他の検索 UI に合わせた挙動)。
+    private func jumpToMatch(direction: Int) {
+        guard !searchMatchIDs.isEmpty else { return }
+        let count = searchMatchIDs.count
+        let current = currentMatchOrdinal ?? 0
+        currentMatchOrdinal = (current + direction + count) % count
+        jumpToCurrentMatch()
+    }
+
+    /// 文字起こしは LazyVStack なので、未実体化の遠い行への scrollTo は推定高さで着地し、
+    /// 行き過ぎたり手前止まりになったりする(RevealCoordinator.reveal と同じ理屈)。同じ
+    /// target へ間隔を空けて複数回投げて収束させ、最後の 1 回だけアニメーション付きで寄せる。
+    /// RevealCoordinator 自体は流用しない(あちらはフェード点灯の演出込みの型のため。
+    /// 検索の現在ヒットは SearchMatchHighlight の持続点灯で別に表現している)。
+    private func jumpToCurrentMatch() {
+        guard let proxy = scrollProxy, let target = currentSearchMatchID else { return }
+        // 検索ジャンプ中は再生位置への自動追従と競合させない(revealIfRequested と同じ理屈)。
+        followsPlayback = false
+        searchScrollTask?.cancel()
+        searchScrollTask = Task {
+            for _ in 0..<RevealTiming.convergeCount {
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(target, anchor: .center)
+                try? await Task.sleep(for: RevealTiming.convergeInterval)
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: RevealTiming.finalScrollDuration)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
+        }
+    }
+
+    private func installSearchKeyMonitor() {
+        guard searchKeyMonitor == nil else { return }
+        searchKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let keyCode = event.keyCode
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let lowercasedCharacters = event.charactersIgnoringModifiers?.lowercased()
+            let eventWindowID = event.window.map(ObjectIdentifier.init)
+            let consumed = MainActor.assumeIsolated {
+                handleSearchKeyDown(
+                    keyCode: keyCode, flags: flags, lowercasedCharacters: lowercasedCharacters,
+                    eventWindowID: eventWindowID)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    private func removeSearchKeyMonitor() {
+        if let searchKeyMonitor {
+            NSEvent.removeMonitor(searchKeyMonitor)
+        }
+        searchKeyMonitor = nil
+    }
+
+    /// 消費したら true を返す(handleLineSelectionKeyDown と同じ規約)。Enter は
+    /// TextField の onSubmit、検索欄フォーカス中の Esc は onExitCommand に譲る
+    /// (フォーカスが NSText にある間、この監視はそれらを奪わない)ため、ここでは
+    /// Cmd+F・Cmd+G 系・検索欄以外にフォーカスがある間の Esc だけを扱う。
+    /// Cmd+F・Cmd+G は、サイドバーの検索欄や改名フィールドなど他のテキスト編集欄で
+    /// 入力中なら奪わない(inOtherTextField)。ただし検索バー自身の検索欄
+    /// (searchFieldFocused)は例外にする。この画面の TextField も AppKit 上は NSText
+    /// になるため、区別なく弾くと検索欄にフォーカスがある間 Cmd+G で次のヒットへ
+    /// 移動できなくなってしまう。
+    private func handleSearchKeyDown(
+        keyCode: UInt16, flags: NSEvent.ModifierFlags, lowercasedCharacters: String?,
+        eventWindowID: ObjectIdentifier?
+    ) -> Bool {
+        guard let ownWindow = model.mainWindow, eventWindowID == ObjectIdentifier(ownWindow) else {
+            return false
+        }
+        let inOtherTextField = !searchFieldFocused && (NSApp.keyWindow?.firstResponder is NSText)
+        if flags == .command, lowercasedCharacters == "f" {
+            guard !inOtherTextField else { return false }
+            openSearch()
+            return true
+        }
+        guard searchBarVisible else { return false }
+        if flags == [.command, .shift], lowercasedCharacters == "g" {
+            guard !inOtherTextField else { return false }
+            jumpToMatch(direction: -1)
+            return true
+        }
+        if flags == .command, lowercasedCharacters == "g" {
+            guard !inOtherTextField else { return false }
+            jumpToMatch(direction: 1)
+            return true
+        }
+        if keyCode == 53, !(NSApp.keyWindow?.firstResponder is NSText) {  // Escape
+            closeSearch()
+            return true
+        }
+        return false
+    }
+
     /// 本文の先頭を指すスクロール目標。切り替え時に頭出しするためだけの固定 ID。
     private static let contentTop = "content-top"
+
+    /// 行ドラッグでの範囲選択に使う、行位置(frame)を測る座標空間の名前。
+    /// onGeometryChange の of: クロージャ(@Sendable)から参照するため nonisolated にする
+    /// (ただの String 定数なので隔離を外しても安全)。
+    private nonisolated static let transcriptRowsSpace = "transcript-rows"
 
     private var content: some View {
         ScrollViewReader { proxy in
@@ -348,6 +604,14 @@ struct SessionDetailView: View {
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .coordinateSpace(name: Self.transcriptRowsSpace)
+                                .gesture(
+                                    DragGesture(
+                                        minimumDistance: 5, coordinateSpace: .named(Self.transcriptRowsSpace)
+                                    )
+                                    .onChanged(handleRowDragChanged)
+                                    .onEnded { _ in dragSelectionAnchorID = nil }
+                                )
                             }
                         }
                         // GroupBox 既定の内側余白は薄い。要約(SummaryView)と同じ余白にする。
@@ -405,19 +669,175 @@ struct SessionDetailView: View {
                 if let speaker = line.speaker {
                     SpeakerChip(speaker: speaker.rawValue)
                     Text(line.text)
-                        .textSelection(.enabled)
                 } else {
                     Text(line.body)
-                        .textSelection(.enabled)
                 }
             }
             .modifier(CurrentLineHighlight(isCurrent: line.id == currentLineID))
             .modifier(RevealHighlight(isRevealed: line.id == revealCoordinator.revealedID))
+            .modifier(LineSelectionHighlight(isSelected: selectedLineIDs.contains(line.id)))
+            .modifier(SearchMatchHighlight(isCurrentMatch: line.id == currentSearchMatchID))
+            .contentShape(Rectangle())
+            // 時刻ボタンとの競合対策は GroupDetailView.TopicRow と同じ理屈: SwiftUI は
+            // Button 自身のヒットテストを外側の onTapGesture より優先するため、時刻ボタンの
+            // 当たり判定内はボタンの再生アクションだけが起き、行選択は起きない。
+            .onTapGesture { handleLineClick(line.id) }
+            // ドラッグ範囲選択(handleRowDragChanged)が使う行位置を測る。LazyVStack で
+            // まだ実体化していない行はここを通らないため rowFrames に載らない。
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named(Self.transcriptRowsSpace))
+            } action: { rowFrames[line.id] = $0 }
+            .contextMenu {
+                if !selectedLineIDs.isEmpty {
+                    Button("選択範囲をコピー (\(selectedLineIDs.count) 行)") {
+                        copySelectedLines()
+                    }
+                }
+            }
             .id(line.id)
         } else {
             Text(line.body)
                 .textSelection(.enabled)
         }
+    }
+
+    /// 単独クリックは新規選択にする。選択がその1行だけの状態でもう一度押した場合は、
+    /// 選び直すのではなく解除にする(トグルとして自然に振る舞わせるため)。
+    private func handleLineClick(_ id: TranscriptLine.ID) {
+        let flags = NSEvent.modifierFlags.intersection([.command, .shift])
+        if flags.contains(.shift), let anchor = selectionAnchorID {
+            selectedLineIDs.formUnion(lineIDRange(from: anchor, to: id))
+            return
+        }
+        if flags.contains(.command) {
+            if selectedLineIDs.contains(id) {
+                selectedLineIDs.remove(id)
+            } else {
+                selectedLineIDs.insert(id)
+            }
+            selectionAnchorID = id
+            return
+        }
+        if selectedLineIDs == [id] {
+            selectedLineIDs = []
+            selectionAnchorID = nil
+        } else {
+            selectedLineIDs = [id]
+            selectionAnchorID = id
+        }
+    }
+
+    private func lineIDRange(
+        from anchor: TranscriptLine.ID, to id: TranscriptLine.ID
+    ) -> [TranscriptLine.ID] {
+        guard let anchorIndex = transcriptLines.firstIndex(where: { $0.id == anchor }),
+            let targetIndex = transcriptLines.firstIndex(where: { $0.id == id })
+        else { return [id] }
+        let range = anchorIndex <= targetIndex ? anchorIndex...targetIndex : targetIndex...anchorIndex
+        return transcriptLines[range].map(\.id)
+    }
+
+    /// ドラッグ開始で既存の選択を捨てるのは、なぞり直しがそのまま選び直しになる
+    /// 操作感にするため(追加選択は Shift+クリックに寄せる)。
+    private func handleRowDragChanged(_ value: DragGesture.Value) {
+        if dragSelectionAnchorID == nil {
+            guard let startID = lineID(atY: value.startLocation.y) else { return }
+            dragSelectionAnchorID = startID
+            selectionAnchorID = startID
+        }
+        guard let anchor = dragSelectionAnchorID, let currentID = lineID(atY: value.location.y)
+        else { return }
+        selectedLineIDs = Set(lineIDRange(from: anchor, to: currentID))
+    }
+
+    /// 行間の隙間やリストの上下端の外でもドラッグ選択が途切れないよう、
+    /// 行に当たらない座標は最も近い行へ丸める。
+    private func lineID(atY y: CGFloat) -> TranscriptLine.ID? {
+        if let hit = rowFrames.first(where: { $0.value.minY <= y && y <= $0.value.maxY }) {
+            return hit.key
+        }
+        return rowFrames.min(by: { abs($0.value.midY - y) < abs($1.value.midY - y) })?.key
+    }
+
+    /// 選択行を、元ファイルと同じ「[HH:mm:ss] 話者: 発言」形式で改行区切りにしてコピーする。
+    /// 書き込み側の区切り書式が変わると、全文コピー(TranscriptParser.bodyText)と
+    /// 食い違う。選択順ではなく表示順に整列する。
+    private func copySelectedLines() {
+        guard !selectedLineIDs.isEmpty else { return }
+        let text = transcriptLines
+            .filter { selectedLineIDs.contains($0.id) }
+            .map { line -> String in
+                guard let stamp = line.stamp else { return line.body }
+                return "[\(stamp)] \(line.body)"
+            }
+            .joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func clearLineSelection() {
+        selectedLineIDs = []
+        selectionAnchorID = nil
+    }
+
+    /// 選択行の有無に応じて Cmd+C / Esc の監視を張り替える。
+    private func updateLineSelectionMonitor() {
+        guard !selectedLineIDs.isEmpty else {
+            removeLineSelectionMonitor()
+            return
+        }
+        guard lineSelectionMonitor == nil else { return }
+        lineSelectionMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // NSEvent/NSWindow は Sendable ではないため、MainActor.assumeIsolated の
+            // クロージャへそのまま渡せない。必要な値だけを先に取り出してから渡す
+            // (ウィンドウは identity 比較にしか使わないので ObjectIdentifier で足りる)。
+            let keyCode = event.keyCode
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let lowercasedCharacters = event.charactersIgnoringModifiers?.lowercased()
+            let eventWindowID = event.window.map(ObjectIdentifier.init)
+            let consumed = MainActor.assumeIsolated {
+                handleLineSelectionKeyDown(
+                    keyCode: keyCode, flags: flags, lowercasedCharacters: lowercasedCharacters,
+                    eventWindowID: eventWindowID)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    private func removeLineSelectionMonitor() {
+        if let lineSelectionMonitor {
+            NSEvent.removeMonitor(lineSelectionMonitor)
+        }
+        lineSelectionMonitor = nil
+    }
+
+    /// 消費したら true を返す(呼び出し側がそれを見て nil を返し、ビープ等の既定動作を止める)。
+    private func handleLineSelectionKeyDown(
+        keyCode: UInt16, flags: NSEvent.ModifierFlags, lowercasedCharacters: String?,
+        eventWindowID: ObjectIdentifier?
+    ) -> Bool {
+        // ローカル監視はアプリ内の全ウィンドウの keyDown に掛かる。自分(= このビューが
+        // 乗っている model.mainWindow)宛てのキーだけを対象にしないと、質問応答パネル
+        // (CodeImpactOverlay、別ウィンドウの NSPanel)がキーになっている間の Esc/Cmd+C まで
+        // 横取りし、パネル側の onExitCommand などへ届かなくなる。
+        guard let ownWindow = model.mainWindow, eventWindowID == ObjectIdentifier(ownWindow) else {
+            return false
+        }
+        // フォーカスが他のテキスト編集欄(改名フィールドや決定事項の修正シートなど)にある間は
+        // 素通しし、そちらの Cmd+C を奪わない。
+        guard !(NSApp.keyWindow?.firstResponder is NSText) else { return false }
+        // 検索バー表示中は Esc を検索を閉じる操作として確定させる(openSearch で選択は
+        // 既に解除済みだが、表示中に別の行を選び直した場合の Esc もここで奪わない)。
+        guard !searchBarVisible else { return false }
+        if keyCode == 53 {  // Escape
+            clearLineSelection()
+            return true
+        }
+        if flags == .command, lowercasedCharacters == "c" {
+            copySelectedLines()
+            return true
+        }
+        return false
     }
 
     /// セッションが切り替わった時に、前のセッションの一時的な表示を持ち越さないようにする。
@@ -437,6 +857,7 @@ struct SessionDetailView: View {
         agentSummarizeTask = nil
         decisionRows = []
         editingDecision = nil
+        closeSearch()
     }
 
     /// forceNewPlayer が false の再読込(sessionsVersion 変化時)では、再生中に
@@ -445,6 +866,13 @@ struct SessionDetailView: View {
         transcript = session.transcriptURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         transcriptLines = TranscriptParser.lines(
             from: transcript ?? "", sessionStart: session.startDate)
+        // 行の並びや ID(行番号)が変わり得るタイミングなので選択は持ち越さない
+        // (古い ID が入れ替わった後の別の内容を指してしまうのを防ぐ)。同じ理由で
+        // 測り直しが必要な行位置(rowFrames)も捨てる。
+        selectedLineIDs = []
+        selectionAnchorID = nil
+        rowFrames = [:]
+        dragSelectionAnchorID = nil
         summary = session.summaryURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         summaryEngine = session.summaryEngine
         let audioURL = session.audioURL
@@ -841,6 +1269,42 @@ private struct EngineChip: View {
 
     var body: some View {
         HCTextChip(text: engine.displayName)
+    }
+}
+
+/// 選択された行の目印。CurrentLineHighlight・RevealHighlight と同じく、既に
+/// 適用済みのパディングを含む content にそのまま background を重ねるだけ(サイズは変えない)。
+/// アクセント色にすることで、現在再生行(無彩色の薄い塗り)や一時ハイライト(cinnamon)と
+/// 見分けが付くようにする。
+private struct LineSelectionHighlight: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if isSelected {
+                    HCRadius.shape(HCRadius.chip)
+                        .fill(HCColor.accent.opacity(0.16))
+                }
+            }
+    }
+}
+
+/// 検索の現在ヒット行の目印。RevealHighlight と違いフェードせず持続点灯する
+/// (次のヒットへ移動するまで、または検索バーを閉じるまで点いたまま)。
+/// 色は RevealHighlight と同じ cinnamon を使い回す(同時に立つ場面は無い前提)。
+private struct SearchMatchHighlight: ViewModifier {
+    let isCurrentMatch: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if isCurrentMatch {
+                    HCRadius.shape(HCRadius.chip)
+                        .fill(HCColor.cinnamon.opacity(0.22))
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: isCurrentMatch)
     }
 }
 
