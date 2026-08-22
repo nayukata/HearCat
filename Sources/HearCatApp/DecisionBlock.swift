@@ -91,17 +91,23 @@ private struct DecisionRowContent: View {
                     .foregroundStyle(.secondary)
                     .font(HCFont.caption)
                     .padding(.top, 4)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(row.title)
-                        .font(HCFont.style(.body, weight: .semibold))
-                    // 展開中はタイムライン先頭(いまここ)と同じ内容が2回並んで見えるため隠す。
-                    if !isExpanded {
-                        content
+                // チップと議題名を同じ内側 HStack にまとめ、1行目のテキストと高さを揃える
+                // (親 HStack は右側の時刻・「⋯」列も含めた .top 揃えのため、ここだけ別軸で揃える)。
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    // 「仮」1文字と「確定」2文字で幅が揺れないよう固定幅にする。
+                    DecisionStatusChip(status: row.status)
+                        .frame(width: 48, alignment: .center)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(row.title)
+                            .font(HCFont.style(.body, weight: .semibold))
+                        // 展開中はタイムライン先頭(いまここ)と同じ内容が2回並んで見えるため隠す。
+                        if !isExpanded {
+                            content
+                        }
                     }
                 }
                 Spacer(minLength: 8)
                 HStack(spacing: 10) {
-                    DecisionStatusChip(status: row.status)
                     if let timeSeconds = row.timeSeconds {
                         Button(formatPlaybackTime(TimeInterval(timeSeconds))) {
                             onJump(timeSeconds)
@@ -110,6 +116,8 @@ private struct DecisionRowContent: View {
                         .font(HCFont.timecode)
                         .foregroundStyle(.tint)
                         .padding(.vertical, 4)
+                        // 行ごとに桁数が違っても右端が揃うよう固定幅にする。
+                        .frame(width: 48, alignment: .trailing)
                         .contentShape(Rectangle())
                         .pointingHandOnHover()
                         .help("この位置から文字起こしへ移動")

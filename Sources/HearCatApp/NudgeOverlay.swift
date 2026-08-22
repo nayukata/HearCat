@@ -136,8 +136,8 @@ private struct NudgeOverlayView: View {
                         .font(HCFont.style(.subheadline, weight: .semibold))
                         .foregroundStyle(HCColor.textPrimary)
                     Text(prompt.detail)
-                        .font(HCFont.caption)
-                        .foregroundStyle(HCColor.textDim)
+                        .font(HCFont.subheadline)
+                        .foregroundStyle(HCColor.textBody)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineLimit(3)
                 }
