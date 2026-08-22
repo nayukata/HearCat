@@ -120,6 +120,31 @@ private struct CodeImpactOverlayView: View {
     @State private var input: String = ""
     @FocusState private var inputFocused: Bool
 
+    /// Cmd+F のページ内検索バーを表示中か。履歴画面(SessionDetailView)と同じ流儀。
+    @State private var searchBarVisible = false
+    @State private var searchQuery = ""
+    @FocusState private var searchFieldFocused: Bool
+    /// 検索語に一致したターンの ID。ヒットはターン単位(同一ターン内の複数ヒットは1件に畳む)。
+    /// 検索対象は codeImpactTurns(確定ターン)のみ。ストリーミング中の進行中ターンは、
+    /// 本文が刻々と変わるため対象に含めない。
+    @State private var searchMatchTurnIDs: [UUID] = []
+    /// searchMatchTurnIDs 内での現在位置。0件、または未検索なら nil。
+    @State private var currentMatchOrdinal: Int?
+    /// パネルのウィンドウ参照。WindowAccessor で取得する(履歴画面の model.mainWindow に
+    /// 相当するが、このパネルは Scene 外の NSPanel で AppModel に等価なプロパティが無いため、
+    /// このビュー自身が保持する)。
+    @State private var panelWindow: NSWindow?
+    /// Cmd+F・検索バー表示中の Cmd+G 系を拾う監視。この画面が表示されている間ずっと張る。
+    @State private var searchKeyMonitor: Any?
+    /// ヒットターンへの収束スクロールを実行中のタスク。新しいジャンプが割り込んだら
+    /// 前回分をキャンセルする(RevealCoordinator.reveal と同じ理屈。ただし RevealCoordinator
+    /// 自体はフェード点灯の演出込みの型のため流用しない)。
+    @State private var searchScrollTask: Task<Void, Never>?
+    /// turnsScrollView(ScrollViewReader)が持つ proxy。検索ジャンプに使う。turnsScrollView は
+    /// content の switch で analyzing/completed のときだけ存在するビューのため、それ以外の
+    /// 状態(idle 等)ではセットされない(その間は検索してもジャンプ先が無いだけ)。
+    @State private var turnsScrollProxy: ScrollViewProxy?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -127,6 +152,7 @@ private struct CodeImpactOverlayView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 12)
             Rectangle().fill(HCColor.divider).frame(height: 1)
+            searchBar
             // 左右の余白は content 側に一括で付けない。turnsScrollView(ScrollView)を
             // 通る内容はスクロールバーがパネルの右端に付くよう ScrollView 自体を幅いっぱいに
             // 広げ、余白は内側の LazyVStack に持たせる。ScrollView を通らない状態ビュー
@@ -153,8 +179,21 @@ private struct CodeImpactOverlayView: View {
             HCRadius.shape(HCRadius.panel)
                 .stroke(HCColor.strokeLine, lineWidth: 1))
         .clipShape(HCRadius.shape(HCRadius.panel))
-        .onExitCommand { model.dismissCodeImpactOverlay() }
-        .onAppear { inputFocused = true }
+        .background(WindowAccessor { window in panelWindow = window })
+        // 検索バー表示中は Esc を検索バーを閉じる操作として優先する(パネルは閉じない)。
+        .onExitCommand {
+            if searchBarVisible {
+                closeSearch()
+            } else {
+                model.dismissCodeImpactOverlay()
+            }
+        }
+        .onAppear {
+            inputFocused = true
+            installSearchKeyMonitor()
+        }
+        .onDisappear { removeSearchKeyMonitor() }
+        .onChange(of: searchQuery) { updateSearchMatches() }
     }
 
     // MARK: - ヘッダー
@@ -176,8 +215,8 @@ private struct CodeImpactOverlayView: View {
                 Text("会話について質問")
                     .font(HCFont.style(.subheadline, weight: .semibold))
                     .foregroundStyle(HCColor.textPrimary)
-                // 過去セッションが対象のときだけ名前を添える。ライブとの取り違えを防ぐため。
-                if let targetName = model.codeImpactTargetSessionName {
+                // 過去セッション・グループが対象のときだけ名前を添える。ライブとの取り違えを防ぐため。
+                if let targetName = model.codeImpactTargetSessionName ?? model.codeImpactTargetGroup {
                     Text("· \(targetName)")
                         .font(HCFont.style(.caption1, weight: .semibold))
                         .foregroundStyle(HCColor.accentText)
@@ -186,6 +225,7 @@ private struct CodeImpactOverlayView: View {
             }
             Spacer()
             Button {
+                closeSearch()
                 model.dismissCodeImpactOverlay()
             } label: {
                 Image(systemName: "xmark")
@@ -200,6 +240,219 @@ private struct CodeImpactOverlayView: View {
             .focusEffectDisabled()
             .help("閉じる (Esc)")
         }
+    }
+
+    // MARK: - 検索
+
+    /// Cmd+F で開くページ内検索バー。見た目は履歴画面(SessionDetailView)の検索バーに合わせる。
+    /// 検索対象は codeImpactTurns の質問文・回答本文(Markdown の生文字列としての単純一致)。
+    @ViewBuilder
+    private var searchBar: some View {
+        if searchBarVisible {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(HCColor.textDim)
+                    TextField("質問と回答を検索", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .focused($searchFieldFocused)
+                        .onSubmit {
+                            let backwards = NSEvent.modifierFlags.contains(.shift)
+                            jumpToMatch(direction: backwards ? -1 : 1)
+                        }
+                    Text(searchMatchCountLabel)
+                        .font(HCFont.caption)
+                        .foregroundStyle(HCColor.textDim)
+                        .fixedSize()
+                    Button {
+                        jumpToMatch(direction: -1)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .disabled(searchMatchTurnIDs.isEmpty)
+                    Button {
+                        jumpToMatch(direction: 1)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .disabled(searchMatchTurnIDs.isEmpty)
+                    Button {
+                        closeSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+                .foregroundStyle(HCColor.textDim)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 8)
+                Rectangle().fill(HCColor.divider).frame(height: 1)
+            }
+        }
+    }
+
+    private var searchMatchCountLabel: String {
+        guard !searchMatchTurnIDs.isEmpty else { return "0 件" }
+        let ordinal = (currentMatchOrdinal ?? 0) + 1
+        return "\(searchMatchTurnIDs.count) 件中 \(ordinal) 件目"
+    }
+
+    /// 現在ヒットしているターンの ID(持続点灯に使う)。
+    private var currentSearchMatchTurnID: UUID? {
+        guard let currentMatchOrdinal, searchMatchTurnIDs.indices.contains(currentMatchOrdinal)
+        else { return nil }
+        return searchMatchTurnIDs[currentMatchOrdinal]
+    }
+
+    private func openSearch() {
+        searchBarVisible = true
+        searchFieldFocused = true
+    }
+
+    private func closeSearch() {
+        searchScrollTask?.cancel()
+        searchBarVisible = false
+        searchFieldFocused = false
+        searchQuery = ""
+        searchMatchTurnIDs = []
+        currentMatchOrdinal = nil
+    }
+
+    /// 検索語から一致ターンを作り直す。ヒットはターン単位(質問文・回答本文のどちらかに
+    /// 含まれれば1件、同一ターン内の複数ヒットは1件に畳む)。検索語が変わるたびに
+    /// 先頭のヒットへジャンプする。ストリーミング中の進行中ターン(まだ codeImpactTurns に
+    /// 積まれていない)は本文が刻々と変わるため検索対象に含めない。
+    private func updateSearchMatches() {
+        let query = searchQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else {
+            searchMatchTurnIDs = []
+            currentMatchOrdinal = nil
+            return
+        }
+        searchMatchTurnIDs = model.codeImpactTurns.filter { turn in
+            (turn.question?.localizedCaseInsensitiveContains(query) ?? false)
+                || turn.result.localizedCaseInsensitiveContains(query)
+        }.map(\.id)
+        guard !searchMatchTurnIDs.isEmpty else {
+            currentMatchOrdinal = nil
+            return
+        }
+        currentMatchOrdinal = 0
+        jumpToCurrentMatch()
+    }
+
+    /// 次(direction: 1)/前(direction: -1)のヒットへ移動する。末尾から次へ進むと先頭へ、
+    /// 先頭から前へ戻ると末尾へ循環する(履歴画面の検索と同じ挙動)。
+    private func jumpToMatch(direction: Int) {
+        guard !searchMatchTurnIDs.isEmpty else { return }
+        let count = searchMatchTurnIDs.count
+        let current = currentMatchOrdinal ?? 0
+        currentMatchOrdinal = (current + direction + count) % count
+        jumpToCurrentMatch()
+    }
+
+    /// 履歴画面(SessionDetailView.jumpToCurrentMatch)と同じ収束スクロール方式。ターン列も
+    /// LazyVStack のため、未実体化の遠いターンへの単発 scrollTo は推定高さで着地し、行き過ぎ・
+    /// 手前止まりが起きる(RevealCoordinator.reveal と同じ理屈)。RevealCoordinator 自体は
+    /// フェード点灯の演出込みの型のため流用せず、ここでも個別に実装する。ヒット箇所が畳まれた
+    /// セクションの中にある場合は、スクロールを積む前にそのセクションを開く。
+    private func jumpToCurrentMatch() {
+        guard let proxy = turnsScrollProxy, let target = currentSearchMatchTurnID else { return }
+        let query = searchQuery.trimmingCharacters(in: .whitespaces)
+        if !query.isEmpty {
+            openMatchingSections(forTurnID: target, query: query)
+        }
+        searchScrollTask?.cancel()
+        searchScrollTask = Task {
+            for _ in 0..<RevealTiming.convergeCount {
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(target, anchor: .center)
+                try? await Task.sleep(for: RevealTiming.convergeInterval)
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: RevealTiming.finalScrollDuration)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
+        }
+    }
+
+    /// ヒットターンの本文を見出し付きセクションへ分割し、検索語を含むセクション
+    /// (「回答」「次の一手」は常時展開のため対象外)を model.codeImpactSectionOverrides で
+    /// 開く。パース結果は CodeImpactSectionsCache 経由で既存のキャッシュを再利用する
+    /// (turnsScrollView が確定ターンの描画時に同じキャッシュへ積んでいるため)。
+    private func openMatchingSections(forTurnID turnID: UUID, query: String) {
+        guard let turnIndex = model.codeImpactTurns.firstIndex(where: { $0.id == turnID }) else {
+            return
+        }
+        let turn = model.codeImpactTurns[turnIndex]
+        let parsed = CodeImpactSectionsCache.shared.parsed(for: turnID) {
+            let extraction = DecisionHistoryFence.extractFirst(from: turn.result)
+            return CodeImpactSectionsCache.Parsed(
+                sections: CodeImpactResultView.parseSections(from: extraction.body),
+                decisionHistoryPrompt: extraction.prompt)
+        }
+        for section in parsed.sections {
+            guard let title = section.title,
+                title != AgentCodeImpactAnalyzer.answerSectionTitle,
+                title != AgentCodeImpactAnalyzer.nextStepSectionTitle
+            else { continue }
+            let text = CodeImpactResultView.plainText(of: section.segments)
+            if text.localizedCaseInsensitiveContains(query) {
+                model.codeImpactSectionOverrides["\(turnIndex):\(title)"] = true
+            }
+        }
+    }
+
+    private func installSearchKeyMonitor() {
+        guard searchKeyMonitor == nil else { return }
+        searchKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let lowercasedCharacters = event.charactersIgnoringModifiers?.lowercased()
+            let eventWindowID = event.window.map(ObjectIdentifier.init)
+            let consumed = MainActor.assumeIsolated {
+                handlePanelKeyDown(
+                    flags: flags, lowercasedCharacters: lowercasedCharacters,
+                    eventWindowID: eventWindowID)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    private func removeSearchKeyMonitor() {
+        if let searchKeyMonitor {
+            NSEvent.removeMonitor(searchKeyMonitor)
+        }
+        searchKeyMonitor = nil
+    }
+
+    /// 消費したら true を返す(履歴画面の handleSearchKeyDown と同じ規約)。Esc はパネル全体の
+    /// onExitCommand に一元化しているためここでは扱わない。Enter/Shift+Enter は検索欄の
+    /// onSubmit に委ねる。Cmd+F・Cmd+G は、質問入力欄(NSTextView ベースの
+    /// MultilineInputField)で入力中でも奪ってよい。このパネル内には競合する別の検索欄が
+    /// 無いため、履歴画面(SessionDetailView)のような「他のテキスト編集欄では奪わない」
+    /// ガードは不要と判断した。
+    private func handlePanelKeyDown(
+        flags: NSEvent.ModifierFlags, lowercasedCharacters: String?,
+        eventWindowID: ObjectIdentifier?
+    ) -> Bool {
+        guard let ownWindow = panelWindow, eventWindowID == ObjectIdentifier(ownWindow) else {
+            return false
+        }
+        if flags == .command, lowercasedCharacters == "f" {
+            openSearch()
+            return true
+        }
+        guard searchBarVisible else { return false }
+        if flags == [.command, .shift], lowercasedCharacters == "g" {
+            jumpToMatch(direction: -1)
+            return true
+        }
+        if flags == .command, lowercasedCharacters == "g" {
+            jumpToMatch(direction: 1)
+            return true
+        }
+        return false
     }
 
     // MARK: - 入力欄
@@ -322,7 +575,10 @@ private struct CodeImpactOverlayView: View {
             Spacer(minLength: 0)
             HStack {
                 Spacer()
-                quietButton("閉じる") { model.dismissCodeImpactOverlay() }
+                quietButton("閉じる") {
+                    closeSearch()
+                    model.dismissCodeImpactOverlay()
+                }
                 Button("同意して調べる") { model.confirmCodeImpactAnalysis(using: cli) }
                     .buttonStyle(.hcPrimary)
             }
@@ -423,6 +679,9 @@ private struct CodeImpactOverlayView: View {
                                 turnIndex: index, turnID: turn.id, question: turn.question,
                                 result: turn.result, isLatest: isLatest, cli: turn.cli)
                                 .opacity(isLatest ? 1 : 0.75)
+                                .modifier(
+                                    CodeImpactSearchMatchHighlight(
+                                        isCurrentMatch: turn.id == currentSearchMatchTurnID))
                                 .id(turn.id)
                         }
                         if streaming {
@@ -453,6 +712,10 @@ private struct CodeImpactOverlayView: View {
                     }
                     .padding(.horizontal, 24)
                 }
+                // proxy は検索ジャンプ(jumpToCurrentMatch)から使うために控える。この画面は
+                // analyzing ⇄ completed の間ビュー階層が保たれる(コメント上部参照)ため、
+                // 一度控えれば以後の遷移でも同じ proxy を使い続けられる。
+                .onAppear { turnsScrollProxy = proxy }
                 // 下端張り付きは OS 標準の機構に任せる: 下端にいる間は内容が伸びても
                 // 自動で追従し、ユーザーが上へスクロールしたら追従せず、下端へ戻すと再開する。
                 // 初期位置も下端(チャット標準)になる。自前のフラグ + scrollTo の追従機構は
@@ -470,6 +733,12 @@ private struct CodeImpactOverlayView: View {
                     proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                 }
                 .onChange(of: streaming) { _, isStreaming in
+                    // 検索バー表示中は、検索ジャンプ直後にこの明示的な複数回 scrollTo で
+                    // 下端へ引き戻されないよう抑制する(追従処理自体は変更しない、入り口の
+                    // 1 行だけの最小の抑制)。ただし defaultScrollAnchor(.bottom) 自体の
+                    // OS 標準の自動追従までは抑制できないため、検索直後にたまたま下端付近に
+                    // いた場合の引き戻りは既知の制約として残る。
+                    guard !searchBarVisible else { return }
                     if isStreaming {
                         // 新しい質問が始まった瞬間(completed/idle 等 → analyzing)は、直前の
                         // スクロール位置に関わらず下端へ戻す(送信した自分の質問と直後の
@@ -789,14 +1058,24 @@ private struct CodeImpactOverlayView: View {
     }
 
     private func keyCap(_ label: String) -> some View {
-        Text(label)
-            .font(HCFont.monospaced(size: 11))
-            .foregroundStyle(HCColor.keyText)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(
-                HCRadius.shape(HCRadius.keycap)
-                    .fill(HCColor.keyCap))
+        Group {
+            // 「↩」は文字グリフだと「Esc」の大文字より小さく見えるため、
+            // 記号キーは SF Symbols で Esc の文字と見た目の大きさを揃える。
+            if label == "↩" {
+                Image(systemName: "return")
+                    .font(.system(size: 10, weight: .medium))
+            } else {
+                Text(label)
+                    .font(HCFont.monospaced(size: 11))
+            }
+        }
+        .frame(height: 14)
+        .foregroundStyle(HCColor.keyText)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(
+            HCRadius.shape(HCRadius.keycap)
+                .fill(HCColor.keyCap))
     }
 }
 
@@ -1033,6 +1312,23 @@ private struct ThinkingDots: View {
         // あるとされるが、EQBars(常時表示のロゴ演出)と違い、このビューはそもそも
         // 短命(1ターンの「thinking 中」だけ)で使い回されないため、残留しても実害は無い。
         .onAppear { pulsing = true }
+    }
+}
+
+/// 検索の現在ヒットターンの目印。履歴画面(SessionDetailView.SearchMatchHighlight)と同じ
+/// 流儀(フェードせず持続点灯。次のヒットへ移動するまで、または検索バーを閉じるまで点いたまま)。
+private struct CodeImpactSearchMatchHighlight: ViewModifier {
+    let isCurrentMatch: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if isCurrentMatch {
+                    HCRadius.shape(HCRadius.control)
+                        .fill(HCColor.cinnamon.opacity(0.14))
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: isCurrentMatch)
     }
 }
 
@@ -1298,6 +1594,20 @@ private struct CodeImpactResultView: View {
         }
         flush()
         return sections
+    }
+
+    /// セクション本文をプレーンテキストへ結合する(ページ内検索がセクション単位で検索語を
+    /// 含むか判定するために使う。CodeImpactOverlayView.openMatchingSections 参照)。
+    /// choices/choicesPending は生 JSON を検索対象にしないため除く。
+    fileprivate static func plainText(of segments: [Segment]) -> String {
+        segments.map { segment -> String in
+            switch segment {
+            case .text(let lines): return lines.joined(separator: "\n")
+            case .code(let code): return code
+            case .mermaid(let code): return code
+            case .choices, .choicesPending: return ""
+            }
+        }.joined(separator: "\n")
     }
 
     /// AI は ```choices フェンスを回答の末尾に置くため、パース結果ではそのまま最後の
@@ -1710,18 +2020,22 @@ private struct CodeImpactResultView: View {
     }
 
     /// "HH:MM" または "HH:MM:SS"(AI が引用する壁時計時刻)を、startDate を基準にした
-    /// 経過時間(分:秒。SessionDetailView / LiveSessionView と同じ formatPlaybackTime の書式)へ
-    /// 変換する薄い層。変換の実体(妥当性検証・秒への変換)は TranscriptParser.offsetSeconds に
-    /// 一元化されている。ここでは allowDayCrossing: false を渡し、日をまたぐ場合の 24 時間補正は
-    /// しない(TranscriptParser.lines の offset 計算と違い、こちらは transcript の全行を必ず
-    /// どれかの offset へ解決する必要はなく、チップ表示のためのベストエフォートな変換のため、
-    /// 自信が持てない時は壁時計のまま出す方が安全)。パースできない・範囲外・経過が負の
-    /// いずれかに該当すれば nil を返し、呼び出し側は元の壁時計表記のまま出す。
+    /// 経過時間(分:秒)へ変換する薄い層。変換の実体(妥当性検証・秒への変換)は
+    /// TranscriptParser.offsetSeconds に一元化されている。ここでは allowDayCrossing: false を
+    /// 渡し、日をまたぐ場合の 24 時間補正はしない(TranscriptParser.lines の offset 計算と違い、
+    /// こちらは transcript の全行を必ずどれかの offset へ解決する必要はなく、チップ表示のための
+    /// ベストエフォートな変換のため、自信が持てない時は壁時計のまま出す方が安全)。パースできない・
+    /// 範囲外・経過が負のいずれかに該当すれば nil を返し、呼び出し側は元の壁時計表記のまま出す。
+    ///
+    /// 書式は SessionDetailView / LiveSessionView の formatPlaybackTime(分を 0 埋めしない
+    /// "4:38" 形式)とは違い、分を 2 桁に 0 埋めした "%02d:%02d" にする(60 分超は分が
+    /// 3 桁になってよい)。"根拠と補足" などのチップは "4:38〜5:34" のように縦に並ぶため、
+    /// 桁が揃わないとズレて見える(実機で報告あり)。
     private static func elapsedTimeString(forWallClock stamp: String, startDate: Date) -> String? {
         guard let offset = TranscriptParser.offsetSeconds(
             forWallClock: stamp, sessionStart: startDate, allowDayCrossing: false)
         else { return nil }
-        return formatPlaybackTime(TimeInterval(offset))
+        return String(format: "%02d:%02d", offset / 60, offset % 60)
     }
 
     /// チップの表示だけを経過時間へ変換する(ジャンプ先は startWallClock(forChip:) 側で
