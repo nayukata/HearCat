@@ -2086,13 +2086,21 @@ final class AppModel {
         }
     }
 
-    /// フォルダを削除する(中のセッションは未分類へ戻る)。
+    /// フォルダを削除する。中のセッションは deletingSessions が false なら未分類へ戻り、
+    /// true なら一緒に消える。ただし録音中のセッションは true でも消さず未分類へ戻す
+    /// (記録している最中のものを消すと、書き込み先を失う)。
     /// そのフォルダを指していた設定は未分類(nil)へ戻す。
     @discardableResult
-    func deleteFolder(_ folder: String) -> Bool {
+    func deleteFolder(_ folder: String, deletingSessions: Bool = false) -> Bool {
         defer { refreshSessions() }
+        let doomed: Set<String> = deletingSessions
+            ? Set(
+                sessions
+                    .filter { $0.folder == folder && $0.id != status.sessionID }
+                    .map { $0.directory.lastPathComponent })
+            : []
         do {
-            try SessionStore.deleteFolder(folder)
+            try SessionStore.deleteFolder(folder, deletingSessionDirectories: doomed)
             retargetFolderReferences(from: folder, to: nil)
             return true
         } catch {

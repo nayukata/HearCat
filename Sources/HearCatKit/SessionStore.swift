@@ -584,18 +584,31 @@ public enum SessionStore {
         return newName
     }
 
-    /// フォルダを消す。中のセッションは消さず、未分類(sessions 直下)へ戻す。
-    public static func deleteFolder(_ name: String) throws {
+    /// フォルダを消す。中のセッションは既定では消さず、未分類(sessions 直下)へ戻す。
+    /// deletingSessionDirectories に挙げたディレクトリ名のセッションだけは中身ごと消す
+    /// (挙げなかったものは未分類へ戻るため、録音中のセッションを外して呼べる)。
+    public static func deleteFolder(
+        _ name: String, deletingSessionDirectories doomed: Set<String> = []
+    ) throws {
         let fm = FileManager.default
         let dir = sessionsDirectory.appendingPathComponent(name, isDirectory: true)
-        for child in subdirectories(of: dir)
-        where parse(directoryName: child.lastPathComponent) != nil {
+        // 名前順に固定する。ディレクトリの列挙順は保証されず、そのままだと途中で失敗した
+        // ときに何が消えて何が残るかが実行のたびに変わる。
+        let children = subdirectories(of: dir)
+            .filter { parse(directoryName: $0.lastPathComponent) != nil }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        // 残す側の移動を先に済ませる。移動は未分類側の名前の衝突で失敗しうるため、
+        // 消す方を先にやると、失敗を返す時点で消した分が戻せなくなる。
+        for child in children where !doomed.contains(child.lastPathComponent) {
             let dest = sessionsDirectory.appendingPathComponent(
                 child.lastPathComponent, isDirectory: true)
             guard !fm.fileExists(atPath: dest.path) else {
                 throw StoreError.destinationExists(child.lastPathComponent)
             }
             try fm.moveItem(at: child, to: dest)
+        }
+        for child in children where doomed.contains(child.lastPathComponent) {
+            try fm.removeItem(at: child)
         }
         try fm.removeItem(at: dir)
         removeFromFolderOrder(name)

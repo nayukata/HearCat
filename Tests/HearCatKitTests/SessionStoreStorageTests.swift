@@ -187,6 +187,57 @@ extension SessionPackageTests {
         }
     }
 
+    @Test func 指定したセッションだけフォルダごと消え残りは未分類へ戻る() throws {
+        try withTemporaryStorageStore { _ in
+            try SessionStore.createFolder("A")
+            let 消す = try SessionStore.move(
+                try makeStorageSession(startDate: Date(), name: "消す会議", audioBytes: 100),
+                toFolder: "A")
+            let 残す = try SessionStore.move(
+                try makeStorageSession(
+                    startDate: Date().addingTimeInterval(-60), name: "残す会議", audioBytes: 100),
+                toFolder: "A")
+
+            try SessionStore.deleteFolder(
+                "A", deletingSessionDirectories: [消す.directory.lastPathComponent])
+
+            let 残り = SessionStore.list()
+            #expect(残り.count == 1)
+            #expect(残り.first?.name == "残す会議")
+            #expect(残り.first?.folder == nil)
+            #expect(!FileManager.default.fileExists(atPath: 消す.directory.path))
+            #expect(FileManager.default.fileExists(
+                atPath: SessionStore.sessionsDirectory
+                    .appendingPathComponent(残す.directory.lastPathComponent).path))
+        }
+    }
+
+    @Test func 未分類へ戻せないセッションがあるときは消す側も消さない() throws {
+        try withTemporaryStorageStore { _ in
+            try SessionStore.createFolder("A")
+            // 消す側の開始日時を古くする。ディレクトリ名は日時で始まり、削除は名前順に
+            // 進むため、これで「消す側に触れた後に移動が失敗する」順序を作れる。
+            let 消す = try SessionStore.move(
+                try makeStorageSession(
+                    startDate: Date().addingTimeInterval(-60), name: "消す会議", audioBytes: 100),
+                toFolder: "A")
+            let 残す = try SessionStore.move(
+                try makeStorageSession(startDate: Date(), name: "残す会議", audioBytes: 100),
+                toFolder: "A")
+            // 未分類側に同じ名前のディレクトリを置き、戻す先を塞ぐ。
+            try FileManager.default.createDirectory(
+                at: SessionStore.sessionsDirectory
+                    .appendingPathComponent(残す.directory.lastPathComponent, isDirectory: true),
+                withIntermediateDirectories: true)
+
+            #expect(throws: (any Error).self) {
+                try SessionStore.deleteFolder(
+                    "A", deletingSessionDirectories: [消す.directory.lastPathComponent])
+            }
+            #expect(FileManager.default.fileExists(atPath: 消す.directory.path))
+        }
+    }
+
     @Test func フォルダ削除で並び順から消える() throws {
         try withTemporaryStorageStore { _ in
             try SessionStore.createFolder("A")

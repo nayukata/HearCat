@@ -245,13 +245,20 @@ struct MainWindow: View {
             isPresented: presented($folderDeleteTarget), titleVisibility: .visible,
             presenting: folderDeleteTarget
         ) { folder in
-            Button("グループを削除", role: .destructive) {
-                if model.deleteFolder(folder) {
-                    remapSelection(fromFolder: folder, to: nil)
+            Button("グループだけ削除", role: .destructive) {
+                deleteFolder(folder, withSessions: false)
+            }
+            // 破壊ボタンには既定では Return が割り当てられない。安全な側(セッションを残す)
+            // を Enter で選べるようにする。
+            .keyboardShortcut(.defaultAction)
+            let count = pastSessions.filter { $0.folder == folder }.count
+            if count > 0 {
+                Button("セッションも削除 (\(count) 件)", role: .destructive) {
+                    deleteFolder(folder, withSessions: true)
                 }
             }
-        } message: { _ in
-            Text("中のセッションは消えず、未分類へ戻ります。")
+        } message: { folder in
+            Text(folderDeleteMessage(folder))
         }
     }
 
@@ -674,6 +681,37 @@ struct MainWindow: View {
     /// 単一選択の枠(選択解除→対象を選び直す)は多選択時と混ざらないように独立で扱う。
     private func select(_ id: String?) {
         if let id { selection = [id] }
+    }
+
+    /// グループ削除の確認で見せる説明。件数の数え方は「セッションも削除」ボタンと
+    /// 揃える(録音中のセッションは消さないので、どちらでも数に入れない)。
+    private func folderDeleteMessage(_ folder: String) -> String {
+        let recording = model.sessions.contains {
+            $0.folder == folder && $0.id == model.status.sessionID
+        }
+        var text = ""
+        if pastSessions.contains(where: { $0.folder == folder }) {
+            text = "「グループだけ削除」なら、中のセッションは消えず未分類へ戻ります。"
+                + "「セッションも削除」を選ぶと、文字起こしと録音も一緒に消えます。元に戻せません。"
+        } else if !recording {
+            text = "このグループにセッションは入っていません。"
+        }
+        if recording {
+            text += "録音中のセッションは消さず、未分類へ戻します。"
+        }
+        return text
+    }
+
+    /// グループ削除の実行と、選択の後始末。
+    private func deleteFolder(_ folder: String, withSessions: Bool) {
+        let deleted = Set(
+            pastSessions.filter { $0.folder == folder }.map(\.id))
+        guard model.deleteFolder(folder, deletingSessions: withSessions) else { return }
+        if withSessions { selection.subtract(deleted) }
+        remapSelection(fromFolder: folder, to: nil)
+        // グループ画面を開いたまま削除した場合の後始末。外さないと、消えたはずの
+        // グループの画面が右に残り続ける。
+        selection.remove(Self.groupSelectionTag(folder))
     }
 
     /// フォルダ名の変更/削除では中のセッション全部の ID が変わるため、選択を追従させる。
