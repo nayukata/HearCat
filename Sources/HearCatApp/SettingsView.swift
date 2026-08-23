@@ -257,7 +257,19 @@ struct SettingsView: View {
             fillCodexModelDefaultsIfEmpty()
             // システム設定や CLI 側で変えられていても、開いた時点の実状態に合わせる。
             launchAtLogin = LoginItem.isEnabled
+            applyPendingSettingsPage()
         }
+        .onChange(of: model.pendingSettingsPage) {
+            applyPendingSettingsPage()
+        }
+    }
+
+    /// 「ようこそ」など他画面からの `showSettings(page:)` 指定を、開いているタブへ反映する。
+    /// 消費したら nil に戻し、次に素の showSettings() で開いたときに古い指定が残らないようにする。
+    private func applyPendingSettingsPage() {
+        guard let requested = model.pendingSettingsPage else { return }
+        page = requested
+        model.pendingSettingsPage = nil
     }
 
     /// セクションの補足説明。置き場所は必ずセクションの footer にする
@@ -346,7 +358,7 @@ struct SettingsView: View {
             } header: {
                 Text("サポート")
             } footer: {
-                settingsFooter("HearCat にできることの紹介と、マイク・音声認識・カレンダーの許可の状態を見直せます。")
+                settingsFooter("HearCat の使い方と、マイク・音声認識・システム音声・カレンダーの許可、AI の準備の状態を見直せます。")
             }
 
         }

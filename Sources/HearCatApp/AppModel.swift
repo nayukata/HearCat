@@ -2192,7 +2192,13 @@ final class AppModel {
         return sessions.first(where: { $0.directory.path == directory })?.folder
     }
 
-    func showSettings() {
+    /// 設定ウィンドウを開く先のページ。SettingsView 側が消費したら nil に戻す。
+    var pendingSettingsPage: SettingsPage?
+
+    func showSettings(page: SettingsPage? = nil) {
+        if let page {
+            pendingSettingsPage = page
+        }
         dismissPanel()
         openWindowAction?("settings")
         bringToFrontLater { AppModel.shared.settingsWindow }
