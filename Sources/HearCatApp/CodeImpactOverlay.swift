@@ -225,6 +225,18 @@ private struct CodeImpactOverlayView: View {
             }
             Spacer()
             Button {
+                model.showHistory(selecting: historySelectionTarget)
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(HCFont.style(.callout, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                    .foregroundStyle(HCColor.textDim)
+            }
+            .buttonStyle(.plain)
+            .pointingHandOnHover()
+            .focusEffectDisabled()
+            .help("履歴を開く")
+            Button {
                 closeSearch()
                 model.dismissCodeImpactOverlay()
             } label: {
@@ -240,6 +252,18 @@ private struct CodeImpactOverlayView: View {
             .focusEffectDisabled()
             .help("閉じる (Esc)")
         }
+    }
+
+    private var historySelectionTarget: String? {
+        if let group = model.codeImpactTargetGroup {
+            return MainWindow.groupSelectionTag(group)
+        }
+        if let targetDirectory = model.codeImpactTargetDirectory,
+            let session = model.sessions.first(where: { $0.directory.path == targetDirectory })
+        {
+            return session.id
+        }
+        return nil
     }
 
     // MARK: - 検索
