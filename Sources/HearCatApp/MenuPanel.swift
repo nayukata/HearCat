@@ -11,8 +11,8 @@ enum SessionStartMode: String, CaseIterable {
     var buttonLabel: String {
         switch self {
         case .recordAndTranscribe: return "録音 ＋ 文字起こしを開始"
-        case .transcribeOnly: return "文字起こしのみ開始"
-        case .recordOnly: return "録音のみ開始"
+        case .transcribeOnly: return "文字起こしを開始"
+        case .recordOnly: return "録音を開始"
         }
     }
 
