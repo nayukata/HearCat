@@ -74,6 +74,9 @@ struct MenuPanel: View {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(HCFont.caption)
                     .foregroundStyle(.orange)
+                    // MenuBarExtra(.window) は中身の理想サイズで窓の高さを決めるため、
+                    // 理想 1 行の Text は折り返されず末尾が省略される。縦だけ実寸で確保する。
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
             }
