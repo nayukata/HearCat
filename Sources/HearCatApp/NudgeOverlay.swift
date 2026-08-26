@@ -48,6 +48,7 @@ final class NudgeOverlayController {
 
     private let state: NudgeOverlayState
     private let panel: NSPanel
+    private let motion = FloatingPanelMotion()
     /// 選択肢は横1列に並べる。幅が足りないとボタンの文字が2行に折り返して、
     /// 「今後録らない」だけ高さが変わり押し間違えやすくなる。
     /// 内訳(実測、日本語は同梱の Noto Sans JP): 6文字のボタンが3つで約 300pt、
@@ -59,26 +60,20 @@ final class NudgeOverlayController {
         let state = NudgeOverlayState()
         self.state = state
         panel = FloatingPanel.make(
-            size: Self.size, title: "HearCat", content: NudgeOverlayView(state: state))
+            size: Self.size, title: "HearCat", content: NudgeOverlayView(state: state, motion: motion))
+        motion.attach(to: panel)
     }
 
     func present(_ prompt: NudgePrompt) {
         state.prompt = prompt
         positionNearTopRight()
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().alphaValue = 1
-        }
+        motion.open(target: panel.frame.origin, makeKey: false)
     }
 
     func dismiss() {
-        guard panel.isVisible else { return }
-        state.prompt = nil
-        panel.orderOut(nil)
-        panel.alphaValue = 1
+        motion.close { [weak self] in
+            self?.state.prompt = nil
+        }
     }
 
     /// メニューバーの下、画面の右上に出す。位置は毎回計算し直す
@@ -105,6 +100,7 @@ final class NudgeOverlayController {
 
 private struct NudgeOverlayView: View {
     let state: NudgeOverlayState
+    let motion: FloatingPanelMotion
 
     var body: some View {
         Group {
@@ -122,6 +118,7 @@ private struct NudgeOverlayView: View {
             HCRadius.shape(HCRadius.panel)
                 .stroke(HCColor.strokeLine, lineWidth: 1))
         .clipShape(HCRadius.shape(HCRadius.panel))
+        .revealScale(trigger: motion.revealTick)
     }
 
     private func content(_ prompt: NudgePrompt) -> some View {

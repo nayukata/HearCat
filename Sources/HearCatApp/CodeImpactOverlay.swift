@@ -1,5 +1,6 @@
 import AppKit
 import HearCatKit
+import Observation
 import SwiftUI
 import os
 
@@ -17,11 +18,8 @@ private let codeImpactOverlayLogger = Logger(
 @MainActor
 final class CodeImpactOverlayController {
     private let panel: NSPanel
+    private let motion = FloatingPanelMotion()
     private var positioned = false
-    /// フェードのために位置を上下させるので、確定位置(定位置)を別に保持する。
-    private var restingOrigin: NSPoint?
-    /// フェードの初期オフセット(下から現れる高さ)。閉じるときも同じ量だけ上へ抜ける。
-    private static let entryOffsetY: CGFloat = 6
 
     init(model: AppModel) {
         // 閉じるボタンを持たないのは FloatingPanel の方針どおり。このパネルでは特に、
@@ -32,62 +30,35 @@ final class CodeImpactOverlayController {
         panel = FloatingPanel.make(
             size: NSSize(width: 600, height: 720),
             title: "会話について質問",
-            content: CodeImpactOverlayView(model: model),
+            content: CodeImpactOverlayView(model: model, motion: motion),
             resizable: true)
+        motion.attach(to: panel)
     }
 
     func show() {
+        var repositioned = false
         if !positioned || !isPanelOnVisibleScreen() {
             positionNearTopRight()
             positioned = true
+            repositioned = true
         }
-        // 既に表示中なら、位置を維持したまま前面へ戻すだけ(連打で毎回フェードし直さない)。
-        if panel.isVisible {
-            panel.orderFrontRegardless()
-            panel.makeKey()
-            return
+        // 閉じアニメーション補間中の座標を定位置として覚えないため、再配置しておらず
+        // 閉じかけの場合は panel.frame.origin ではなく既知の restingOrigin を使う。
+        let target: NSPoint
+        if repositioned {
+            target = panel.frame.origin
+        } else if motion.isClosing {
+            target = motion.restingOrigin ?? panel.frame.origin
+        } else {
+            target = panel.frame.origin
         }
-        let target = panel.frame.origin
-        restingOrigin = target
-        panel.setFrameOrigin(NSPoint(x: target.x, y: target.y - Self.entryOffsetY))
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-        // orderFrontRegardless は前面に出すだけでキーウィンドウにしない。開いた瞬間から
-        // 入力欄に打てるよう明示的にキーにする(.nonactivatingPanel なので、キーにしても
-        // 会議アプリからアプリごとフォーカスを奪うことはない)。
-        panel.makeKey()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.22
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().alphaValue = 1
-            panel.animator().setFrame(
-                NSRect(origin: target, size: panel.frame.size), display: true)
-        }
+        // 質問パネルは開いた瞬間から入力欄に打てるよう makeKey: true で開く(理由は
+        // FloatingPanelMotion.open 参照)。
+        motion.open(target: target, makeKey: true)
     }
 
     func close() {
-        guard panel.isVisible else { return }
-        let currentOrigin = panel.frame.origin
-        let exitOrigin = NSPoint(x: currentOrigin.x, y: currentOrigin.y + Self.entryOffsetY)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().alphaValue = 0
-            panel.animator().setFrame(
-                NSRect(origin: exitOrigin, size: panel.frame.size), display: true)
-        } completionHandler: { [weak self] in
-            // NSAnimationContext の完了ハンドラは main thread で呼ばれるが Sendable 扱いなので、
-            // main actor 分離を明示して panel(@MainActor)へ触れるようにする。
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.panel.orderOut(nil)
-                // 次回の show でまた「下から」始められるよう、位置と alpha を復元する。
-                if let resting = self.restingOrigin {
-                    self.panel.setFrameOrigin(resting)
-                }
-                self.panel.alphaValue = 1
-            }
-        }
+        motion.close {}
     }
 
     /// 現在のパネル位置が、マウスカーソルのある画面(なければメイン画面)の
@@ -117,6 +88,7 @@ final class CodeImpactOverlayController {
 /// - analyzing 中は入力欄を無効化(2 重リクエストの抑止)
 private struct CodeImpactOverlayView: View {
     let model: AppModel
+    let motion: FloatingPanelMotion
     @State private var input: String = ""
     @FocusState private var inputFocused: Bool
 
@@ -179,6 +151,7 @@ private struct CodeImpactOverlayView: View {
             HCRadius.shape(HCRadius.panel)
                 .stroke(HCColor.strokeLine, lineWidth: 1))
         .clipShape(HCRadius.shape(HCRadius.panel))
+        .revealScale(trigger: motion.revealTick)
         .background(WindowAccessor { window in panelWindow = window })
         // 検索バー表示中は Esc を検索バーを閉じる操作として優先する(パネルは閉じない)。
         .onExitCommand {

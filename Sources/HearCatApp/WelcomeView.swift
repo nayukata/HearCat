@@ -39,8 +39,16 @@ struct WelcomeView: View {
     /// 解決前に押されると空振りするため、閉じる操作はこちらを正とする。
     @Environment(\.dismissWindow) private var dismissWindow
 
+    /// アクセシビリティの「視差効果を減らす」設定。有効時はページ送りのスライドを止め、
+    /// フェードだけにする。
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @State private var window: NSWindow?
     @State private var page: Page = .welcome
+    /// 直前のページ送りの向き。true = 次へ(前進)、false = 戻る(後退)。
+    /// ページ送りの遷移(insertion/removal のオフセット方向)がこの値を読むため、
+    /// move(by:) 側で page を書き換えるより前に必ず確定させる。
+    @State private var forward = true
     @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var speechStatus = SFSpeechRecognizer.authorizationStatus()
     @State private var calendarStatus = EKEventStore.authorizationStatus(for: .event)
@@ -62,7 +70,7 @@ struct WelcomeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .id(page)
-            .transition(.opacity)
+            .transition(pageTransition)
             footer
         }
         .padding(28)
@@ -291,9 +299,19 @@ struct WelcomeView: View {
         }
     }
 
+    /// ページ送りの遷移。reduceMotion 時はスライドのオフセットを外し、フェードだけにする。
+    private var pageTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        let offsetX: CGFloat = forward ? 28 : -28
+        return .asymmetric(
+            insertion: .offset(x: offsetX).combined(with: .opacity),
+            removal: .offset(x: -offsetX).combined(with: .opacity))
+    }
+
     private func move(by offset: Int) {
         guard let next = Page(rawValue: page.rawValue + offset) else { return }
-        withAnimation(.easeInOut(duration: 0.18)) {
+        forward = offset > 0
+        withAnimation(HCMotion.page) {
             page = next
         }
     }

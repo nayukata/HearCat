@@ -185,6 +185,38 @@ enum HCDate {
     }()
 }
 
+/// 動きのトークン。Animation をここ以外に直書きしない。
+enum HCMotion {
+    /// 押した瞬間: 速く沈める。
+    static let pressIn = Animation.easeOut(duration: 0.09)
+    /// 離した瞬間: 弾んで戻る。
+    static let release = Animation.spring(response: 0.32, dampingFraction: 0.55)
+    /// パネルの登場: 軽い弾み。
+    static let panelIn = Animation.spring(response: 0.30, dampingFraction: 0.72)
+    /// ページ送り・詳細切替。
+    static let page = Animation.easeOut(duration: 0.24)
+    /// ホバーでの明暗切替。
+    static let hover = Animation.easeOut(duration: 0.14)
+
+    // MARK: - AppKit 側(NSAnimationContext)のパネル開閉に使う値
+    //
+    // NudgeOverlayController / CodeImpactOverlayController は SwiftUI の Animation を
+    // 使えない(NSPanel の frame・alpha を直接動かすため)ので、対応する AppKit の型で持つ。
+
+    /// パネルが開くときの所要時間。
+    static let panelOpenDuration: CFTimeInterval = 0.30
+    /// パネルが閉じるときの所要時間。
+    static let panelCloseDuration: CFTimeInterval = 0.14
+    /// パネルが開くときの速度曲線。呼び出し元(NudgeOverlayController /
+    /// CodeImpactOverlayController)が @MainActor のため、ここも合わせて隔離する
+    /// (CAMediaTimingFunction は Sendable ではない)。
+    @MainActor static let panelOpenTiming = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+    /// パネルが閉じるときの速度曲線。
+    @MainActor static let panelCloseTiming = CAMediaTimingFunction(name: .easeIn)
+    /// パネル登場・退出時の上下移動量(pt)。
+    static let panelRise: CGFloat = 10
+}
+
 /// ランディングページ (docs/index.html) と揃えたデザイントークン。
 /// 色をここ以外に直書きしない(LP とアプリの見た目を一緒に保つため)。
 enum HCColor {
@@ -297,6 +329,14 @@ enum HCColor {
     /// シナモンは明るい地では 2.55 しか比が出ず、暗くすると彩度が死んで濁るため、
     /// ライト側は彩度を張ったまま沈められる色相(トウヒの森の青緑)に替える。
     static let accent = adaptive(dark: cinnamon, light: spruce)
+    /// primary ボタンのホバー塗り(アクセントを彩度を保ったまま少し明るく)。
+    static let accentHover = adaptive(
+        dark: Color(red: 0xD1 / 255, green: 0x9C / 255, blue: 0x6E / 255),  // #D19C6E
+        light: Color(red: 0x4C / 255, green: 0xB9 / 255, blue: 0x9E / 255))  // #4CB99E
+    /// secondary ボタンのホバー背景(surface と stroke の中間の明るさ)。
+    static let surfaceHover = adaptive(
+        dark: Color(red: 0x2D / 255, green: 0x32 / 255, blue: 0x35 / 255),  // #2D3235
+        light: Color(red: 0xD8 / 255, green: 0xDC / 255, blue: 0xDF / 255))  // #D8DCDF
     /// ライトのアクセント実色(針葉樹の深緑)。外観で分岐できない描画(キャレット画像等)が
     /// ライト側の値を名指しするための固定トークン。
     static let spruce = Color(red: 0x41 / 255, green: 0xAD / 255, blue: 0x92 / 255)  // #41AD92
@@ -327,21 +367,36 @@ enum HCColor {
 /// アプリ全体で使う落ち着いた secondary button のスタイル。
 /// ダーク・ライトどちらの外観でも「主張しすぎず、しかし押せることが分かる」ことを両立する。
 /// - 通常: 一段明るいサーフェス塗り + 薄い縁 + 地に対して読めるテキスト
-/// - pressed: 縁と背景が一段濃くなる
+/// - hover: 背景だけさらに一段明るくなる(縁の色は変えない)
+/// - pressed: 縁と背景が一段濃くなり、沈んで見える(scale + offset)
 /// - role: .destructive: 赤系の縁とテキストで、他ボタンと視覚的に差別化する
 /// - compact: pill の縦余白を控えめにする(Form の LabeledContent 内で高さを揃える用途)。
 struct HCSecondaryButtonStyle: ButtonStyle {
     var compact: Bool = false
 
+    func makeBody(configuration: Configuration) -> some View {
+        HCSecondaryButtonBody(configuration: configuration, compact: compact)
+    }
+}
+
+/// HCSecondaryButtonStyle の見た目本体。ButtonStyle(struct)は @State を持てないため、
+/// ホバー状態はここに閉じ込めた内部 View で持つ。isEnabled が false の間の表示抑制は
+/// isEnabled && isHovering の合成に任せ、isHovering 自体はリセットしない
+/// (リセットすると、再有効化後にマウスを動かすまでホバー表示が復活しない)。
+private struct HCSecondaryButtonBody: View {
+    let configuration: HCSecondaryButtonStyle.Configuration
+    var compact: Bool
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
 
-    func makeBody(configuration: Configuration) -> some View {
+    var body: some View {
         let isDestructive = configuration.role == .destructive
         let isDark = colorScheme == .dark
-        let bg = configuration.isPressed
-            ? (isDark ? HCColor.mistDarkStroke : HCColor.mistLightStroke)
-            : (isDark ? HCColor.mistDarkSurface : HCColor.mistLightSurface)
+        let isPressed = configuration.isPressed
+        let hovering = isEnabled && isHovering
         let border: Color = isDestructive
             ? (isDark
                 ? Color(red: 0.75, green: 0.36, blue: 0.36).opacity(0.55)
@@ -359,36 +414,87 @@ struct HCSecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, compact ? 3 : 6)
             .background(
                 HCRadius.shape(HCRadius.control)
-                    .fill(bg))
+                    .fill(bg(isDark: isDark, isPressed: isPressed, isHovering: hovering)))
             .overlay(
                 HCRadius.shape(HCRadius.control)
                     .stroke(border, lineWidth: 1))
-            .opacity(configuration.isPressed ? 0.9 : 1)
+            .opacity(isPressed ? 0.9 : 1)
+            .scaleEffect(reduceMotion ? 1 : (isPressed ? 0.97 : 1))
+            .offset(y: reduceMotion ? 0 : (isPressed ? 1 : 0))
+            .animation(reduceMotion ? nil : (isPressed ? HCMotion.pressIn : HCMotion.release), value: isPressed)
+            .animation(reduceMotion ? nil : HCMotion.hover, value: hovering)
             .pointingHandOnHover(disabled: !isEnabled)
+            .onHover { isHovering = $0 }
+    }
+
+    private func bg(isDark: Bool, isPressed: Bool, isHovering: Bool) -> Color {
+        if isPressed { return isDark ? HCColor.mistDarkStroke : HCColor.mistLightStroke }
+        if isHovering { return HCColor.surfaceHover }
+        return isDark ? HCColor.mistDarkSurface : HCColor.mistLightSurface
     }
 }
 
 /// 主要な操作に使う primary button のスタイル。secondary と対で使い、
 /// 1つの画面に1つだけ置く(押してほしい先が2つあると、どちらも押されなくなる)。
+/// - hover: 塗りをアクセントより少し明るくする
+/// - pressed: 塗りが accentPressed に切り替わり、沈んで見える(scale + offset + 影が薄くなる)
+/// - large: 幅いっぱいの大きい主ボタン用(開始ボタンなど)。padding とフォントを一段大きくする。
 struct HCPrimaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
+    var large: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(HCFont.style(.callout, weight: .semibold))
+        HCPrimaryButtonBody(configuration: configuration, large: large)
+    }
+}
+
+/// HCPrimaryButtonStyle の見た目本体。ButtonStyle(struct)は @State を持てないため、
+/// ホバー状態はここに閉じ込めた内部 View で持つ(HCSecondaryButtonBody と同じ理由)。
+private struct HCPrimaryButtonBody: View {
+    let configuration: HCPrimaryButtonStyle.Configuration
+    var large: Bool
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        let isPressed = configuration.isPressed
+        let hovering = isEnabled && isHovering
+        // reduceMotion 時は press による沈み(scale/offset)を出さないため、
+        // 「浮いている→接地」を表す影の変化も一緒に止めて、常時浮いた状態で固定する。
+        let flattenShadow = isPressed && !reduceMotion
+        return configuration.label
+            .font(large ? HCFont.headline : HCFont.style(.callout, weight: .semibold))
             .foregroundStyle(HCColor.mistDark)  // 塗りの上の濃い文字。深緑/シナモンどちらの塗りでも比 5.7 前後
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .padding(.horizontal, large ? 16 : 14)
+            .padding(.vertical, large ? 10 : 7)
             .background(
                 HCRadius.shape(HCRadius.control)
-                    .fill(configuration.isPressed ? HCColor.accentPressed : HCColor.accent))
+                    .fill(fill(isPressed: isPressed, isHovering: hovering)))
+            .shadow(
+                color: .black.opacity(flattenShadow ? 0.06 : 0.16),
+                radius: flattenShadow ? 1 : 4,
+                y: flattenShadow ? 0 : 2)
+            .scaleEffect(reduceMotion ? 1 : (isPressed ? 0.97 : 1))
+            .offset(y: reduceMotion ? 0 : (isPressed ? 1 : 0))
+            .animation(reduceMotion ? nil : (isPressed ? HCMotion.pressIn : HCMotion.release), value: isPressed)
+            .animation(reduceMotion ? nil : HCMotion.hover, value: hovering)
             .pointingHandOnHover(disabled: !isEnabled)
+            .onHover { isHovering = $0 }
+    }
+
+    private func fill(isPressed: Bool, isHovering: Bool) -> Color {
+        if isPressed { return HCColor.accentPressed }
+        if isHovering { return HCColor.accentHover }
+        return HCColor.accent
     }
 }
 
 extension ButtonStyle where Self == HCPrimaryButtonStyle {
     /// cinnamon 塗りの primary スタイル。
     static var hcPrimary: HCPrimaryButtonStyle { HCPrimaryButtonStyle() }
+    /// 幅いっぱいの大きい主ボタン用(開始ボタンなど)。
+    static var hcPrimaryLarge: HCPrimaryButtonStyle { HCPrimaryButtonStyle(large: true) }
 }
 
 extension ButtonStyle where Self == HCSecondaryButtonStyle {

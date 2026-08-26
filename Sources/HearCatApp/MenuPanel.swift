@@ -173,9 +173,7 @@ struct MenuPanel: View {
                 Label(mode.buttonLabel, systemImage: mode.systemImage)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .pointingHandOnHover()
+            .buttonStyle(.hcPrimaryLarge)
 
             Menu {
                 ForEach(SessionStartMode.allCases, id: \.self) { candidate in
