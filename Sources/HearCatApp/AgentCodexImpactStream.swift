@@ -53,7 +53,7 @@ enum AgentCodexImpactStream {
         decisionContext: String?,
         resumeSessionID: String?,
         transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
-        isGroupTarget: Bool = false,
+        scope: AgentCodeImpactAnalyzer.TargetScope = .live,
         onEvent: @escaping @Sendable (CodeImpactStreamEvent) -> Void
     ) async throws -> (result: String, sessionID: String?) {
         guard let binaryPath = await AgentCLIResolver.resolve(.codex) else {
@@ -114,7 +114,7 @@ enum AgentCodexImpactStream {
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: continuity,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                isGroupTarget: isGroupTarget)
+                scope: scope)
 
             let arguments = arguments(
                 prompt: prompt, model: model, resumeSessionID: resumeSessionIDForAttempt,
@@ -176,7 +176,7 @@ enum AgentCodexImpactStream {
             prompt: AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: .fresh,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                isGroupTarget: isGroupTarget),
+                scope: scope),
             outputPrefix: "code-impact-stream-fallback",
             model: model,
             extraction: AgentSummarizer.extractCodeImpactMarkdown)

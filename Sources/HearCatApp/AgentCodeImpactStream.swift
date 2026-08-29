@@ -77,7 +77,7 @@ enum AgentCodeImpactStream {
     ///     グループ対象は AppModel 側で既にセッション単位に間引いた材料を渡すため、
     ///     単一セッション用の既定値より広い上限(AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters)
     ///     を渡し、ここでの行単位の再切り詰めが実質効かないようにする。
-    ///   - isGroupTarget: プロンプトの書き出し文言の切り替えに使う(buildPrompt 参照)。
+    ///   - scope: プロンプトの書き出し文言の切り替えに使う(buildPrompt 参照)。
     ///   - onEvent: ストリーム中の通知。@Sendable(バックグラウンドの読み取りキューから呼ぶ)。
     /// - Returns: 抽出済み Markdown と、今回判明したセッション ID(セッションが尽きて
     ///   非ストリーミングへ落ちた場合は nil)。
@@ -91,7 +91,7 @@ enum AgentCodeImpactStream {
         decisionContext: String?,
         resumeSessionID: String?,
         transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
-        isGroupTarget: Bool = false,
+        scope: AgentCodeImpactAnalyzer.TargetScope = .live,
         onEvent: @escaping @Sendable (CodeImpactStreamEvent) -> Void
     ) async throws -> (result: String, sessionID: String?) {
         guard let binaryPath = await AgentCLIResolver.resolve(.claude) else {
@@ -154,7 +154,7 @@ enum AgentCodeImpactStream {
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, previousResult: previousResult, continuity: continuity,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                isGroupTarget: isGroupTarget)
+                scope: scope)
 
             let arguments = arguments(
                 prompt: prompt, model: model, config: config,
@@ -216,7 +216,7 @@ enum AgentCodeImpactStream {
                     prompt: AgentCodeImpactAnalyzer.buildPrompt(
                         question: question, previousResult: previousResult, continuity: .fresh,
                         hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                        isGroupTarget: isGroupTarget),
+                        scope: scope),
                     outputPrefix: "code-impact-stream-fallback",
                     model: model,
                     extraction: AgentSummarizer.extractCodeImpactMarkdown)

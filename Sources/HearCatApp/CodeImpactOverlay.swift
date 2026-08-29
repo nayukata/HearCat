@@ -188,13 +188,7 @@ private struct CodeImpactOverlayView: View {
                 Text("会話について質問")
                     .font(HCFont.style(.subheadline, weight: .semibold))
                     .foregroundStyle(HCColor.textPrimary)
-                // 過去セッション・グループが対象のときだけ名前を添える。ライブとの取り違えを防ぐため。
-                if let targetName = model.codeImpactTargetSessionName ?? model.codeImpactTargetGroup {
-                    Text("· \(targetName)")
-                        .font(HCFont.style(.caption1, weight: .semibold))
-                        .foregroundStyle(HCColor.accentText)
-                        .lineLimit(1)
-                }
+                targetLabel
             }
             Spacer()
             Button {
@@ -225,6 +219,35 @@ private struct CodeImpactOverlayView: View {
             .focusEffectDisabled()
             .help("閉じる (Esc)")
         }
+    }
+
+    /// グループ対象・過去セッション対象かをアイコンで区別する。ライブ対象では何も表示せず、
+    /// 進行中の会議との取り違えを防ぐ。
+    @ViewBuilder
+    private var targetLabel: some View {
+        if let (icon, text) = targetLabelContent {
+            HStack(spacing: 3) {
+                Text("·")
+                Image(systemName: icon)
+                Text(text)
+            }
+            .font(HCFont.style(.caption1, weight: .semibold))
+            .foregroundStyle(HCColor.accentText)
+            .lineLimit(1)
+        }
+    }
+
+    /// targetLabel に出すアイコンと文字列。ライブ対象では nil(何も表示しない)。
+    private var targetLabelContent: (icon: String, text: String)? {
+        if let group = model.codeImpactTargetGroup {
+            let count = model.codeImpactTargetGroupSessionCount ?? 0
+            return ("folder", "\(group) · 全 \(count) 回")
+        }
+        if let name = model.codeImpactTargetSessionName {
+            guard let startDate = model.codeImpactTargetSessionStartDate else { return ("doc.text", name) }
+            return ("doc.text", "\(name) · \(HCDate.body.string(from: startDate))")
+        }
+        return nil
     }
 
     private var historySelectionTarget: String? {
@@ -1865,8 +1888,10 @@ private struct CodeImpactResultView: View {
         MermaidBlockView(code: code)
     }
 
-    /// セクション本文 1 行分の描画。箇条書き(`- ` / `* `)は先頭に `•` を置き、
-    /// 行頭の空白 2 文字ごとに 12pt のインデントを足す。`### ` は小見出し、
+    /// セクション本文 1 行分の描画。箇条書き(`- ` / `* `)・番号付きリスト(`1. ` 等)は先頭に
+    /// マーカーを置き、行頭の空白 2 文字ごとに 12pt のインデントを足す。`> ` は引用行、
+    /// `### ` は小見出し、前後の空白だけを許して `---` のみの行は水平線(`***` `___` は対象外。
+    /// AI にも `---` だけを使うよう指示しているため、他の区切り記法までは見ない)、
     /// それ以外は本文段落として折り返し表示する。
     @ViewBuilder
     private func lineView(_ raw: String) -> some View {
@@ -1886,13 +1911,25 @@ private struct CodeImpactResultView: View {
                 bulletRow(body: bulletContent) { EmptyView() }
                     .padding(.leading, CGFloat(leadingSpaces / 2) * 12)
             }
+        } else if let numbered = Self.numberedListComponents(String(text)) {
+            bulletRow(marker: numbered.marker, body: numbered.rest) { EmptyView() }
+                .padding(.leading, CGFloat(leadingSpaces / 2) * 12)
+        } else if text.hasPrefix("> ") || text == ">" {
+            let quoteContent = text.hasPrefix("> ") ? String(text.dropFirst(2)) : ""
+            quoteRow(quoteContent)
+                .padding(.leading, CGFloat(leadingSpaces / 2) * 12)
         } else if text.hasPrefix("### ") {
             Text(String(text.dropFirst(4)))
-                .font(HCFont.style(.caption1, weight: .semibold))
+                .font(HCFont.style(.title3, weight: .bold))
                 .foregroundStyle(HCColor.textPrimary)
-                .padding(.top, 4)
+                .padding(.top, 16)
+        } else if raw.trimmingCharacters(in: .whitespaces) == "---" {
+            Rectangle()
+                .fill(HCColor.divider)
+                .frame(height: 1)
+                .padding(.vertical, 8)
         } else if raw.trimmingCharacters(in: .whitespaces).isEmpty {
-            Spacer().frame(height: 2)
+            Spacer().frame(height: 8)
         } else {
             Text(linkedInlineMarkdown(raw))
                 .font(HCFont.body)
@@ -1902,17 +1939,48 @@ private struct CodeImpactResultView: View {
         }
     }
 
-    /// 箇条書き 1 行の共通の骨組み(• + 先頭の特別要素(あれば)+ 本文)。デフォルトの
-    /// 箇条書き(leading が EmptyView)と timestampBulletRow(leading にチップボタン)の
-    /// 2 箇所がここを使う。pathBulletRow だけは、行頭要素(パス)と本文を別列に分けると
+    /// `> ` 引用行の描画。左に縦バーを添え、本文は控えめな色にして地の文と区別する。
+    /// 連続する引用行はそれぞれ独立して描画する(縦バーが行ごとに切れても、引用であることは
+    /// 伝わるため、複数行を跨いで 1 本に繋げる特別な処理はしない)。
+    private func quoteRow(_ body: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            HCRadius.shape(1.5)
+                .fill(HCColor.accentStroke)
+                .frame(width: 3)
+            Text(linkedInlineMarkdown(body))
+                .font(HCFont.body)
+                .foregroundStyle(HCColor.textDim)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// 行頭の `数字 1〜2 桁 + ". "` を番号付きリストのマーカーとして検出する。
+    private static let numberedListRegex = try! NSRegularExpression(pattern: #"^(\d{1,2})\.\s"#)
+
+    /// 番号付きリスト行のマーカー(`1.` 等)と、それ以降の本文に分ける。マッチしなければ nil。
+    private static func numberedListComponents(_ text: String) -> (marker: String, rest: String)? {
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = numberedListRegex.firstMatch(in: text, options: [], range: range),
+            let numberRange = Range(match.range(at: 1), in: text),
+            let matchRange = Range(match.range, in: text)
+        else { return nil }
+        return ("\(text[numberRange]).", String(text[matchRange.upperBound...]))
+    }
+
+    /// 箇条書き 1 行の共通の骨組み(マーカー + 先頭の特別要素(あれば)+ 本文)。マーカーは
+    /// 既定で「•」だが、番号付きリスト(numberedListComponents)は自分の番号を渡す。
+    /// デフォルトの箇条書き(leading が EmptyView)と timestampBulletRow(leading にチップ
+    /// ボタン)の 2 箇所がここを使う。pathBulletRow だけは、行頭要素(パス)と本文を別列に分けると
     /// 長い行で折り返しが崩れる問題があったため、1 本の AttributedString に流し込む
     /// 専用実装に切り替えており、ここは経由しない(パスは長くなりがちだが、タイムスタンプは
     /// elapsedChipDisplay の経過時間表記で最長 11 文字程度に収まるため、2 列構造でも崩れない)。
     private func bulletRow<Leading: View>(
-        body: String, @ViewBuilder leading: () -> Leading
+        marker: String = "•", body: String, @ViewBuilder leading: () -> Leading
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("•")
+            Text(marker)
                 .font(HCFont.body)
                 .foregroundStyle(HCColor.placeholderText)
             leading()

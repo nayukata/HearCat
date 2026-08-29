@@ -1238,12 +1238,15 @@ final class AppModel {
         case .live:
             codeImpactTargetDirectory = nil
             codeImpactTargetGroup = nil
+            codeImpactTargetGroupSessionCount = nil
         case .session(let path):
             codeImpactTargetDirectory = path
             codeImpactTargetGroup = nil
+            codeImpactTargetGroupSessionCount = nil
         case .group(let folder):
             codeImpactTargetDirectory = nil
             codeImpactTargetGroup = folder
+            codeImpactTargetGroupSessionCount = sessions.filter { $0.folder == folder }.count
         }
         guard effectiveCodeImpactTargetKey != previousKey else { return }
         cancelCodeImpactAnalysis()
@@ -1519,14 +1522,16 @@ final class AppModel {
         // ユーザーの選択として固定化されてしまう(希望の CLI が復帰しても Codex のまま等)。
         let model = settings.codeImpactAgentModel(for: cli)
         let question = codeImpactQuestion
-        let isGroupTarget = codeImpactTargetGroup != nil
+        let scope: AgentCodeImpactAnalyzer.TargetScope =
+            codeImpactTargetGroup != nil
+            ? .group : (codeImpactTargetDirectory != nil ? .pastSession : .live)
         // グループ対象は groupCodeImpactContext 側で既に予算管理済みの材料を渡しているため、
         // ストリーム側の recentTranscript(行単位・末尾優先の切り詰め)を確実に発動させない
         // よう、実際に組み立てた材料の長さ以上を limit として渡す(固定値だけを渡すと、
         // 万一 groupCodeImpactContext 側の予算計算に将来ズレが生じたときに、行単位の
         // 末尾優先トリムが「新しい順」の材料の先頭=最新会議を誤って削ってしまう)。
         let transcriptCharacterLimit =
-            isGroupTarget
+            scope == .group
             ? max(context.transcript.count, AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters)
             : AgentCodeImpactAnalyzer.maximumTranscriptCharacters
         codeImpactAnalysisState = .analyzing(cli)
@@ -1554,7 +1559,7 @@ final class AppModel {
                 // 増減)ため、差分計算はせず常に全量を渡し直す(材料自体は
                 // groupCodeImpactContext が既に予算内に収めている)。
                 let incrementalTranscript: String? = {
-                    guard !isGroupTarget, resumeSessionID != nil, let sentTranscriptLength,
+                    guard scope != .group, resumeSessionID != nil, let sentTranscriptLength,
                         context.transcript.count >= sentTranscriptLength
                     else { return nil }
                     return AgentCodeImpactAnalyzer.incrementalTranscript(
@@ -1597,7 +1602,7 @@ final class AppModel {
                         decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,
-                        isGroupTarget: isGroupTarget,
+                        scope: scope,
                         onEvent: onStreamEvent)
                 case .codex:
                     stream = try await AgentCodexImpactStream.run(
@@ -1610,7 +1615,7 @@ final class AppModel {
                         decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,
-                        isGroupTarget: isGroupTarget,
+                        scope: scope,
                         onEvent: onStreamEvent)
                 }
                 let result = stream.result
@@ -1691,100 +1696,168 @@ final class AppModel {
         return (material, referenceFolder, codeImpactDecisionContext(forFolder: folder))
     }
 
-    /// グループ質問の材料候補1件。session から作れる範囲の完全な内容を持つ(まだ切り詰めていない)。
-    private struct GroupMaterialCandidate {
-        let name: String
-        let date: String
-        let body: String
-        /// "## 名前 (日付)\n本文" の完全体。まだ他ブロックとの結合区切り("\n\n")は含まない。
-        var block: String { "## \(name) (\(date))\n\(body)" }
+    /// グループ材料 1 ブロックの種別。予算が尽きるたびに 1 段階ずつ格下げし、一度落ちたら
+    /// 戻さない(transcript → summary → omit)。
+    private enum GroupMaterialTier {
+        case transcript
+        case summary
+        case omit
     }
 
-    /// グループ質問の材料本体。所属セッションを新しい順に「## セッション名 (開始日)」+
-    /// sessionMaterialBody で連ね、合計を AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters
-    /// までに収める。溢れる場合は古いセッションから丸ごと省く(行単位で機械的に削ると
-    /// セッションの境目で本文が壊れるため、会議単位で欠けるほうが読める材料になる)。
-    /// 省いた分は末尾に会議名と日付の一覧として明記する。
+    /// グループ質問の材料本体。所属セッションを新しい順に「## セッション名 (開始日)」+ 本文で
+    /// 連ね、合計を AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters までに収める。
     ///
-    /// 省略ノート自体の文字数も upper bound に含めて管理する: 採用ブロックだけで収めてから
-    /// ノートを後付けすると、ノートの分だけ limit を超えかねない(省略した会議が多いほど
-    /// ノートも長くなるため)。採用済みの中で最も古いものから1件ずつ省略へ回し、
-    /// 「採用ブロック + ノート」が limit に収まるまで繰り返す。
+    /// 本文は文字起こしを優先する(要約は自動生成の二次資料で、誤変換や解釈の誤りを持ち込み
+    /// うるため)。新しい順に、予算が許す限り各セッションへ文字起こしブロック
+    /// (transcriptBlockBody)を割り当て、収まらなくなったセッション以降は要約ブロック
+    /// (summaryBlockBody)に落とす。要約ブロックも収まらなくなったセッション以降は丸ごと
+    /// 省略し、末尾に省略ノートとして一覧を添える。文字起こし・要約とも元から無いセッション
+    /// (録音のみ等)は、容量の都合による省略ではないためノートに載せず、単に読み飛ばす
+    /// (ただし省略ティアに落ちた後は、以降の全セッションを一律でノートへ回す。落ちた時点で
+    /// 採否は変わらないため、個別の材料の有無を判定し直す意味が無い)。
     ///
-    /// 最新の1件だけで(ノート抜きでも)limit を超える場合は、その1件を「材料が無い」として
-    /// 弾くのではなく、頭から切り詰めて「(長いため冒頭のみ)」を付けて採用する
-    /// (最新の会議についてだけは何かしら答えられたほうがよいため)。
+    /// 省略ノート用の文字数はあらかじめ予算から差し引いておく(採用ブロックを積んだ後に
+    /// ノート分を見て古いものを巻き戻す方式より単純なため)。1 件も採用できなかった場合は
+    /// groupQuestionMaterialFallback に委ねる(予算超過が主因で材料が丸ごと消えるのを防ぐ)。
     private static func groupQuestionMaterial(from sessionsNewestFirst: [SessionInfo]) -> String {
-        let limit = AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters
-        let candidates: [GroupMaterialCandidate] = sessionsNewestFirst.compactMap { session in
-            guard let body = sessionMaterialBody(for: session) else { return nil }
-            let name = session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name
-            let date = groupSessionDateFormatter.string(from: session.startDate)
-            return GroupMaterialCandidate(name: name, date: date, body: body)
-        }
-        guard !candidates.isEmpty else { return "" }
+        var remainingBudget = max(
+            AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters - groupMaterialNoteReserve, 0)
 
-        // 1. 収まるだけ新しい順に仮採用する(この時点ではまだノートの分を見ていない)。
+        var tier: GroupMaterialTier = .transcript
         var includedBlocks: [String] = []
-        var includedCosts: [Int] = []
-        var includedCost = 0
-        var cutIndex = 0
-        while cutIndex < candidates.count {
-            let block = candidates[cutIndex].block
-            let cost = includedBlocks.isEmpty ? block.count : block.count + 2
-            guard includedCost + cost <= limit else { break }
-            includedBlocks.append(block)
-            includedCosts.append(cost)
-            includedCost += cost
-            cutIndex += 1
-        }
-        var omitted: [(name: String, date: String)] = candidates[cutIndex...].map { ($0.name, $0.date) }
+        var omitted: [(name: String, date: String)] = []
 
-        // 2. 省略が発生した場合、「採用ブロック + ノート」が limit に収まるまで、採用済みの
-        //    末尾(=最も古いもの)を1件ずつ省略へ回す(ノートが伸びるほど採用側を削る)。
-        while !omitted.isEmpty, includedCost + noteCost(for: omitted) > limit, !includedBlocks.isEmpty {
-            includedBlocks.removeLast()
-            includedCost -= includedCosts.removeLast()
-            let evicted = candidates[includedBlocks.count]
-            omitted.insert((evicted.name, evicted.date), at: 0)
+        for session in sessionsNewestFirst {
+            let (name, date) = groupSessionLabel(for: session)
+
+            func tryInclude(_ body: String) -> Bool {
+                let block = "## \(name) (\(date))\n\(body)"
+                let cost = includedBlocks.isEmpty ? block.count : block.count + 2
+                guard cost <= remainingBudget else { return false }
+                includedBlocks.append(block)
+                remainingBudget -= cost
+                return true
+            }
+
+            var didNotFit = false
+
+            if tier == .transcript, let body = transcriptBlockBody(for: session) {
+                if tryInclude(body) { continue }
+                // 文字起こしブロックが予算に収まらない。このセッション以降は要約ブロックへ落とす。
+                tier = .summary
+                didNotFit = true
+            }
+
+            if tier != .omit, let body = summaryBlockBody(for: session) {
+                if tryInclude(body) { continue }
+                // 要約ブロックも収まらない。このセッション以降は丸ごと省略する。
+                tier = .omit
+                didNotFit = true
+            }
+
+            if didNotFit || tier == .omit {
+                omitted.append((name, date))
+            }
         }
 
-        // 3. 最新の1件すら(ノート込みで)収まらなかった場合は、その1件だけ頭から切り詰めて
-        //    採用する。2件目以降は通常どおりすべて省略扱いのまま。
-        if includedBlocks.isEmpty {
-            let newest = candidates[0]
-            let restOmitted = candidates.dropFirst().map { ($0.name, $0.date) }
-            let note = noteText(for: restOmitted)
-            let headerLine = "## \(newest.name) (\(newest.date)) (長いため冒頭のみ)"
-            let budgetForBody = max(limit - note.count - headerLine.count - 1, 0)
-            let truncatedBlock = "\(headerLine)\n\(newest.body.prefix(budgetForBody))"
-            return truncatedBlock + note
+        guard !includedBlocks.isEmpty else {
+            return groupQuestionMaterialFallback(sessionsNewestFirst)
         }
-
         return includedBlocks.joined(separator: "\n\n") + noteText(for: omitted)
     }
 
-    /// 省略ノートの本文(先頭の区切り "\n\n" を含む)。omitted が空なら空文字列。
+    /// groupQuestionMaterial の 3 段ループが 1 件も採用できなかった場合のフォールバック。
+    /// 予算超過が主因で材料が丸ごと消えるのを避けるため、新しい順で最初に材料(文字起こし
+    /// 優先、無ければ要約)を持つセッションを 1 件選び、頭から切り詰めて採用する
+    /// (最新の会議についてだけは何かしら答えられたほうがよいため)。残りのセッションは
+    /// 全て省略ノートへ回す。材料を持つセッションが 1 件も無ければ空文字列。
+    private static func groupQuestionMaterialFallback(_ sessionsNewestFirst: [SessionInfo]) -> String {
+        // 各セッションの材料はここで 1 回だけ読む。採用候補の選定と省略ノートの一覧が同じ
+        // 有無判定を使うため、別々に判定し直すとファイル読み込みが二重になる。
+        let materials = sessionsNewestFirst.map { session in
+            (session: session, body: transcriptBlockBody(for: session) ?? summaryBlockBody(for: session))
+        }
+        guard let chosenIndex = materials.firstIndex(where: { $0.body != nil }),
+            let chosenBody = materials[chosenIndex].body
+        else { return "" }
+
+        let (name, date) = groupSessionLabel(for: materials[chosenIndex].session)
+        // 省略ノートは容量の都合で弾いたものだけを載せる。材料が元から無いセッション
+        // (録音のみ等)を含めない条件は 3 段ループ本体と同じ。
+        let omitted = materials.enumerated().compactMap { offset, item -> (name: String, date: String)? in
+            guard offset != chosenIndex, item.body != nil else { return nil }
+            return groupSessionLabel(for: item.session)
+        }
+
+        let note = noteText(for: omitted)
+        let headerLine = "## \(name) (\(date)) (長いため冒頭のみ)"
+        let limit = AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters
+        let budgetForBody = max(limit - note.count - headerLine.count - 1, 0)
+        return "\(headerLine)\n\(chosenBody.prefix(budgetForBody))" + note
+    }
+
+    /// グループ材料の見出し(「## 名前 (日付)」)と省略ノートに使う、セッションの表示名と開始日。
+    private static func groupSessionLabel(for session: SessionInfo) -> (name: String, date: String) {
+        let name = session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name
+        return (name, groupSessionDateFormatter.string(from: session.startDate))
+    }
+
+    /// 省略ノート用にあらかじめ確保しておく予算。groupQuestionMaterial が採用ブロックの
+    /// 予算から差し引く分。名前の列挙の上限に、定型文(「これより古い N 件(...)は容量の
+    /// 都合で省略しました。」の枠と「他 N 件」の丸め文言)の分として 100 字を足して確保する
+    /// (列挙の上限から導出しておき、上限を変えたときにここが黙って溢れないようにする)。
+    private static let groupMaterialNoteReserve = groupMaterialNoteListCharacterLimit + 100
+
+    /// noteText(for:) が名前の列挙に使ってよい文字数の上限。省略件数が多いとここで打ち切り、
+    /// 「、他 N 件」に丸める(打ち切らないと省略件数に比例してノートが伸び、
+    /// groupMaterialNoteReserve の確保分を突き破るため)。
+    private static let groupMaterialNoteListCharacterLimit = 400
+
+    /// 省略ノートの本文(先頭の区切り "\n\n" を含む)。omitted が空なら空文字列。名前の列挙は
+    /// groupMaterialNoteListCharacterLimit で打ち切り、収まりきらない分は「他 N 件」に丸める
+    /// (省略件数が多いとノート自体が groupMaterialNoteReserve を超え、全体予算を突き破るため)。
     private static func noteText(for omitted: [(name: String, date: String)]) -> String {
         guard !omitted.isEmpty else { return "" }
-        let list = omitted.map { "\($0.name) (\($0.date))" }.joined(separator: "、")
+
+        var shownEntries: [String] = []
+        var shownLength = 0
+        for item in omitted {
+            let entry = "\(item.name) (\(item.date))"
+            let cost = shownEntries.isEmpty ? entry.count : entry.count + 1  // "、" 区切り分
+            guard shownLength + cost <= groupMaterialNoteListCharacterLimit else { break }
+            shownEntries.append(entry)
+            shownLength += cost
+        }
+        let remainder = omitted.count - shownEntries.count
+        if remainder > 0 {
+            shownEntries.append("他 \(remainder) 件")
+        }
+
+        let list = shownEntries.joined(separator: "、")
         return "\n\nこれより古い \(omitted.count) 件(\(list))は容量の都合で省略しました。"
     }
 
-    /// noteText(for:) の文字数だけを、本文を組み立てずに知るための補助
-    /// (groupQuestionMaterial の予算判定はノート本文そのものを都度使わないため)。
-    private static func noteCost(for omitted: [(name: String, date: String)]) -> Int {
-        noteText(for: omitted).count
+    /// 文字起こしブロックの本文(先頭に種別の印を付ける)。recentTranscript で
+    /// maximumTranscriptCharacters(24,000 字)に行単位で切る。文字起こしが読めない・空なら
+    /// このセッションは文字起こしブロックにできない(nil)。
+    private static func transcriptBlockBody(for session: SessionInfo) -> String? {
+        guard let transcriptURL = session.transcriptURL,
+            let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8),
+            !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        let clipped = AgentCodeImpactAnalyzer.recentTranscript(
+            from: transcript, limit: AgentCodeImpactAnalyzer.maximumTranscriptCharacters)
+        return "(文字起こし。長い会議は末尾の部分のみ)\n" + clipped
     }
 
-    /// 1 セッション分の材料本文。summary.md があればその全文、無ければ文字起こし末尾 2,000 字の
-    /// 抜粋。どちらも無ければこのセッションは材料に含めない(nil)。
-    private static func sessionMaterialBody(for session: SessionInfo) -> String? {
+    /// 要約ブロックの本文(先頭に種別の印を付ける)。summary.md があればその全文、無ければ
+    /// 文字起こし末尾 2,000 字の抜粋。どちらも無ければこのセッションは材料に含めない(nil)。
+    private static func summaryBlockBody(for session: SessionInfo) -> String? {
         if let summaryURL = session.summaryURL,
             let summary = try? String(contentsOf: summaryURL, encoding: .utf8),
             !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
-            return summary
+            return "(自動生成の要約。二次資料)\n" + summary
         }
         if let transcriptURL = session.transcriptURL,
             let transcript = try? String(contentsOf: transcriptURL, encoding: .utf8),
@@ -2191,6 +2264,11 @@ final class AppModel {
         guard let directory = effectiveCodeImpactSessionDirectory else { return nil }
         return sessions.first(where: { $0.directory.path == directory })?.folder
     }
+
+    /// 質問応答パネルの見出しに出す、グループ対象の所属セッション数。グループ対象でなければ nil。
+    /// 対象の切り替え時(switchCodeImpactTarget)に確定して保持する。計算プロパティにすると、
+    /// 回答ストリーミング中の再描画のたびに全セッションの走査が走るため。
+    private(set) var codeImpactTargetGroupSessionCount: Int?
 
     /// 設定ウィンドウを開く先のページ。SettingsView 側が消費したら nil に戻す。
     var pendingSettingsPage: SettingsPage?

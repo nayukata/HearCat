@@ -7,18 +7,32 @@ enum AgentCodeImpactAnalyzer {
     /// 行単位で切ることで、時刻と話者を壊さずに保つ。
     static let maximumTranscriptCharacters = 24_000
 
-    /// グループ対象の質問材料(複数セッションの要約を連ねたもの)の上限。単一セッションの
+    /// グループ対象の質問材料(複数セッションの記録を連ねたもの)の上限。単一セッションの
     /// 文字起こし(maximumTranscriptCharacters)より広く取っているのは、こちらは既に
     /// AppModel.groupQuestionMaterial 側でセッション単位に丸ごと間引いてあり、行単位で
     /// 機械的に削るとセッションの境目で本文が壊れるため(recentTranscript の line 単位の
-    /// 切り出しは、この用途には向かない)。
-    static let maximumGroupTranscriptCharacters = 40_000
+    /// 切り出しは、この用途には向かない)。要約は自動生成の二次資料で誤りを持ち込みうるため、
+    /// 予算内はできるだけ多くの会議を文字起こしのまま渡したい。5 回分程度の直近会議
+    /// (1 回あたり最大 24,000 字)を文字起こしのまま収められる余裕を持たせて 120,000 字に
+    /// 広げている。
+    static let maximumGroupTranscriptCharacters = 120_000
 
     /// 質問特化プロンプト(questionPrompt)が出力する見出し文字列。CodeImpactOverlay.swift の
     /// CodeImpactResultView が、この2つのセクションだけ特別な見た目(アコーディオンにしない等)に
     /// 分岐するため、プロンプト側と View 側で文字列がずれないよう定数を共有する。
     static let answerSectionTitle = "回答"
     static let nextStepSectionTitle = "次の一手"
+
+    /// 質問パネルの対象。プロンプトの書き出しと読み手の想定(会議中か、振り返りか)が
+    /// 区分ごとに変わるため、単なる Bool ではなく3区分で持つ。
+    enum TargetScope {
+        /// 進行中の会議。
+        case live
+        /// 過去の1セッション。
+        case pastSession
+        /// グループ(フォルダ)全体。
+        case group
+    }
 
     /// referenceFolder が nil の場合(資料フォルダが未紐付けのセッション)は、文字起こしだけを
     /// 根拠に答える。呼び出し側(AppModel)はこの nil を「調査できない」エラーにはせず、
@@ -31,7 +45,7 @@ enum AgentCodeImpactAnalyzer {
         question: String? = nil,
         previousResult: String? = nil,
         decisionContext: String? = nil,
-        isGroupTarget: Bool = false
+        scope: TargetScope = .live
     ) async throws -> String {
         try await AgentSummarizer.execute(
             using: cli,
@@ -40,7 +54,7 @@ enum AgentCodeImpactAnalyzer {
             prompt: buildPrompt(
                 question: question, previousResult: previousResult, continuity: .fresh,
                 hasReferenceFolder: referenceFolder != nil, decisionContext: decisionContext,
-                isGroupTarget: isGroupTarget),
+                scope: scope),
             outputPrefix: "code-impact",
             model: model,
             // 質問応答は要約と違い、応答が「## 」見出しから始まらなくても本文として表示したいため、
@@ -82,17 +96,17 @@ enum AgentCodeImpactAnalyzer {
     /// (AppModel.codeImpactDecisionContext 参照)。質問が無いダイジェスト調査には
     /// 決定の経緯を answer する概念自体が無いため、質問がある場合にだけ使う。
     ///
-    /// isGroupTarget はグループ全体が対象か(true)、進行中の会議または過去の1セッションが
-    /// 対象か(false)。標準入力の中身が「1会議の文字起こし」から「複数会議の要約の連なり」に
-    /// 変わるため、書き出しの文言(basePrompt / questionPrompt の intro)だけを差し替える
-    /// (AppModel.groupQuestionMaterial 参照)。
+    /// scope は対象がライブの会議・過去の1セッション・グループ全体のどれか。標準入力の中身
+    /// (1会議の文字起こしか、複数会議の要約の連なりか)と読み手の状況(会議中か振り返りか)が
+    /// 変わるため、書き出しの文言(basePrompt / questionPrompt の intro)と回答の書き方を
+    /// 差し替える(AppModel.groupQuestionMaterial 参照)。
     static func buildPrompt(
         question: String?, previousResult: String?, continuity: TranscriptContinuity,
-        hasReferenceFolder: Bool, decisionContext: String? = nil, isGroupTarget: Bool
+        hasReferenceFolder: Bool, decisionContext: String? = nil, scope: TargetScope
     ) -> String {
         let trimmedQuestion = question?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmedQuestion.isEmpty else {
-            let base = basePrompt(hasReferenceFolder: hasReferenceFolder, isGroupTarget: isGroupTarget)
+            let base = basePrompt(hasReferenceFolder: hasReferenceFolder, scope: scope)
             guard let note = resumeNote(for: continuity) else { return base }
             return "\(base)\n\n\(note)"
         }
@@ -119,7 +133,7 @@ enum AgentCodeImpactAnalyzer {
         parts.append(
             questionPrompt(
                 question: trimmedQuestion, hasReferenceFolder: hasReferenceFolder,
-                hasDecisionIndex: hasDecisionIndex, isGroupTarget: isGroupTarget))
+                hasDecisionIndex: hasDecisionIndex, scope: scope))
         return parts.joined(separator: "\n\n")
     }
 
@@ -201,20 +215,49 @@ enum AgentCodeImpactAnalyzer {
     /// ダイジェスト用プロンプトと質問特化プロンプトの両方が使う共通の調査規則。
     /// 資料フォルダの有無で変わるのは「何を調べるか・根拠に何を添えるか」の 1 行だけなので、
     /// その行だけを差し替える(前後の行は共通のまま重複させない)。
-    private static func investigationRules(hasReferenceFolder: Bool) -> String {
+    /// allowsInterpretation は questionPrompt からの呼び出しでのみ true になる
+    /// (basePrompt のダイジェストには分析・見立ての概念が無いため常に false)。
+    private static func investigationRules(
+        hasReferenceFolder: Bool, allowsInterpretation: Bool, scope: TargetScope
+    ) -> String {
+        // 「時刻または発言要旨を添える」は事実確認向けの指示で、分析・評価の質問(見立てを
+        // 書いてよい)には「すべての主張に時刻を並べる」という誤読を招きやすい。振り返り
+        // (過去・グループ)の質問だけ、代表的な根拠にだけ添えればよいと言い換える。ライブは
+        // 数秒で読む速答なので従来の根拠行のまま。
+        let condensesEvidence = allowsInterpretation && scope != .live
+        let evidenceBodyLine: String
+        if condensesEvidence {
+            evidenceBodyLine =
+                "- 主張は文字起こしの発言に基づかせ、代表的な根拠にだけ時刻や引用を添える (すべての主張に時刻を並べる必要はない)"
+                + (hasReferenceFolder ? "。該当ファイルのパスも添える" : "")
+        } else {
+            evidenceBodyLine =
+                hasReferenceFolder
+                ? "- 根拠には文字起こしの時刻または発言要旨と、該当ファイルのパスを添える"
+                : "- 根拠には文字起こしの時刻または発言要旨を添える"
+        }
+        // 資料フォルダがあるときだけ、調べ方の行を根拠行の前に足す。
         let evidenceLine =
             hasReferenceFolder
-            ? """
-              - 資料やコードは必要な箇所だけを調べ、全ファイルを網羅しようとしない
-              - 根拠には文字起こしの時刻または発言要旨と、該当ファイルのパスを添える
-              """
-            : "- 根拠には文字起こしの時刻または発言要旨を添える"
+            ? "- 資料やコードは必要な箇所だけを調べ、全ファイルを網羅しようとしない\n" + evidenceBodyLine
+            : evidenceBodyLine
+        let unstatedRequirementLine =
+            allowsInterpretation
+            ? "- 事実は文字起こしにある内容だけを述べ、言われていないことを言われたことのように書かない。求められた分析・見立てはこの限りではないが、事実と分けて書く"
+            : "- 会議で明示されていない要件を推測で補わない"
+        // 「1〜2 行」は箇条書きの各項目の長さの話であり、questionPrompt 側の回答本文の長さ許可
+        // (「質問に見合う長さまで」)とは別の制約なので、掛かり先を箇条書きに限定して書く。
+        let bulletLengthLine =
+            allowsInterpretation
+            ? "- 箇条書きの各項目は 1〜2 行に収め、行頭を「- 」で始める"
+            : "- 各項目は 1〜2 行に収め、箇条書きは行頭を「- 」で始める"
         return """
             - ファイルの変更・作成、コマンド実行、外部サービスへの送信はしない
-            - 会議で明示されていない要件を推測で補わない
+            \(unstatedRequirementLine)
             \(evidenceLine)
+            - 文字起こしは音声認識のため、意味の通らない断片や人名・数値の誤認識を含みうる。認識が乱れた断片だけを根拠に断定しない
             - 判断できないことは、判断できないと明記する
-            - 各項目は 1〜2 行に収め、箇条書きは行頭を「- 」で始める
+            \(bulletLengthLine)
             """
     }
 
@@ -262,11 +305,18 @@ enum AgentCodeImpactAnalyzer {
     /// 文字起こしだけを根拠にダイジェストを作らせる。共通部(1文目・見出しの先頭と末尾・
     /// bodyInstruction の書き出し)は1回だけ書き、変わる部分だけを挿入する
     /// (investigationRules と同じ組み方)。
-    private static func basePrompt(hasReferenceFolder: Bool, isGroupTarget: Bool) -> String {
-        let openingClause =
-            isGroupTarget
-            ? "標準入力で渡される、このグループの各会議の要約と決定事項を読み、決定・変更・疑問・確認事項を抽出してください。"
-            : "標準入力で渡される進行中の会議文字起こしの直近部分を読み、決定・変更・疑問・確認事項を抽出してください。"
+    private static func basePrompt(hasReferenceFolder: Bool, scope: TargetScope) -> String {
+        let openingClause: String
+        switch scope {
+        case .group:
+            openingClause =
+                "標準入力で渡される、このグループの各会議の記録 (新しい会議は文字起こし、古い会議は自動生成の要約) を読み、決定・変更・疑問・確認事項を抽出してください。"
+        case .pastSession:
+            openingClause =
+                "標準入力で渡される、この会議の文字起こし (長い会議は末尾の部分のみ) を読み、決定・変更・疑問・確認事項を抽出してください。"
+        case .live:
+            openingClause = "標準入力で渡される進行中の会議文字起こしの直近部分を読み、決定・変更・疑問・確認事項を抽出してください。"
+        }
         let referenceLine =
             hasReferenceFolder
             ? "\nカレントディレクトリの資料やコードを読み取り、発言内容と既存情報の一致点・相違点・影響箇所を確認してください。"
@@ -285,7 +335,7 @@ enum AgentCodeImpactAnalyzer {
             \(openingClause)\(referenceLine)
 
             調査規則:
-            \(investigationRules(hasReferenceFolder: hasReferenceFolder))
+            \(investigationRules(hasReferenceFolder: hasReferenceFolder, allowsInterpretation: false, scope: scope))
 
             出力は次の Markdown だけにしてください。前置きや後書きは不要です。
             ## 会議で確認できた内容\(referenceHeading)
@@ -305,20 +355,25 @@ enum AgentCodeImpactAnalyzer {
     /// 非 nil かつ非空)。true のときだけ decisionHistoryParagraph を末尾に挟む(索引が無いのに
     /// フェンスの出し方だけ指示しても、AI が答えられる議題自体が無い)。
     private static func questionPrompt(
-        question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool, isGroupTarget: Bool
+        question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool, scope: TargetScope
     ) -> String {
-        let intro: String
-        switch (isGroupTarget, hasReferenceFolder) {
-        case (true, true):
-            intro =
-                "標準入力で渡される、このグループの各会議の要約と決定事項、およびカレントディレクトリの資料やコードを参照して、次の質問に答えてください。"
-        case (true, false):
-            intro = "標準入力で渡される、このグループの各会議の要約と決定事項を読み、次の質問に答えてください。"
-        case (false, true):
-            intro = "標準入力で渡される進行中の会議文字起こしの直近部分と、カレントディレクトリの資料やコードを参照して、次の質問に答えてください。"
-        case (false, false):
-            intro = "標準入力で渡される進行中の会議文字起こしの直近部分を読み、次の質問に答えてください。"
+        // 文の前半 (材料の主語句) は scope だけで決まり、後半 (資料フォルダの有無) と独立に
+        // 変わるため、全組み合わせを列挙せず前後で分けて組む。
+        let materialSubject: String
+        switch scope {
+        case .group:
+            materialSubject = "、このグループの各会議の記録 (新しい会議は文字起こし、古い会議は自動生成の要約)"
+        case .pastSession:
+            materialSubject = "、この会議の文字起こし (長い会議は末尾の部分のみ)"
+        case .live:
+            materialSubject = "進行中の会議文字起こしの直近部分"
         }
+        // 主語句が半角括弧で終わる場合、続く日本語との間に半角スペースを挟む (UI 文言と同じ規則)。
+        let subjectSuffix = materialSubject.hasSuffix(")") ? " " : ""
+        let intro =
+            hasReferenceFolder
+            ? "標準入力で渡される\(materialSubject)\(subjectSuffix)と、カレントディレクトリの資料やコードを参照して、次の質問に答えてください。"
+            : "標準入力で渡される\(materialSubject)\(subjectSuffix)を読み、次の質問に答えてください。"
         let referencedFileLine =
             hasReferenceFolder
             ? "\n- 参照したファイルは 1 行ずつ「- 相対パス — 内容の一言」の形で書く"
@@ -327,6 +382,73 @@ enum AgentCodeImpactAnalyzer {
         // 置かないと、末尾の autoExecutionNote に「別の書式指示」として無視されてしまう
         // (decisionHistoryParagraph のコメント参照)。
         let decisionHistorySection = hasDecisionIndex ? "\n\n\(decisionHistoryParagraph)" : ""
+        let readerLine =
+            scope == .live
+            ? "- 読み手は会議中で、数秒しか読めない。簡潔さを最優先し、前置き・言い換え・繰り返しをしない"
+            : "- 読み手は会議を振り返っている。前置き・言い換え・繰り返しをせず、質問に見合う深さで書く"
+        let quotationLine =
+            scope == .live
+            ? "- 質問者は会議に出ているため、会議の発言の再掲は根拠として必要な最小限にする"
+            : "- 発言を引用するときは > の引用行にし、行頭に時刻を添える。引用は逐語でなくてよい: 音声認識の誤変換・フィラー (「あの」「えっと」等)・言い淀みを、意味を変えない範囲で読みやすく直してから引用する。直しても意味が取れないほど乱れた発言は引用に使わない"
+        // 分析・評価を求める質問への構造指定は、事実確認より深く書ける振り返り対象
+        // (過去セッション・グループ)だけに出す。ライブは簡潔さが最優先のため出さない。
+        // 「日付 + 発言の羅列」に流れやすいため、レポート形式(主張→根拠→結果を段落で
+        // つなぐ)を明示し、箇条書きは列挙用途に限定している。
+        let analysisStructureLine =
+            scope == .live
+            ? ""
+            : "\n"
+                + """
+                - 分析・評価を求める質問への回答は、箇条書きの羅列ではなくレポートとして書く: 問題ごとに ### の小見出しで区切って重要な順に並べ、各セクションは段落の文章で「主張 → 根拠 → それが招いている結果」を繋げる。箇条書きは、並べて比べたい列挙にだけ使う。表 (| 区切り) は使わない
+                - いつの回か (日付・時刻など) は、それ自体が主張に効く場合 (方針が変わった前後関係を示す、直近の回だから重要、など) だけ書き、回答全体で多くても 2 回まで。単なる根拠の所在づけには書かない (×「08-18 の回では 13 案を持ち寄り」 ○「13 案を持ち寄った回でも」)。繰り返しは「毎回」「5 回中 4 回」のような傾向として述べる。時刻を書いてよいのは引用行の行頭だけ。最も象徴的な発言 1〜2 個だけを > の引用行で添える
+                - 段落は 1〜3 文で短く切り、段落の間に空行を入れる。重要な語句や結論は文中でも ** で太字にする。大きな話題の変わり目には --- だけの行 (水平線) を置いてよい
+                - 各セクションの核心の一文を ** で太字にする
+                - 事実は「〜と発言している」、解釈は「〜と考えられる」のように文中の言い方で区別する。「見立て:」のようなラベルでの仕分けはしない
+                - 問題の指摘だけでなく、既に効いている良い動き・良い発言があればそれも指摘する
+                - 締めは、次回から何をどう変えるかの具体的な提案 (会議の進め方のレベルまで踏み込む)
+                """
+        // グループ対象は要約(自動生成の二次資料)と文字起こし(一次資料)が混在した材料になる
+        // ため、優先順位と扱い方を明示する。過去 1 セッション・ライブは文字起こししか渡さない
+        // ので不要。
+        let materialHandlingSection: String =
+            scope == .group
+            ? """
+                材料の扱い:
+                - 文字起こしが一次資料。要約は自動生成の二次資料で、誤りを含みうる。両者が矛盾したら文字起こしを優先する
+                - 要約にしか根拠が無い人名・数値・決定は断定せず、「要約による」と添える
+                """ + "\n\n"
+            : ""
+        // 分析回答の構造指定(analysisStructureLine)で ### の小見出しを許可した scope
+        // (pastSession / group)だけ、出力仕様側にも ### の使用を明記する。live は
+        // 「回答の書き方」に ### の指示自体を出していないため、出力仕様も従来のまま。
+        let answerLengthLine =
+            scope == .live
+            ? "判定から始まる。事実確認の質問は 3〜6 行。分析・評価を求める質問は、結論の後に箇条書きや短い段落で構造化してよい (質問に見合う長さまで。冗長にしない)。日本語の文章のみで、パスやコード識別子は書かない。"
+            : "判定から始まる。事実確認の質問は 3〜6 行。分析・評価を求める質問は、冒頭の太字の判定の後を、回答の書き方のとおり ### の小見出しで区切ったレポートとして書く (質問に見合う長さまで)。日本語の文章のみで、パスやコード識別子は書かない。"
+        // 分析・評価を求める質問が「日付 + 発言の羅列」に流れる問題への対策として、
+        // analysisStructureLine の指示だけでは抽象的すぎるため、形だけの例を 1 つ示す
+        // (内容は空の題材で、小見出し・段落構成・引用の使い方だけを見せる)。
+        let analysisExampleSection: String =
+            scope == .live
+            ? ""
+            : """
+                分析・評価の回答の、途中の 1 セクションの書き方の例 (形だけの参考。冒頭の太字の判定はこの例より前に単独で置く。内容・小見出しは質問と文字起こしに合わせる):
+                ### 探索と評価が同じ時間に同居している
+                **新しい案を出す時間と案を絞る時間が分かれていないこと**が、毎回の結論未達の主因になっている。
+
+                5 回の定例すべてで、絞り込みの途中に新しい案の紹介が挟まり、議論が発散したまま時間切れになっている。
+
+                > 16:05:43 相手: もうどう話していいか、結構迷走しつつある
+
+                この状態は参加者にも自覚されている。ただし対処は時間を短くする方向に向かっており、**発散そのものを抑える進行の工夫はまだ試されていない**と考えられる。
+                """ + "\n\n"
+
+        // 「根拠は本文に織り込み済み」はレポート型 (非ライブ) の前提。ライブは発言の再掲を
+        // 最小限にする速答なので、この前置きを付けない。
+        let evidenceNoteLeadIn =
+            scope == .live
+            ? ""
+            : "分析・評価の回答では根拠は本文に織り込み、ここには本文に入れなかった補足だけを書く。"
 
         return """
             \(intro)
@@ -336,23 +458,24 @@ enum AgentCodeImpactAnalyzer {
             質問は会議中の口語です。語句の一致を探すのではなく、質問の意図 (知りたい挙動・仕様・影響・決定事項) に答えてください。「その言葉は使われていない」のような語句の一致・不一致の報告はしないでください。
 
             回答の書き方:
-            - 読み手は会議中で、数秒しか読めない。簡潔さを最優先し、前置き・言い換え・繰り返しをしない
+            \(readerLine)
             - 最初の 1 文で判定・結論を言い切り、その 1 文を ** で太字にする
+            - 質問が分析・評価・改善案を求めるもの (例: 問題点を分析して / どう思う / どこがまずい) なら、文字起こしを根拠にした見立てを書いてよい。事実 (実際の発言) と見立て (そこから言えること) が読み分けられる書き方にする\(analysisStructureLine)
             - 本文はファイル名・関数名・変数名を使わず、「誰に・どのケースで・何が起きるか」が分かる日本語で書く。実装の詳細は、質問で明示的に求められた場合だけ書く
-            - 質問者は会議に出ているため、会議の発言の再掲は根拠として必要な最小限にする
+            \(quotationLine)
             - 判断できない場合や次に動くべきことがある場合は、それを ## \(nextStepSectionTitle) に書く
             - 文字起こしの「自分」は質問者本人。次の一手で質問者本人を確認相手にしない (本人が動く場合は、何をどう確認するかを書く)
 
-            調査規則:
-            \(investigationRules(hasReferenceFolder: hasReferenceFolder))
+            \(materialHandlingSection)調査規則:
+            \(investigationRules(hasReferenceFolder: hasReferenceFolder, allowsInterpretation: true, scope: scope))
 
-            出力は次の Markdown だけにしてください。前置きや後書きは不要です。
+            \(analysisExampleSection)出力は次の Markdown だけにしてください。前置きや後書きは不要です。
             ## \(answerSectionTitle)
-            判定から始まる 3〜6 行。日本語の文章のみで、パスやコード識別子は書かない。
+            \(answerLengthLine)
             ## \(nextStepSectionTitle)
             回答だけでは質問の目的を達成できず、質問者が次に取るべき具体的な一手 (誰に何を確認するか、どこを見れば確定するか) が文字起こしから特定できる場合だけこのセクションを出し、1〜2 行で書く。次のいずれかに当たる場合は出力しない: 回答で完結している / 「本人や関係者に聞けば分かる」のような当然の行動しか書けない / ```choices で確認する内容と同じ。迷ったら出力しない。「出力しない」とは見出しごと省略すること。「(なし)」と書いて見出しを残すのは誤り (それは根拠と補足だけのルール)。
             ## 根拠と補足
-            - 根拠となる発言 (時刻と要旨) や補足を箇条書きで書く。各 1 行・最大 4 項目。時刻は各行の行頭に 1 箇所だけ書き、行の途中に時刻を書かない。回答と同じ内容は繰り返さない\(referencedFileLine)
+            - \(evidenceNoteLeadIn)根拠となる発言 (時刻と要旨) や補足を箇条書きで書く。各 1 行・最大 4 項目 (分析の質問では最大 8 項目)。時刻は各行の行頭に 1 箇所だけ書き、行の途中に時刻を書かない。回答と同じ内容は繰り返さない\(referencedFileLine)
             無ければ「(なし)」とだけ書く。
 
             \(mermaidParagraph)
