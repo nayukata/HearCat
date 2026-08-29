@@ -1,3 +1,4 @@
+import AppKit
 import HearCatKit
 import SwiftUI
 
@@ -9,6 +10,9 @@ struct SummaryBodyStyle {
     let headingStyle: AnyShapeStyle
     let bodyStyle: AnyShapeStyle
     let font: Font
+    /// font と同じ大きさの NSFont.TextStyle。inlineMarkdownText が強調(**太字**)の描画に
+    /// カスケード済みの太字フォントを組み直す際、font から段を逆算できないため別途持つ。
+    let bodyTextStyle: NSFont.TextStyle
     /// 話題を折りたたみにして、本文を選択可能にするか。画像では固定表示にする。
     let isInteractive: Bool
     /// 「話題ごとのまとめ」を含めるか。画像の要点モードでは落とす。
@@ -19,6 +23,7 @@ struct SummaryBodyStyle {
         headingStyle: AnyShapeStyle(.secondary),
         bodyStyle: AnyShapeStyle(.primary),
         font: HCFont.body,
+        bodyTextStyle: .body,
         isInteractive: true,
         includesTopics: true)
 
@@ -28,6 +33,7 @@ struct SummaryBodyStyle {
             headingStyle: AnyShapeStyle(HCColor.cinnamon),
             bodyStyle: AnyShapeStyle(HCColor.mistBody),
             font: HCFont.callout,
+            bodyTextStyle: .callout,
             isInteractive: false,
             includesTopics: includesTopics)
     }
@@ -160,7 +166,7 @@ private struct StructuredSummaryView: View {
 
     /// 本文1つぶん。行内 Markdown の解釈と、書体・色・選択可否をここに集約する。
     private func text(_ body: String) -> some View {
-        Text(inlineMarkdownText(body))
+        Text(inlineMarkdownText(body, boldTextStyle: style.bodyTextStyle))
             .font(style.font)
             .foregroundStyle(style.bodyStyle)
             .selectableText(style.isInteractive)
@@ -211,7 +217,7 @@ private struct TopicRow: View {
     }
 
     private var title: some View {
-        Text(inlineMarkdownText(topic.title))
+        Text(inlineMarkdownText(topic.title, boldTextStyle: style.bodyTextStyle))
             .font(HCFont.style(style.isInteractive ? .body : .callout, weight: .medium))
             .selectableText(style.isInteractive)
     }
@@ -235,7 +241,7 @@ private struct TopicRow: View {
     }
 
     private func body(_ text: String) -> some View {
-        Text(inlineMarkdownText(text))
+        Text(inlineMarkdownText(text, boldTextStyle: style.bodyTextStyle))
             .font(style.font)
             .foregroundStyle(style.bodyStyle)
             .selectableText(style.isInteractive)
@@ -278,9 +284,36 @@ extension View {
 /// 行内の Markdown 装飾(**強調** など)だけを解釈して描画用の文字列にする。
 /// 解釈に失敗したら原文のまま表示する。
 /// SummaryView と CodeImpactOverlay(調査結果のインライン装飾)の両方から使う共通実装。
-func inlineMarkdownText(_ text: String) -> AttributedString {
-    (try? AttributedString(
-        markdown: text,
-        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+///
+/// boldTextStyle は呼び出し箇所の本文の大きさ(NSFont.TextStyle)。既定は .body。
+/// AttributedString の markdown パースは、強調(**太字**)を「現在の書体に bold トレイトを
+/// 乗せる」形で表現するが、HCFont(DesignTokens.swift)は日本語をカスケードリストで
+/// 「NotoSansJP-Bold」のような太さ固定の名前付きインスタンスへ流しており、bold トレイトが
+/// 日本語グリフには反映されない(英数の SF だけ太くなる)。パース後に強調 run だけを走査し、
+/// カスケードが効いた太字フォントを明示的に設定して補う。
+func inlineMarkdownText(_ text: String, boldTextStyle: NSFont.TextStyle = .body) -> AttributedString {
+    var result =
+        (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
         ?? AttributedString(text)
+
+    // 本文 (Regular) との差が太さだけでは弱く「太字がどこか分からない」ため、
+    // 一段強い太さ (ExtraBold 相当) と明るい文字色の両方で持ち上げる。
+    let boldFont = HCFont.style(boldTextStyle, weight: .heavy)
+    // 範囲を集めてから書き換える (属性の変更で runs の区切りが変わるため)。強調の
+    // intent は必ず消す: 残したままフォントを上書きすると、intent 由来の太字合成が
+    // 二重にかかり、強調部分だけ字が約 1 割縮んで描画される (実測で確認済み)。
+    let emphasizedRanges = result.runs.compactMap { run -> Range<AttributedString.Index>? in
+        guard let intent = run.inlinePresentationIntent, intent.contains(.stronglyEmphasized) else {
+            return nil
+        }
+        return run.range
+    }
+    for range in emphasizedRanges {
+        result[range].font = boldFont
+        result[range].foregroundColor = HCColor.textPrimary
+        result[range].inlinePresentationIntent = nil
+    }
+    return result
 }

@@ -59,7 +59,8 @@ enum HCFont {
         switch weight {
         case .medium: "NotoSansJP-Medium"
         case .semibold: "NotoSansJP-SemiBold"
-        case .bold, .heavy: "NotoSansJP-Bold"
+        case .bold: "NotoSansJP-Bold"
+        case .heavy: "NotoSansJP-ExtraBold"
         case .black: "NotoSansJP-Black"
         default: "NotoSansJP-Regular"
         }
