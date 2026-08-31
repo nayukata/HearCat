@@ -143,6 +143,7 @@ struct ImportSessionSheet: View {
                 Text("新しいグループ…").tag(Destination.new)
             }
             .labelsHidden()
+            .pointingHandOnHover()
             if destination == .new {
                 TextField("グループ名 (例: プロジェクトA)", text: $newFolderName)
                     .textFieldStyle(.roundedBorder)
@@ -157,11 +158,13 @@ struct ImportSessionSheet: View {
                 model.cancelImport(pending)
             }
             .keyboardShortcut(.cancelAction)
+            .pointingHandOnHover()
             Button("取り込む") {
                 model.confirmImport(pending, intoFolder: resolvedFolder)
             }
             .keyboardShortcut(.defaultAction)
             .disabled(destination == .new && trimmedNewFolderName.isEmpty)
+            .pointingHandOnHover(disabled: destination == .new && trimmedNewFolderName.isEmpty)
         }
     }
 

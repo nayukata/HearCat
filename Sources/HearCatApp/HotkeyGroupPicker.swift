@@ -58,7 +58,9 @@ private struct PickerAccessoryView: View {
                     Text(folder).tag(String?.some(folder))
                 }
             }
+            .pointingHandOnHover()
             Toggle("次回からこの選択をスキップ", isOn: $state.skipNextTime)
+                .pointingHandOnHover()
         }
         .padding(.vertical, 8)
         .frame(width: 280)

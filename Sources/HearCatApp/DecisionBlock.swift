@@ -129,6 +129,7 @@ private struct DecisionRowContent: View {
             // 行全体をタップ対象にしても、秒数ボタン・「⋯」ボタンは Button 自身のヒットテストが
             // 外側の onTapGesture より優先されるため奪われない(GroupDetailView.TopicRow と同じ理屈)。
             .onTapGesture { isExpanded.toggle() }
+            .pointingHandOnHover()
 
             if isExpanded {
                 historySection

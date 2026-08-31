@@ -406,6 +406,7 @@ struct MainWindow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { withAnimation { toggleDateSection(bucket) } }
+        .pointingHandOnHover()
     }
 
     private func toggleDateSection(_ bucket: DateBucket) {
@@ -438,6 +439,7 @@ struct MainWindow: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            .pointingHandOnHover()
             Spacer()
             Button {
                 model.requestImportFromPanel()
@@ -448,6 +450,7 @@ struct MainWindow: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("受け取ったセッション (.hearcat) を取り込む")
+            .pointingHandOnHover()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -487,6 +490,7 @@ struct MainWindow: View {
         // 行名クリックでグループ画面を選択する。onTapGesture なのは、この行が
         // ドラッグ元(.onDrag)でもあり、そこでは List 任せのクリック選択が死ぬため。
         .onTapGesture { selection = [Self.groupSelectionTag(folder)] }
+        .pointingHandOnHover()
         // ドラッグ元は contentShape の後ろに置き、名前ラベルだけでなく行のどこからでも
         // 掴めるようにする。onDrag なのは、draggable(_:preview:) がログ上ドロップ判定を
         // 一切発火させなかったため (プレビュー付き draggable はペイロード登録が壊れる疑い)。

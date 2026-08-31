@@ -36,9 +36,11 @@ struct LiveSessionView: View {
             Toggle("録音", isOn: Binding(
                 get: { model.status.recording },
                 set: { model.setRecording($0) }))
+                .pointingHandOnHover()
             Toggle("文字起こし", isOn: Binding(
                 get: { model.status.transcribing },
                 set: { model.setTranscribing($0) }))
+                .pointingHandOnHover()
             if !AgentCLIDetector.shared.availableCLIs.isEmpty {
                 Button {
                     model.openCodeImpactPanel()
@@ -50,6 +52,7 @@ struct LiveSessionView: View {
                 .foregroundStyle(.secondary)
                 .help("AI に質問")
                 .disabled(!model.status.transcribing)
+                .pointingHandOnHover(disabled: !model.status.transcribing)
             }
             if !model.liveFinals.isEmpty {
                 CopyButton {
@@ -59,6 +62,7 @@ struct LiveSessionView: View {
             Button("停止", role: .destructive) {
                 Task { await model.stopSession() }
             }
+            .pointingHandOnHover()
         }
         .toggleStyle(.switch)
         .controlSize(.small)

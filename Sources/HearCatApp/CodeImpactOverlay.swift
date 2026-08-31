@@ -290,17 +290,20 @@ private struct CodeImpactOverlayView: View {
                         Image(systemName: "chevron.up")
                     }
                     .disabled(searchMatchTurnIDs.isEmpty)
+                    .pointingHandOnHover(disabled: searchMatchTurnIDs.isEmpty)
                     Button {
                         jumpToMatch(direction: 1)
                     } label: {
                         Image(systemName: "chevron.down")
                     }
                     .disabled(searchMatchTurnIDs.isEmpty)
+                    .pointingHandOnHover(disabled: searchMatchTurnIDs.isEmpty)
                     Button {
                         closeSearch()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                     }
+                    .pointingHandOnHover()
                 }
                 .buttonStyle(.plain)
                 .controlSize(.small)
@@ -1015,6 +1018,7 @@ private struct CodeImpactOverlayView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .foregroundStyle(HCColor.textBody)
+            .pointingHandOnHover()
     }
 
     private func messageBlock(icon: String, title: String, detail: String) -> some View {
@@ -1851,6 +1855,7 @@ private struct CodeImpactResultView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .pointingHandOnHover()
 
                     if isExpanded(title: title) {
                         segmentBlock(section.segments)

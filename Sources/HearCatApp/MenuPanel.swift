@@ -431,6 +431,7 @@ struct MenuPanel: View {
             Spacer()
             Toggle(label, isOn: isOn)
                 .labelsHidden()
+                .pointingHandOnHover()
         }
     }
 

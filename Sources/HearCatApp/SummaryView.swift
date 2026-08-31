@@ -207,6 +207,7 @@ private struct TopicRow: View {
                     .onTapGesture {
                         withAnimation { isExpanded.toggle() }
                     }
+                    .pointingHandOnHover()
             }
         } else {
             VStack(alignment: .leading, spacing: 5) {

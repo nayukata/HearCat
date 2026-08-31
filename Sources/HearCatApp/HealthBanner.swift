@@ -45,6 +45,7 @@ struct HealthIssueBanner: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onToggleCollapsed)
+        .pointingHandOnHover()
     }
 
     private var expandedBody: some View {

@@ -287,17 +287,20 @@ struct SessionDetailView: View {
                         Image(systemName: "chevron.up")
                     }
                     .disabled(searchMatchIDs.isEmpty)
+                    .pointingHandOnHover(disabled: searchMatchIDs.isEmpty)
                     Button {
                         jumpToMatch(direction: 1)
                     } label: {
                         Image(systemName: "chevron.down")
                     }
                     .disabled(searchMatchIDs.isEmpty)
+                    .pointingHandOnHover(disabled: searchMatchIDs.isEmpty)
                     Button {
                         closeSearch()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                     }
+                    .pointingHandOnHover()
                 }
                 .buttonStyle(.plain)
                 .controlSize(.small)
@@ -658,6 +661,7 @@ struct SessionDetailView: View {
                     .buttonStyle(.plain)
                     .font(HCFont.timecode)
                     .foregroundStyle(.tint)
+                    .pointingHandOnHover()
                     .help("この位置から再生")
                 } else {
                     Text(formatPlaybackTime(offset))
@@ -682,6 +686,7 @@ struct SessionDetailView: View {
             // Button 自身のヒットテストを外側の onTapGesture より優先するため、時刻ボタンの
             // 当たり判定内はボタンの再生アクションだけが起き、行選択は起きない。
             .onTapGesture { handleLineClick(line.id) }
+            .pointingHandOnHover()
             // ドラッグ範囲選択(handleRowDragChanged)が使う行位置を測る。LazyVStack で
             // まだ実体化していない行はここを通らないため rowFrames に載らない。
             .onGeometryChange(for: CGRect.self) { proxy in
@@ -1348,6 +1353,7 @@ struct PlayerView: View {
                     .font(HCFont.title3)
             }
             .buttonStyle(.plain)
+            .pointingHandOnHover()
 
             Text(formatPlaybackTime(scrubTime ?? player.currentTime))
                 .font(HCFont.timecode)
@@ -1391,6 +1397,7 @@ struct PlayerView: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .fixedSize()
+            .pointingHandOnHover()
             .help("聞く声を選べます。会議アプリでマイクを切っていた場面でも、自分の声を拾っていることがあります")
         }
     }

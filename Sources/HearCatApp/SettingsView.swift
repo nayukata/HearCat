@@ -270,6 +270,7 @@ struct SettingsView: View {
         Form {
             Section {
                 Toggle("カレンダーの予定名を自動で付ける", isOn: $settings.calendarNaming)
+                    .pointingHandOnHover()
             } header: {
                 Text("セッション名")
             } footer: {
@@ -278,6 +279,7 @@ struct SettingsView: View {
 
             Section {
                 Toggle("会議の時間になったら自動で録音を開始", isOn: $settings.meetingAutoStart)
+                    .pointingHandOnHover()
                 if settings.meetingAutoStart {
                     excludedMeetingRows
                 }
@@ -289,7 +291,9 @@ struct SettingsView: View {
 
             Section {
                 Toggle("無音が5分続いたら停止するか確認", isOn: $settings.confirmStopOnSilence)
+                    .pointingHandOnHover()
                 Toggle("終わりの挨拶が聞こえたら停止するか確認", isOn: $settings.confirmStopOnClosing)
+                    .pointingHandOnHover()
             } header: {
                 Text("停止の確認")
             } footer: {
@@ -314,6 +318,7 @@ struct SettingsView: View {
                             launchAtLoginMessage = error.localizedDescription
                         }
                     }
+                    .pointingHandOnHover()
                 if let launchAtLoginMessage {
                     Text(launchAtLoginMessage)
                         .font(HCFont.caption)
@@ -334,6 +339,7 @@ struct SettingsView: View {
                     model.openWindowAction?("welcome")
                 }
                 .controlSize(.small)
+                .pointingHandOnHover()
             } header: {
                 Text("サポート")
             } footer: {
@@ -360,6 +366,7 @@ struct SettingsView: View {
                     Button("今すぐアップデート") { performUpdateNow() }
                         .controlSize(.small)
                         .disabled(!updateAvailable || model.status.active)
+                        .pointingHandOnHover(disabled: !updateAvailable || model.status.active)
                     if model.status.active {
                         Text("セッション中はアップデートできません")
                             .font(HCFont.caption)
@@ -386,6 +393,7 @@ struct SettingsView: View {
                     CopyButton { UpdateCheck.command }
                 }
                 Toggle("毎日 11 時に確認", isOn: $settings.autoUpdateCheck)
+                    .pointingHandOnHover()
             } footer: {
                 settingsFooter(
                     "「今すぐアップデート」は上のコマンドをこの場で実行し、HearCat をすぐに終了します。取得とビルドは終了後もバックグラウンドで進み、完了後にもう一度開くと新しいバージョンで起動します。",
@@ -417,6 +425,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     Button("再読み込み") { loadReleaseNotes() }
                         .controlSize(.small)
+                        .pointingHandOnHover()
                 }
             case .loaded(let notes):
                 ForEach(notes) { note in
@@ -535,6 +544,7 @@ struct SettingsView: View {
                     showDeleteOldRecordingsMenu()
                 }
                 .controlSize(.small)
+                .pointingHandOnHover()
                 .background(MenuAnchorView(anchor: $deleteOldRecordingsMenuAnchor))
                 if let deleteOldRecordingsMessage {
                     Text(deleteOldRecordingsMessage)
@@ -610,6 +620,8 @@ struct SettingsView: View {
                 Button("追加") { addExcludedKeyword() }
                     .disabled(
                         newExcludedKeyword.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .pointingHandOnHover(
+                        disabled: newExcludedKeyword.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             // 予告を見逃した予定にも、あとから辿り着けるようにする。
             Button {
@@ -623,6 +635,7 @@ struct SettingsView: View {
             }
             .controlSize(.small)
             .disabled(loadingUpcomingMeetings)
+            .pointingHandOnHover(disabled: loadingUpcomingMeetings)
             .background(MenuAnchorView(anchor: $upcomingMenuAnchor))
         }
     }
@@ -780,8 +793,11 @@ struct SettingsView: View {
                         Text(option.name).tag(option.uid)
                     }
                 }
+                .pointingHandOnHover()
                 Toggle("エコー除去", isOn: $settings.echoRemoval)
+                    .pointingHandOnHover()
                 Toggle("入力感度を自動調整", isOn: $settings.micSensitivityAuto)
+                    .pointingHandOnHover()
                 if !settings.micSensitivityAuto {
                     micSensitivitySlider
                 }
@@ -837,6 +853,7 @@ struct SettingsView: View {
                 .onChange(of: settings.codeImpactAgent) { _, newValue in
                     if newValue == .codex { fillCodexModelDefaultsIfEmpty() }
                 }
+                .pointingHandOnHover()
                 agentModelField(
                     for: settings.codeImpactAgent,
                     binding: Binding(
@@ -860,6 +877,7 @@ struct SettingsView: View {
                     Button("導入する") {
                         installSkill()
                     }
+                    .pointingHandOnHover()
                 }
                 if let skillMessage {
                     Text(skillMessage)
@@ -893,6 +911,7 @@ struct SettingsView: View {
 
             Section {
                 Toggle("ホットキーで開始する前に保存先グループを確認", isOn: $settings.hotkeyGroupPicker)
+                    .pointingHandOnHover()
             } footer: {
                 settingsFooter("オンのときは、ホットキーでセッションを始めるたびに、どのグループに入れるかを選ぶ画面を挟みます。オフのときは前回選んだグループでそのまま始まります。")
             }
@@ -931,6 +950,7 @@ struct SettingsView: View {
                 Text(cli.displayName).tag(cli.summaryEngine.rawValue)
             }
         }
+        .pointingHandOnHover()
         .onAppear {
             // 前回選んだエンジンが今の環境で使えない(Apple Intelligence が無効化された、
             // CLI をアンインストールした)なら、選ばれっぱなしにせず「使わない」に戻す。
@@ -1107,6 +1127,7 @@ struct SettingsView: View {
                 Button("戻す") { value.wrappedValue = 1.0 }
                     .controlSize(.small)
                     .disabled(value.wrappedValue == 1.0)
+                    .pointingHandOnHover(disabled: value.wrappedValue == 1.0)
             }
         }
     }
@@ -1238,6 +1259,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 Button("再確認") { checkForUpdate() }
                     .controlSize(.small)
+                    .pointingHandOnHover()
             }
         }
     }
@@ -1328,6 +1350,7 @@ struct HotkeyRecorderField: View {
             .help("割り当てを削除")
             .opacity(clearable ? 1 : 0)
             .disabled(!clearable)
+            .pointingHandOnHover(disabled: !clearable)
         }
         .onDisappear { endRecording() }
     }
@@ -1506,6 +1529,7 @@ private struct ExcludedChip: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .pointingHandOnHover()
             .help("解除")
             // 記号だけでは何のボタンか読み上げられないので、名前を持たせる。
             .accessibilityLabel("「\(label)」の除外を解除")

@@ -214,6 +214,7 @@ struct GroupDetailView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .pointingHandOnHover()
                         .padding(.vertical, 4)
                         if session.id != groupSessions.last?.id {
                             Divider()
@@ -622,6 +623,7 @@ private struct TopicRow: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { onToggleExpand() }
+            .pointingHandOnHover()
 
             if isExpanded {
                 historySection
