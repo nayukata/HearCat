@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Foundation
+import os
 
 /// 確定した1発話ぶんの文字起こし。話者ラベルと壁時計の時刻を持つ。
 public struct TranscriptSegment: Sendable {
@@ -31,6 +32,32 @@ public struct SendableBuffer: @unchecked Sendable {
 
     public init(buffer: AVAudioPCMBuffer) {
         self.buffer = buffer
+    }
+}
+
+/// CheckedContinuation を1回だけ resume する。Process.terminationHandler のような
+/// callback とタイムアウトが競合して同じ continuation を二重に resume すると
+/// 実行時クラッシュになるため、先に着いた1回だけを通す。
+public final class ResumeOnce<T: Sendable, E: Error>: Sendable {
+    private let done = OSAllocatedUnfairLock(initialState: false)
+    private let resume: @Sendable (Result<T, E>) -> Void
+
+    public init(_ continuation: CheckedContinuation<T, E>) {
+        resume = { continuation.resume(with: $0) }
+    }
+
+    public func callAsFunction(_ result: Result<T, E>) {
+        let first = done.withLock { done -> Bool in
+            defer { done = true }
+            return !done
+        }
+        if first { resume(result) }
+    }
+}
+
+extension ResumeOnce where E == Never {
+    public func callAsFunction(_ value: T) {
+        self(.success(value))
     }
 }
 

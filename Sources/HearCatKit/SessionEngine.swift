@@ -806,8 +806,10 @@ public final class SessionEngine {
         pumps = []
 
         // 2. 末尾の発話を確定文としてフラッシュしてから解析を閉じる。
-        await mine?.stop()
-        await theirs?.stop()
+        // 各チャンネルの stop() は確定待ちで最大 1 秒かかるため、直列にすると停止が倍待たされる。
+        async let mineStopped: Void? = mine?.stop()
+        async let theirsStopped: Void? = theirs?.stop()
+        _ = await (mineStopped, theirsStopped)
 
         // 3. イベントの消費(ファイル書き込み)を完了させる。
         eventSink?.finish()

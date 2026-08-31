@@ -337,6 +337,29 @@ public actor ChannelTranscriber {
         inputContinuation.finish()
         // 末尾に残った音声を確定結果として吐き出してから停止する。
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+        // finalize 後に results ストリームが閉じるまで待ち、末尾の確定を取りこぼさない。
+        // ストリームが終わる保証はないため上限を設ける。TaskGroup だと終了時に全子タスクの
+        // 完了を暗黙に待つため、ストリームが閉じないと stop() ごと止まる。先に着いた方で抜ける。
+        if let resultsTask {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeOnce = ResumeOnce<Void, Never>(continuation)
+                // 無音のまま止めるとストリームは閉じず、毎回ここまで待つ。後片付け中は
+                // パネルの操作が塞がるため、確定の吐き出しに十分な最短で切る。結果タスクが
+                // 先に終わった場合はこの待機を打ち切る(cancel しないと、用済みのこの Task が
+                // 最大1秒キューに残り続ける)。
+                let timeout = Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    guard !Task.isCancelled else { return }
+                    resultsTask.cancel()
+                    resumeOnce(())
+                }
+                Task {
+                    await resultsTask.value
+                    timeout.cancel()
+                    resumeOnce(())
+                }
+            }
+        }
         resultsTask?.cancel()
         resultsTask = nil
     }
