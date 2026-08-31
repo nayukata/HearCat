@@ -323,9 +323,10 @@ final class AppModel {
         return sessions.first { $0.id == id }
     }
 
-    /// そのセッションの要約が、いま作られている途中か(停止直後の待ち時間も含む)。
+    /// そのセッションの要約が、いま作られている途中か(停止直後の待ち時間、他セッションの
+    /// 要約が終わるまでの順番待ちも含む)。
     func isAwaitingSummary(_ session: SessionInfo) -> Bool {
-        summarizingSessionID == session.id || pendingAutoSummarySessionID == session.id
+        summarizingSessionID == session.id || pendingAutoSummarySessionIDs.contains(session.id)
     }
     /// refreshSessions が呼ばれるたびに増える版数。停止直後は最終行の書き込みが
     /// 完了直前まで遅れるため、SessionDetailView が読み直すきっかけに使う。
@@ -987,10 +988,11 @@ final class AppModel {
     /// ボタン表示と二重実行の防止に使う。
     private(set) var summarizingSessionID: String?
 
-    /// 停止直後の自動要約を待っているセッション ID。生成が始まるまでに数秒の間があり、
+    /// 停止直後の自動要約を待っているセッション ID の集合。生成が始まるまでに数秒の間があり、
     /// summarizingSessionID だけを見ると、その間だけ「要約なし」に見えてしまう
     /// (パネルの直前セッションの表示が「文字起こしを見る」→「作成中」と揺れる)。
-    private(set) var pendingAutoSummarySessionID: String?
+    /// 複数セッションが立て続けに終わると同時に待つことがあるため、集合で持つ。
+    private(set) var pendingAutoSummarySessionIDs: Set<String> = []
 
     /// 決定事項の一括取り込み(バックフィル)の進捗。nil は実行していない。
     /// 完了後も次の start / cancel まではそのまま残す(UI が「完了」を出せるように)。
@@ -2125,7 +2127,7 @@ final class AppModel {
         // 選択画面の初期選択も、カレンダーの予定名+履歴からの推測に合わせる
         // (同じ会議名を初期表示する = ユーザーはそのまま「開始」を押すだけで済む)。
         // 推測できない予定は未分類が初期選択になる。
-        let calendarTitle = settings.calendarNaming ? await CalendarNamer.currentEventTitle() : nil
+        let calendarTitle = await currentEventTitleForNewSession()
         let initialGroup = autoFolder(forCalendarTitle: calendarTitle)
         guard let result = HotkeyGroupPicker.choose(defaultGroup: initialGroup) else {
             return
