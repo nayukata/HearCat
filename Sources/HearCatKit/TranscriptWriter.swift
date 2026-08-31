@@ -157,10 +157,16 @@ public actor TranscriptWriter {
 
     private func rewrite() {
         let content = segments.map { Self.line(for: $0) + "\n" }.joined()
-        try? handle.truncate(atOffset: 0)
-        try? handle.seek(toOffset: 0)
-        handle.write(Data(content.utf8))
-        try? handle.synchronize()
+        do {
+            try handle.truncate(atOffset: 0)
+            try handle.seek(toOffset: 0)
+            try handle.write(contentsOf: Data(content.utf8))
+            try handle.synchronize()
+        } catch {
+            // ディスク満杯やボリューム取り外しなどで失敗しても、後続の書き込みで
+            // 復帰する可能性があるためクラッシュさせず継続する。
+            errorLog("文字起こしの書き直しに失敗しました: \(error)")
+        }
     }
 
     public func close() {
@@ -168,9 +174,14 @@ public actor TranscriptWriter {
     }
 
     private func write(_ line: String) {
-        handle.write(Data(line.utf8))
-        // 追記のたびに flush して、録音中でも AI(Claude Code)が最新を読めるようにする。
-        try? handle.synchronize()
+        do {
+            try handle.write(contentsOf: Data(line.utf8))
+            // 追記のたびに flush して、録音中でも AI(Claude Code)が最新を読めるようにする。
+            try handle.synchronize()
+        } catch {
+            // 上と同じ理由でクラッシュさせず継続する。
+            errorLog("文字起こしの書き込みに失敗しました: \(error)")
+        }
     }
 
     /// ファイルに書く行の書式。ライブ画面のコピー機能が、まだファイルに書かれていない
