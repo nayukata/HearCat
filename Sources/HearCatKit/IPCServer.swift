@@ -23,6 +23,7 @@ public final class IPCServer: @unchecked Sendable {
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw IPCError.socketFailed(errno) }
+        IPCSocket.disableSigPipe(on: fd)
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -66,7 +67,18 @@ public final class IPCServer: @unchecked Sendable {
     private func acceptLoop(serverFD: Int32) {
         while true {
             let clientFD = accept(serverFD, nil, nil)
-            guard clientFD >= 0 else { return }  // stop() で閉じられた
+            guard clientFD >= 0 else {
+                let code = errno
+                if code == EINTR { continue }
+                // stop() で listening fd が閉じられた場合。他スレッドから閉じられるため
+                // serverFD プロパティを見るのではなく errno で判定する。
+                if code == EBADF || code == EINVAL { return }
+                errorLog("IPC の accept に失敗しました (errno: \(code))")
+                usleep(100_000)
+                continue
+            }
+            IPCSocket.disableSigPipe(on: clientFD)
+            IPCSocket.setTimeouts(on: clientFD, seconds: 5)
             let handler = self.handler
             Task {
                 let response: IPCResponse
@@ -104,6 +116,20 @@ public enum IPCError: LocalizedError {
 
 /// 改行区切り JSON の読み書き。サーバー/クライアントで共用する。
 enum IPCSocket {
+    /// 相手が先に閉じた fd への write は SIGPIPE でプロセスごと落とすため、
+    /// signal(SIGPIPE, SIG_IGN) のようなプロセス全体への設定ではなく fd 単位で無効化する。
+    static func disableSigPipe(on fd: Int32) {
+        var value: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &value, socklen_t(MemoryLayout<Int32>.size))
+    }
+
+    /// 改行を送らないクライアントに fd を握られ続けないよう、送受信に上限を設ける。
+    static func setTimeouts(on fd: Int32, seconds: Int) {
+        var tv = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     static func readMessage<T: Decodable>(_ type: T.Type, from fd: Int32) -> T? {
         var data = Data()
         var byte: UInt8 = 0

@@ -6,6 +6,7 @@ public enum IPCClient {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw IPCError.socketFailed(errno) }
         defer { close(fd) }
+        IPCSocket.disableSigPipe(on: fd)
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
