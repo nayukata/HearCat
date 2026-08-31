@@ -705,7 +705,9 @@ final class AppModel {
             liveFinals = []
             liveTimeline.removeAll()
             // カレンダーの今の予定名をセッション名にする(設定でオフにできる)。
-            let calendarTitle = settings.calendarNaming ? await CalendarNamer.currentEventTitle() : nil
+            // 判定に使う一覧を最新にしてから引く(直前に止めた1本目を数え漏らさないため)。
+            refreshSessions()
+            let calendarTitle = await currentEventTitleForNewSession()
             let resolvedFolder: String?
             switch folder {
             case .explicit(let f):
@@ -734,6 +736,34 @@ final class AppModel {
         return title
     }
 
+    /// これから始めるセッションに付ける、カレンダー由来の名前。
+    ///
+    /// 同じ予定の枠内で既に1本録れている場合は名前を引き継がない。会議が予定より早く
+    /// 終わったあとの雑談や別件を続けて録ると、中身と関係のない会議名が付き、
+    /// その名前の履歴からその会議のグループへ保存されてしまうため。
+    /// 2本目以降は日時だけの名前・未分類になり、後から自分で名前とグループを決められる。
+    private func currentEventTitleForNewSession() async -> String? {
+        guard settings.calendarNaming, let event = await CalendarNamer.currentEvent() else {
+            return nil
+        }
+        let recorded = Self.hasSession(
+            named: event.title, startedAfter: event.startDate, in: sessions)
+        return recorded ? nil : event.title
+    }
+
+    /// その予定が始まって以降に、同じ名前で保存されたセッションがあるか。
+    /// 開始時刻で区切るのは、週次定例のように過去に同名のセッションが並ぶ予定でも
+    /// 「今回の枠で録ったか」だけを見るため。
+    static func hasSession(
+        named title: String, startedAfter eventStart: Date, in sessions: [SessionInfo]
+    ) -> Bool {
+        let key = normalizeSessionTitle(title)
+        guard !key.isEmpty else { return false }
+        return sessions.contains {
+            normalizeSessionTitle($0.name) == key && $0.startDate >= eventStart
+        }
+    }
+
     /// この予定のときの保存先。
     /// - その予定の間に手で選び直していれば、その選択を尊重する
     /// - 予定があれば、同じ名前の過去セッションが入っているグループ。無ければ未分類
@@ -753,7 +783,7 @@ final class AppModel {
     /// 手で選び直した分の記憶も一緒に捨てる(前の会議の選択を次の会議へ持ち越さない)。
     func syncGroupSelectionWithCurrentEvent() async {
         guard !status.active else { return }
-        let rawTitle = settings.calendarNaming ? await CalendarNamer.currentEventTitle() : nil
+        let rawTitle = await currentEventTitleForNewSession()
         let title = Self.eventKey(rawTitle)
         if title != appliedGroupCalendarTitle {
             appliedGroupCalendarTitle = title
@@ -1961,13 +1991,16 @@ final class AppModel {
     /// 「要約が生成されない」ことしか分からなかった。
     private func autoSummarize(sessionID: String) {
         guard let engine = settings.autoSummaryEngine else { return }
-        pendingAutoSummarySessionID = sessionID
+        pendingAutoSummarySessionIDs.insert(sessionID)
         Task {
-            defer { pendingAutoSummarySessionID = nil }
+            defer { pendingAutoSummarySessionIDs.remove(sessionID) }
             // 最後の発話の確定は、停止よりファイル書き込みがわずかに遅れることがある。
             try? await Task.sleep(for: .seconds(2))
-            guard summarizingSessionID == nil,
-                let session = SessionStore.list().first(where: { $0.id == sessionID }),
+            // 他セッションの要約が生成中なら空くまで待つ。ここで諦めると後発の自動要約が欠ける。
+            while summarizingSessionID != nil {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            guard let session = SessionStore.list().first(where: { $0.id == sessionID }),
                 session.summaryURL == nil,
                 let url = session.transcriptURL,
                 let transcript = try? String(contentsOf: url, encoding: .utf8),
