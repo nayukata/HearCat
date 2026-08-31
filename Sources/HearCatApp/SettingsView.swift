@@ -12,27 +12,6 @@ private struct MicDeviceOption: Identifiable, Hashable {
     var id: String { uid ?? "" }
 }
 
-private struct AgentModelOption: Equatable {
-    let value: String
-    let label: String
-}
-
-private struct CodexModelsCache: Decodable {
-    let models: [CodexModelEntry]
-}
-
-private struct CodexModelEntry: Decodable {
-    let slug: String
-    let displayName: String
-    let visibility: String
-
-    enum CodingKeys: String, CodingKey {
-        case slug
-        case displayName = "display_name"
-        case visibility
-    }
-}
-
 /// 候補から選べる一方、将来追加された完全なモデル名も直接入力できる欄。
 /// SwiftUI の TextField は grouped Form 内でフォーカスを取得できない環境があるため、
 /// 編集可能な AppKit 標準の NSComboBox を使う。
@@ -1038,29 +1017,14 @@ struct SettingsView: View {
     private func modelOptions(for cli: AgentCLI) -> [AgentModelOption] {
         switch cli {
         case .claude:
-            [
-                AgentModelOption(value: "sonnet", label: "Sonnet 5"),
-                AgentModelOption(value: "opus", label: "Opus 4.8"),
-                AgentModelOption(value: "fable", label: "Fable 5"),
-            ]
+            AgentModelCatalog.options(for: .claude)
         case .codex:
             codexModelOptions
         }
     }
 
     private func refreshCodexModelOptions() {
-        let cacheURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/models_cache.json")
-        guard let data = try? Data(contentsOf: cacheURL),
-              let cache = try? JSONDecoder().decode(CodexModelsCache.self, from: data)
-        else {
-            codexModelOptions = []
-            return
-        }
-
-        codexModelOptions = cache.models
-            .filter { $0.visibility == "list" }
-            .map { AgentModelOption(value: $0.slug, label: $0.displayName) }
+        codexModelOptions = AgentModelCatalog.options(for: .codex)
     }
 
     /// codex 欄への書き込みで、空文字が確定した時だけ既定値に置き換える。claude はそのまま

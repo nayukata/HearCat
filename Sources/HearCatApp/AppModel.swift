@@ -1471,6 +1471,21 @@ final class AppModel {
         return available[0]
     }
 
+    /// 質問パネルのエンジン切替メニューから呼ぶ。設定を書き換えるだけで分析は再実行しない
+    /// (次に送る質問から新しいエンジン・モデルが使われる)。modelValue が nil なら
+    /// 「既定」選択(codeImpactAgentModels からそのエンジンのエントリを外す)。
+    /// codeImpactStreamedModel は直前の応答で届いた「前のエンジンのモデル名」なので、
+    /// ここで捨てないと切替直後もフッターに旧エンジンのモデル名が残ってしまう。
+    func selectCodeImpactAgent(_ cli: AgentCLI, modelValue: String?) {
+        settings.codeImpactAgent = cli
+        if let modelValue {
+            settings.codeImpactAgentModels[cli] = modelValue
+        } else {
+            settings.codeImpactAgentModels.removeValue(forKey: cli)
+        }
+        codeImpactStreamedModel = nil
+    }
+
     /// 直前の結果を踏まえた追加質問を投げる。completed 状態からのみ可能で、
     /// 質問文字列が空(またはトリムで空になる)なら誤送信として無視する。
     /// 初回の consent は完了済みなので再確認しない。

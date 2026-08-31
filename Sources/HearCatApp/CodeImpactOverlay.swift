@@ -1054,12 +1054,72 @@ private struct CodeImpactOverlayView: View {
                 .font(HCFont.caption)
                 .foregroundStyle(HCColor.textDim)
             Spacer(minLength: 10)
+            engineSwitchMenu
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// 現在のエンジン・モデル表示を兼ねた切替メニュー。クリックすると、エンジンを親項目
+    /// (未検出は disabled)、モデルを子項目にした NSMenu(SwiftUI Menu は macOS では NSMenu で
+    /// 描画される)が開く。設定を書き換えるだけで、その場では分析を再実行しない。
+    private var engineSwitchMenu: some View {
+        Menu {
+            ForEach(AgentCLI.allCases, id: \.self) { cli in
+                engineSubmenu(for: cli)
+            }
+        } label: {
             Text(currentEngineLabel)
                 .font(HCFont.caption)
                 .foregroundStyle(HCColor.accentText)
                 .lineLimit(1)
         }
-        .frame(maxWidth: .infinity)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .pointingHandOnHover()
+    }
+
+    private func engineSubmenu(for cli: AgentCLI) -> some View {
+        let detected = AgentCLIDetector.shared.availableCLIs.contains(cli)
+        return Menu(detected ? cli.displayName : "\(cli.displayName)(未検出)") {
+            modelMenuItems(for: cli)
+        }
+        .disabled(!detected)
+    }
+
+    /// 「既定」+ 候補モデル + (候補に無い現在値があればそれも1件)を並べる。
+    /// 「既定」は codeImpactAgentModels からそのエンジンのエントリを外す(= 既存の
+    /// 「空なら CLI 側の既定に任せる」挙動)。
+    @ViewBuilder
+    private func modelMenuItems(for cli: AgentCLI) -> some View {
+        let currentValue = model.settings.codeImpactAgentModel(for: cli)
+        let isCurrentEngine = model.settings.codeImpactAgent == cli
+
+        engineMenuButton(label: "既定", checked: isCurrentEngine && currentValue == nil) {
+            model.selectCodeImpactAgent(cli, modelValue: nil)
+        }
+
+        let candidates = AgentModelCatalog.options(for: cli)
+        ForEach(candidates) { option in
+            engineMenuButton(label: option.label, checked: isCurrentEngine && currentValue == option.value) {
+                model.selectCodeImpactAgent(cli, modelValue: option.value)
+            }
+        }
+
+        if let currentValue, !candidates.contains(where: { $0.value == currentValue }) {
+            engineMenuButton(label: currentValue, checked: isCurrentEngine) {
+                model.selectCodeImpactAgent(cli, modelValue: currentValue)
+            }
+        }
+    }
+
+    private func engineMenuButton(label: String, checked: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if checked {
+                Label(label, systemImage: "checkmark")
+            } else {
+                Text(label)
+            }
+        }
     }
 
     /// 「エンジン名 (モデル名)」の形式(エンジン名と半角括弧の間に半角スペース 1 つ)。
