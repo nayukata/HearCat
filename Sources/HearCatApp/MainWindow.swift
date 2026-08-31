@@ -91,6 +91,16 @@ struct MainWindow: View {
         }
     }
 
+    /// 選ばれたセッションが入っている日付区分を開く。取り込んだセッションは録音した
+    /// 日時で並ぶため、既定で畳まれている「今月」「それ以前」に落ちると、選択された
+    /// はずの行が一覧に現れない。
+    private func expandDateSection(forSessionID id: String) {
+        guard let session = model.sessions.first(where: { $0.id == id }),
+              session.folder == nil
+        else { return }
+        collapsedDateSections.remove(Self.dateBucket(for: session.startDate))
+    }
+
     private static func dateBucket(for date: Date, now: Date = Date()) -> DateBucket {
         let calendar = Calendar.current
         if calendar.isDateInToday(date) { return .today }
@@ -169,6 +179,7 @@ struct MainWindow: View {
             // パネル経由で開いた場合)は onChange では拾えないため、ここで消費する。
             if let request = model.mainWindowSelectionRequest {
                 selection = [request]
+                expandDateSection(forSessionID: request)
                 model.mainWindowSelectionRequest = nil
             } else if selection.isEmpty {
                 let first = model.status.active ? Self.liveID : model.sessions.first?.id
@@ -180,6 +191,7 @@ struct MainWindow: View {
         .onChange(of: model.mainWindowSelectionRequest) {
             guard let request = model.mainWindowSelectionRequest else { return }
             selection = [request]
+            expandDateSection(forSessionID: request)
             model.mainWindowSelectionRequest = nil
         }
         // ライブ画面を見ている最中に停止すると status.active が false になり、
