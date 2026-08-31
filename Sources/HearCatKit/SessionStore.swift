@@ -493,14 +493,27 @@ public enum SessionStore {
         }
         // ディレクトリ名に連動する成果物(文字起こし・録音)を新しい名前へ揃える。
         // どれが連動するかは Artifact 側の規則に従う(ここで名前を組み立て直さない)。
-        for artifact in SessionInfo.Artifact.allCases {
-            let newName = artifact.fileName(inDirectoryNamed: newDirName)
-            guard let current = session.url(of: artifact),
-                current.lastPathComponent != newName
-            else { continue }
-            try fm.moveItem(at: current, to: session.directory.appendingPathComponent(newName))
+        // url(of:) はディレクトリ名(directory.lastPathComponent)からファイル名を導くため、
+        // 途中で失敗すると旧名のまま残った成果物が見えなくなる。成功した移動を記録し、
+        // 失敗時は逆順で元に戻してから投げ直す(戻す側の失敗はベストエフォートで無視)。
+        var moved: [(from: URL, to: URL)] = []
+        do {
+            for artifact in SessionInfo.Artifact.allCases {
+                let newName = artifact.fileName(inDirectoryNamed: newDirName)
+                guard let current = session.url(of: artifact),
+                    current.lastPathComponent != newName
+                else { continue }
+                let destination = session.directory.appendingPathComponent(newName)
+                try fm.moveItem(at: current, to: destination)
+                moved.append((from: current, to: destination))
+            }
+            try fm.moveItem(at: session.directory, to: newDir)
+        } catch {
+            for step in moved.reversed() {
+                try? fm.moveItem(at: step.to, to: step.from)
+            }
+            throw error
         }
-        try fm.moveItem(at: session.directory, to: newDir)
         return SessionInfo(
             id: session.folder.map { "\($0)/\(newDirName)" } ?? newDirName,
             directory: newDir, startDate: session.startDate, name: name, folder: session.folder)
