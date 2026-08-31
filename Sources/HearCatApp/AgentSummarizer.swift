@@ -146,6 +146,21 @@ final class AgentOutputBuffer: @unchecked Sendable {
     func snapshot() -> Data { lock.withLock { $0 } }
 }
 
+/// stdin パイプへの書き込みとクローズ。同期 write は Swift Concurrency の協調スレッドプールを
+/// 塞ぐため、専用のバックグラウンドキューへ逃がす。子プロセスが早期終了してパイプが
+/// 閉じている場合に備え、例外を投げる旧 API ではなく throws 版の write(contentsOf:) を使う。
+/// AgentSummarizer・AgentCodeImpactStream・AgentCodexImpactStream から使うため internal。
+enum AgentProcessIO {
+    static func writeAndCloseStdin(_ text: String, to pipe: Pipe) {
+        DispatchQueue.global().async {
+            if let data = text.data(using: .utf8) {
+                try? pipe.fileHandleForWriting.write(contentsOf: data)
+            }
+            try? pipe.fileHandleForWriting.close()
+        }
+    }
+}
+
 /// 検出済みエージェント CLI の一覧。アプリ起動後にバックグラウンドで1回だけ検出し、
 /// 以後は @Observable なキャッシュとして UI から読む(zsh -lc は数百 ms かかり得るため、
 /// ボタンを出すたびに検出し直すと UI がもたつく)。
@@ -592,19 +607,9 @@ enum AgentSummarizer {
         stdinPipe: Pipe, stdoutPipe: Pipe, stderrPipe: Pipe
     ) async throws -> (exitCode: Int32, stdout: String, stderr: String) {
         try await withCheckedThrowingContinuation { continuation in
-            let resumed = OSAllocatedUnfairLock(initialState: false)
+            let resumeOnce = ResumeOnce<(exitCode: Int32, stdout: String, stderr: String), Error>(continuation)
             let stdout = AgentOutputBuffer()
             let stderr = AgentOutputBuffer()
-
-            let resumeOnce: @Sendable (Result<(exitCode: Int32, stdout: String, stderr: String), Error>) -> Void = { result in
-                let shouldResume = resumed.withLock { done in
-                    let wasDone = done
-                    done = true
-                    return !wasDone
-                }
-                guard shouldResume else { return }
-                continuation.resume(with: result)
-            }
 
             stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                 stdout.append(handle.availableData)
@@ -630,10 +635,7 @@ enum AgentSummarizer {
                 return
             }
 
-            if let data = transcript.data(using: .utf8) {
-                stdinPipe.fileHandleForWriting.write(data)
-            }
-            try? stdinPipe.fileHandleForWriting.close()
+            AgentProcessIO.writeAndCloseStdin(transcript, to: stdinPipe)
 
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard process.isRunning else { return }

@@ -1,4 +1,5 @@
 import Foundation
+import HearCatKit
 import os
 
 /// codex CLI での「関連資料との照合」ストリーミング実行。claude 版(AgentCodeImpactStream)と
@@ -275,16 +276,7 @@ enum AgentCodexImpactStream {
 
         let outcome = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let resumed = OSAllocatedUnfairLock(initialState: false)
-                let resumeOnce: @Sendable (Result<AttemptOutcome, Error>) -> Void = { result in
-                    let shouldResume = resumed.withLock { done in
-                        let wasDone = done
-                        done = true
-                        return !wasDone
-                    }
-                    guard shouldResume else { return }
-                    continuation.resume(with: result)
-                }
+                let resumeOnce = ResumeOnce<AttemptOutcome, Error>(continuation)
 
                 let rawStdout = AgentOutputBuffer()
                 let rawStderr = AgentOutputBuffer()
@@ -348,10 +340,7 @@ enum AgentCodexImpactStream {
                     return
                 }
 
-                if let data = stdinPayload.data(using: .utf8) {
-                    stdinPipe.fileHandleForWriting.write(data)
-                }
-                try? stdinPipe.fileHandleForWriting.close()
+                AgentProcessIO.writeAndCloseStdin(stdinPayload, to: stdinPipe)
 
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
             }

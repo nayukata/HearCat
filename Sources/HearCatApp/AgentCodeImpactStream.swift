@@ -1,4 +1,5 @@
 import Foundation
+import HearCatKit
 import os
 
 /// claude CLI のストリーミング実行(照合専用)から届く通知。
@@ -347,16 +348,7 @@ enum AgentCodeImpactStream {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let resumed = OSAllocatedUnfairLock(initialState: false)
-                let resumeOnce: @Sendable (Result<AttemptOutcome, Error>) -> Void = { result in
-                    let shouldResume = resumed.withLock { done in
-                        let wasDone = done
-                        done = true
-                        return !wasDone
-                    }
-                    guard shouldResume else { return }
-                    continuation.resume(with: result)
-                }
+                let resumeOnce = ResumeOnce<AttemptOutcome, Error>(continuation)
 
                 let rawStdout = AgentOutputBuffer()
                 let rawStderr = AgentOutputBuffer()
@@ -427,10 +419,7 @@ enum AgentCodeImpactStream {
                     return
                 }
 
-                if let data = transcript.data(using: .utf8) {
-                    stdinPipe.fileHandleForWriting.write(data)
-                }
-                try? stdinPipe.fileHandleForWriting.close()
+                AgentProcessIO.writeAndCloseStdin(transcript, to: stdinPipe)
 
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
             }
