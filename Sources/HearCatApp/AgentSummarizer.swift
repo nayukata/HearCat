@@ -97,20 +97,42 @@ enum AgentCLIResolver {
                 stderr.append(handle.availableData)
             }
 
+            // ログインシェルが .zshrc 側の不調(ネットワークマウントの待ちなど)で
+            // ハングすると terminationHandler が永久に発火しないため、上限を設けて
+            // 強制終了する。
+            let resumeOnce = ResumeOnce<String?, Never>(continuation)
+
+            // タイムアウト監視を DispatchWorkItem にしておき、プロセスが先に正常終了した場合は
+            // terminationHandler の先頭で cancel する。cancel しないと、キュー上に積んだこの
+            // クロージャ(process・resumeOnce 等を捕捉している)がタイムアウト時刻まで残り続ける
+            // (AgentCodeImpactStream.runOnce と同じ理屈)。
+            nonisolated(unsafe) let watchdog = DispatchWorkItem {
+                guard process.isRunning else { return }
+                process.terminate()
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                resumeOnce(nil)
+            }
+
             process.terminationHandler = { _ in
+                watchdog.cancel()
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
                 let output = String(data: stdout.snapshot(), encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                continuation.resume(returning: (output?.isEmpty == false) ? output : nil)
+                resumeOnce((output?.isEmpty == false) ? output : nil)
             }
             do {
                 try process.run()
             } catch {
+                watchdog.cancel()
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(returning: nil)
+                resumeOnce(nil)
+                return
             }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: watchdog)
         }
     }
 }
