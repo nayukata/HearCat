@@ -40,6 +40,15 @@ public final class SystemAudioSource: @unchecked Sendable {
         self.continuation = continuation
     }
 
+    /// stop() を呼ばずに解放された場合の保険。出力先変更の監視ブロックが controlQueue 上で
+    /// 同じ資源を付け替えている最中と重なり得るため、stop() と同じく controlQueue で直列化する。
+    deinit {
+        controlQueue.sync {
+            removeDefaultOutputDeviceListener()
+            stopCapture()
+        }
+    }
+
     /// 開始したあとに取得が止まった場合の通知先を差し込む。start() より前に呼ぶこと。
     /// 開始時の失敗は start() が throw するので、こちらは開始後の失敗だけを運ぶ。
     public func setOnFailure(_ handler: @escaping @Sendable (String) -> Void) {
@@ -61,7 +70,17 @@ public final class SystemAudioSource: @unchecked Sendable {
 
     /// タップと集約デバイスを作って取得を始める。buffers のストリームには触らない
     /// (載せ替えの間もストリームは生かしたままにするため)。
+    /// 途中の段階で失敗したら、そこまでに作った分だけ stopCapture() で片付けてから投げ直す。
     private func startCapture() throws {
+        do {
+            try attemptStartCapture()
+        } catch {
+            stopCapture()
+            throw error
+        }
+    }
+
+    private func attemptStartCapture() throws {
         // 1. システム全体を対象にしたタップを作る。muteBehavior=.unmuted なので相手の声は普通に聞こえる。
         let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         tapDescription.uuid = UUID()
