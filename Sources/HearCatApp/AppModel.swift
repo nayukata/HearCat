@@ -1509,6 +1509,11 @@ final class AppModel {
     /// codeImpactStreamedModel は直前の応答で届いた「前のエンジンのモデル名」なので、
     /// ここで捨てないと切替直後もフッターに旧エンジンのモデル名が残ってしまう。
     func selectCodeImpactAgent(_ cli: AgentCLI, modelValue: String?) {
+        // 調査中は受け付けない。走っている回答は始めたときのエンジンが最後まで書くので、
+        // ここで設定だけ変わると表示と実際に答えているエンジンが食い違う。メニュー側でも
+        // 押せなくしてあるが、抑止の主体はこちら(requestCodeImpactAnalysis の二重実行
+        // 防止と同じ作法)。
+        if case .analyzing = codeImpactAnalysisState { return }
         settings.codeImpactAgent = cli
         if let modelValue {
             settings.codeImpactAgentModels[cli] = modelValue

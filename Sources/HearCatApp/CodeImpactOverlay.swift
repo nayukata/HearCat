@@ -1067,7 +1067,8 @@ private struct CodeImpactOverlayView: View {
     /// (未検出は disabled)、モデルを子項目にした NSMenu(SwiftUI Menu は macOS では NSMenu で
     /// 描画される)が開く。設定を書き換えるだけで、その場では分析を再実行しない。
     private var engineSwitchMenu: some View {
-        Menu {
+        let busy = !canAcceptInput
+        return Menu {
             ForEach(AgentCLI.allCases, id: \.self) { cli in
                 engineSubmenu(for: cli)
             }
@@ -1079,7 +1080,9 @@ private struct CodeImpactOverlayView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .pointingHandOnHover()
+        // 調査中は押させない(抑止そのものは AppModel.selectCodeImpactAgent 側)。
+        .disabled(busy)
+        .pointingHandOnHover(disabled: busy)
     }
 
     private func engineSubmenu(for cli: AgentCLI) -> some View {
