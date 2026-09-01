@@ -17,6 +17,39 @@ enum AgentCodeImpactAnalyzer {
     /// 広げている。
     static let maximumGroupTranscriptCharacters = 120_000
 
+    /// 会話の継続が使えないときに渡し直す「これまでのやり取り」の上限。回答はレポート型で
+    /// 1件あたり数千字になるため、直近5件前後が収まる幅を取る。文字起こしの上限と同じ値だが
+    /// 意味は別で、連動もしない。
+    private static let maximumPriorConversationCharacters = 24_000
+
+    /// 会話の継続が使えないとき(エンジンを切り替えた、セッションが切れた)に、代わりに
+    /// プロンプトへ載せる「これまでのやり取り」。パネルに見えている質疑と、相手が知っている
+    /// 文脈を合わせるためのもの。turns は古い順。
+    ///
+    /// 直近の1往復だけは上限を超えても必ず入れる。ここを削ると、エンジン切替の直後に
+    /// 「さっきの答えの続き」という最も普通の聞き方が成立しなくなるため
+    /// (切り替え前も直前の1件は無制限に渡していたので、この一点だけは従来と同じ)。
+    static func priorConversation(from turns: [(question: String?, answer: String)]) -> String? {
+        var blocks: [String] = []
+        var used = 0
+        for turn in turns.reversed() {
+            var block = ""
+            if let question = turn.question?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !question.isEmpty
+            {
+                block += "【質問】\(question)\n"
+            }
+            block += "【回答】\(turn.answer)"
+            // 連結時の空行(separator)も上限に数える。
+            let cost = block.count + (blocks.isEmpty ? 0 : 2)
+            if !blocks.isEmpty, used + cost > Self.maximumPriorConversationCharacters { break }
+            blocks.append(block)
+            used += cost
+        }
+        guard !blocks.isEmpty else { return nil }
+        return blocks.reversed().joined(separator: "\n\n")
+    }
+
     /// 質問特化プロンプト(questionPrompt)が出力する見出し文字列。CodeImpactOverlay.swift の
     /// CodeImpactResultView が、この2つのセクションだけ特別な見た目(アコーディオンにしない等)に
     /// 分岐するため、プロンプト側と View 側で文字列がずれないよう定数を共有する。
@@ -43,7 +76,7 @@ enum AgentCodeImpactAnalyzer {
         transcript: String,
         referenceFolder: String?,
         question: String? = nil,
-        previousResult: String? = nil,
+        priorConversation: String? = nil,
         decisionContext: String? = nil,
         scope: TargetScope = .live
     ) async throws -> String {
@@ -52,7 +85,7 @@ enum AgentCodeImpactAnalyzer {
             input: recentTranscript(from: transcript),
             referenceFolder: referenceFolder,
             prompt: buildPrompt(
-                question: question, previousResult: previousResult, continuity: .fresh,
+                question: question, priorConversation: priorConversation, continuity: .fresh,
                 hasReferenceFolder: referenceFolder != nil, decisionContext: decisionContext,
                 scope: scope),
             outputPrefix: "code-impact",
@@ -68,7 +101,7 @@ enum AgentCodeImpactAnalyzer {
     /// 必ず一致させて渡すこと。ずれると「差分だけです」と言いながら全量を渡す、あるいは
     /// その逆の事故につながる。
     enum TranscriptContinuity {
-        /// 新規会話(--resume なし)。文字起こしは全量。previousResult があればプロンプトに埋め込む。
+        /// 新規会話(--resume なし)。文字起こしは全量。priorConversation があればプロンプトに埋め込む。
         case fresh
         /// 継続だが、送信済み位置が不明・矛盾している等の理由で文字起こしを全量渡し直す
         /// (差分計算ができない場合のフォールバック。フォールバック攻撃で resume を落とす経路とは別)。
@@ -80,13 +113,17 @@ enum AgentCodeImpactAnalyzer {
     }
 
     /// 質問が無ければダイジェスト用の基本プロンプト、あれば質問特化プロンプトに切り替える。
-    /// 質問特化プロンプトは、初回の質問と追加質問(previousResult 付き)の両方で共有する。
+    /// 質問特化プロンプトは、初回の質問と追加質問(priorConversation 付き)の両方で共有する。
     ///
     /// continuity は claude を `--resume` で継続実行する場合に .resumedFullResend /
     /// .resumedWithDelta / .resumedNoDelta のいずれかになる(AgentCodeImpactStream から呼ばれる)。
-    /// 会話側が前回までの文脈を覚えているため、previousResult は埋め込まず、代わりに
+    /// 会話側が前回までの文脈を覚えているため、priorConversation は埋め込まず、代わりに
     /// resumeNote(標準入力の中身が全量か差分かの説明)を添える。AgentCodeImpactStream からも
     /// 呼ぶため internal。
+    ///
+    /// priorConversation は、継続が使えないときに代わりに渡すそれまでの質疑
+    /// (priorConversation(from:) が組み立てる)。直前の1件だけを渡していた頃は、切り替え後に
+    /// 「さっき出た3案のうち2つめ」のような2つ前以前を指す質問が黙って外れていた。
     ///
     /// hasReferenceFolder は、資料フォルダが紐付いているか(=カレントディレクトリの資料や
     /// コードを読ませてよいか)。false の間は、資料やコードへの言及・参照ファイル行の指示を
@@ -101,7 +138,7 @@ enum AgentCodeImpactAnalyzer {
     /// 変わるため、書き出しの文言(basePrompt / questionPrompt の intro)と回答の書き方を
     /// 差し替える(AppModel.groupQuestionMaterial 参照)。
     static func buildPrompt(
-        question: String?, previousResult: String?, continuity: TranscriptContinuity,
+        question: String?, priorConversation: String?, continuity: TranscriptContinuity,
         hasReferenceFolder: Bool, decisionContext: String? = nil, scope: TargetScope
     ) -> String {
         let trimmedQuestion = question?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -114,13 +151,15 @@ enum AgentCodeImpactAnalyzer {
         var parts: [String] = []
         if let note = resumeNote(for: continuity) {
             parts.append(note)
-        } else if let previousResult, !previousResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        } else if let priorConversation,
+            !priorConversation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
             parts.append(
                 """
-                直前の調査結果:
-                \(previousResult)
+                これまでのやり取り:
+                \(priorConversation)
 
-                直前の調査で既に触れた内容は繰り返さず、次の質問に絞って答えてください。
+                既に答えた内容は繰り返さず、次の質問に絞って答えてください。
                 """)
         }
         let hasDecisionIndex: Bool

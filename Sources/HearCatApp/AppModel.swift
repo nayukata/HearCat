@@ -1518,24 +1518,21 @@ final class AppModel {
         codeImpactStreamedModel = nil
     }
 
-    /// 直前の結果を踏まえた追加質問を投げる。completed 状態からのみ可能で、
+    /// これまでのやり取りを踏まえた追加質問を投げる。completed 状態からのみ可能で、
     /// 質問文字列が空(またはトリムで空になる)なら誤送信として無視する。
     /// 初回の consent は完了済みなので再確認しない。
     func requestFollowUpCodeImpact(question: String) {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard case .completed(let cli) = codeImpactAnalysisState else { return }
-        guard let previousResult = codeImpactTurns.last?.result else { return }
+        guard !codeImpactTurns.isEmpty else { return }
         codeImpactQuestion = trimmed
         showCodeImpactOverlay()
-        startCodeImpactAnalysis(using: cli, previousResult: previousResult)
+        startCodeImpactAnalysis(using: cli)
     }
 
     /// question は引数に取らず、常に codeImpactQuestion(呼び出し側が事前に設定済み)を読む。
-    private func startCodeImpactAnalysis(
-        using cli: AgentCLI,
-        previousResult: String? = nil
-    ) {
+    private func startCodeImpactAnalysis(using cli: AgentCLI) {
         let context: (transcript: String, referenceFolder: String?, decisionContext: String?)
         do {
             context = try codeImpactContext()
@@ -1562,6 +1559,12 @@ final class AppModel {
             codeImpactSessionID = nil
             codeImpactSentTranscriptLength = nil
         }
+
+        // 継続が使えるかどうかはこの時点では確定しない(セッション期限切れで実行中に新規会話へ
+        // 落ちることがある)ため、やり取りは常に組み立てて渡し、使うかどうかはプロンプト側に
+        // 任せる。対象切替でやり取りを捨てた直後は空になるので、ここより前では組み立てない。
+        let priorConversation = AgentCodeImpactAnalyzer.priorConversation(
+            from: codeImpactTurns.map { (question: $0.question, answer: $0.result) })
 
         // ここでは settings.codeImpactAgent へは書かない。
         // selectedCodeImpactAgent は「保存された希望が使えない時に available[0] へ
@@ -1645,7 +1648,7 @@ final class AppModel {
                         incrementalTranscript: incrementalTranscript,
                         referenceFolder: context.referenceFolder,
                         question: question,
-                        previousResult: previousResult,
+                        priorConversation: priorConversation,
                         decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,
@@ -1658,7 +1661,7 @@ final class AppModel {
                         incrementalTranscript: incrementalTranscript,
                         referenceFolder: context.referenceFolder,
                         question: question,
-                        previousResult: previousResult,
+                        priorConversation: priorConversation,
                         decisionContext: context.decisionContext,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,

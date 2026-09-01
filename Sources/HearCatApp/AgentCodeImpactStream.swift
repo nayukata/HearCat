@@ -66,7 +66,7 @@ enum AgentCodeImpactStream {
     ///     全量を渡す」の合図(新規会話・送信済み位置が不明・異常時など)。空文字列は
     ///     「差分計算はできたが前回以降に新しい発話が無かった」を表し、そのまま空で送る。
     ///     resumeSessionID が nil の場合(新規会話)は無視する。
-    ///   - question / previousResult: プロンプト組み立て用。継続の有無・差分の有無に応じた
+    ///   - question / priorConversation: プロンプト組み立て用。継続の有無・差分の有無に応じた
     ///     resumeNote の出し分けは、この関数の中で AgentCodeImpactAnalyzer.buildPrompt に
     ///     都度渡す(呼び出し側で 1 度だけ組んで固定しない)。段階的フォールバックで
     ///     resumeSessionID を落として再実行する際に、標準入力とプロンプトの継続状態を
@@ -88,7 +88,7 @@ enum AgentCodeImpactStream {
         incrementalTranscript: String?,
         referenceFolder: String?,
         question: String?,
-        previousResult: String?,
+        priorConversation: String?,
         decisionContext: String?,
         resumeSessionID: String?,
         transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
@@ -153,7 +153,7 @@ enum AgentCodeImpactStream {
                 continuity = .fresh
             }
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
-                question: question, previousResult: previousResult, continuity: continuity,
+                question: question, priorConversation: priorConversation, continuity: continuity,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
                 scope: scope)
 
@@ -215,7 +215,7 @@ enum AgentCodeImpactStream {
                     input: fullTranscript,
                     referenceFolder: referenceFolder,
                     prompt: AgentCodeImpactAnalyzer.buildPrompt(
-                        question: question, previousResult: previousResult, continuity: .fresh,
+                        question: question, priorConversation: priorConversation, continuity: .fresh,
                         hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
                         scope: scope),
                     outputPrefix: "code-impact-stream-fallback",

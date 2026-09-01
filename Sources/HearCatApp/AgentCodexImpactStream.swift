@@ -50,7 +50,7 @@ enum AgentCodexImpactStream {
         incrementalTranscript: String?,
         referenceFolder: String?,
         question: String?,
-        previousResult: String?,
+        priorConversation: String?,
         decisionContext: String?,
         resumeSessionID: String?,
         transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
@@ -113,7 +113,7 @@ enum AgentCodexImpactStream {
             }
 
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
-                question: question, previousResult: previousResult, continuity: continuity,
+                question: question, priorConversation: priorConversation, continuity: continuity,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
                 scope: scope)
 
@@ -175,7 +175,7 @@ enum AgentCodexImpactStream {
             input: fullTranscript,
             referenceFolder: referenceFolder,
             prompt: AgentCodeImpactAnalyzer.buildPrompt(
-                question: question, previousResult: previousResult, continuity: .fresh,
+                question: question, priorConversation: priorConversation, continuity: .fresh,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
                 scope: scope),
             outputPrefix: "code-impact-stream-fallback",
