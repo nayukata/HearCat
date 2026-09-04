@@ -412,7 +412,8 @@ private struct CodeImpactOverlayView: View {
         let parsed = CodeImpactSectionsCache.shared.parsed(for: turnID) {
             let extraction = DecisionHistoryFence.extractFirst(from: turn.result)
             return CodeImpactSectionsCache.Parsed(
-                sections: CodeImpactResultView.parseSections(from: extraction.body),
+                sections: CodeImpactResultView.parseSections(
+                    from: extraction.body, sessionStartDate: model.codeImpactTargetSessionStartDate),
                 decisionHistoryPrompt: extraction.prompt)
         }
         for section in parsed.sections {
@@ -889,15 +890,16 @@ private struct CodeImpactOverlayView: View {
     ) -> some View {
         let isInteractive = isChoicesInteractive(turnID: turnID, isLatest: isLatest)
         if let turnID {
+            // ```decision-history フェンスの抽出は parseSections より前に行う。フェンスを
+            // 取り除いた本文だけを渡すことで、フェンスの生 JSON が通常のセクション本文に
+            // 紛れ込まないようにする(choices は逆にセクション解析後に抜き出しているが、
+            // decision-history はプロンプト側で単独フェンス・単一箇所出力を約束しているため
+            // 前処理のほうが単純で、かつ HearCatKit 側でテストできる)。
             let parsed = CodeImpactSectionsCache.shared.parsed(for: turnID) {
-                // ```decision-history フェンスの抽出は parseSections より前に行う。フェンスを
-                // 取り除いた本文だけを渡すことで、フェンスの生 JSON が通常のセクション本文に
-                // 紛れ込まないようにする(choices は逆にセクション解析後に抜き出しているが、
-                // decision-history はプロンプト側で単独フェンス・単一箇所出力を約束しているため
-                // 前処理のほうが単純で、かつ HearCatKit 側でテストできる)。
                 let extraction = DecisionHistoryFence.extractFirst(from: result)
                 return CodeImpactSectionsCache.Parsed(
-                    sections: CodeImpactResultView.parseSections(from: extraction.body),
+                    sections: CodeImpactResultView.parseSections(
+                        from: extraction.body, sessionStartDate: model.codeImpactTargetSessionStartDate),
                     decisionHistoryPrompt: extraction.prompt)
             }
             CodeImpactResultView(
@@ -1514,7 +1516,8 @@ private struct CodeImpactResultView: View {
         self.isInteractive = isInteractive
         self.sessionStartDate = model.codeImpactTargetSessionStartDate
         let extraction = DecisionHistoryFence.extractFirst(from: result)
-        self.sections = Self.parseSections(from: extraction.body)
+        self.sections = Self.parseSections(
+            from: extraction.body, sessionStartDate: sessionStartDate)
         self.decisionHistoryPrompt = extraction.prompt
         self.isDecisionHistoryPending = extraction.isPending
     }
@@ -1547,8 +1550,16 @@ private struct CodeImpactResultView: View {
         case code(String)
         case mermaid(String)
         case choices(ChoicePrompt)
-        /// ストリーミング途中の書きかけ ```choices フェンス。生 JSON は見せず、
-        /// 「選択肢を準備中」の合図(中央スピナー)だけを出すための場所取り。
+        /// ```weights フェンス(重みの棒)。パース済みの話題と時間。
+        case weights(TopicWeights)
+        /// ストリーミング途中の書きかけ ```choices / ```weights フェンス。
+        /// 生 JSON は見せず、「準備中」の合図(中央スピナー)だけを出すための場所取り。
+        /// choices と同じくターンの一番下へ引き上げて表示する(hasPendingChoices /
+        /// sectionsWithoutChoices が対象にする)。weights は ```回答 の直後に置く契約だが、
+        /// フェンスが閉じるまでは後続セクション自体がまだ届いていないため、「ターンの一番下」
+        /// は結果として「回答の直後」とほぼ一致する。フェンスが閉じて .weights に切り替わって
+        /// からは、他のセグメントと同じくセクション内の元の位置にそのまま描かれる(引き上げの
+        /// 対象外)。
         case choicesPending
     }
 
@@ -1596,7 +1607,12 @@ private struct CodeImpactResultView: View {
     /// 行の並びをテキスト/コード/mermaid のセグメントに分割する。
     /// 閉じフェンスが無いまま入力が終わる(ストリーミング途中)場合は、開始行の言語に関わらず
     /// そこまでをコードセグメントとして扱う(mermaid として確定させない)。
-    private static func segments(from lines: [Substring]) -> [Segment] {
+    ///
+    /// sessionStartDate は ```weights フェンスの壁時計(HH:MM:SS)を経過秒へ変換するために使う
+    /// (TopicWeights.parse の offset クロージャの元)。取得できない(グループ対象など)場合は
+    /// ```weights は .code へフォールバックするか、JSON 自体は壊れていなければ何も描画しない
+    /// (下の分岐参照)。
+    private static func segments(from lines: [Substring], sessionStartDate: Date?) -> [Segment] {
         var result: [Segment] = []
         var textBuffer: [Substring] = []
 
@@ -1638,14 +1654,35 @@ private struct CodeImpactResultView: View {
                     if let prompt = parseChoicePrompt(joined) {
                         result.append(.choices(prompt))
                     }
+                } else if language == "weights" {
+                    if let sessionStartDate {
+                        if let weights = TopicWeights.parse(joined, offset: { stamp in
+                            TranscriptParser.offsetSeconds(
+                                forWallClock: stamp, sessionStart: sessionStartDate,
+                                allowDayCrossing: false
+                            ).map(TimeInterval.init)
+                        }) {
+                            result.append(.weights(weights))
+                        } else {
+                            // JSON 自体が壊れている(choices と同じ方針で .code へ落とす)。
+                            result.append(.code(joined))
+                        }
+                    } else if TopicWeights.isWellFormed(joined) {
+                        // JSON 自体は壊れていないが、対象セッションの開始時刻が引けず
+                        // (グループ対象、またはライブでまだ sessions に載っていない等)
+                        // 経過秒へ変換できない。生 JSON を .code で見せるのも不適切なため、
+                        // 何も描画しない(choices の壊れた JSON と同じ「場所取りなし」)。
+                    } else {
+                        result.append(.code(joined))
+                    }
                 } else {
                     result.append(.code(joined))
                 }
                 index = cursor + 1
-            } else if language == "choices" {
-                // ストリーミング途中の書きかけ choices フェンス。生 JSON を見せず、
-                // 中央スピナー(choicesPending)で場所だけ知らせる。フェンスが閉じて
-                // パースできた時に選択肢 UI へ置き換わる。
+            } else if language == "choices" || language == "weights" {
+                // ストリーミング途中の書きかけフェンス。生 JSON を見せず、中央スピナー
+                // (choicesPending)で場所だけ知らせる。フェンスが閉じてパースできた時に
+                // それぞれの表示へ置き換わる。
                 result.append(.choicesPending)
                 index = lines.count
             } else {
@@ -1657,7 +1694,7 @@ private struct CodeImpactResultView: View {
         return result
     }
 
-    fileprivate static func parseSections(from result: String) -> [Section] {
+    fileprivate static func parseSections(from result: String, sessionStartDate: Date?) -> [Section] {
         var sections: [Section] = []
         var title: String?
         var lines: [Substring] = []
@@ -1665,7 +1702,10 @@ private struct CodeImpactResultView: View {
 
         func flush() {
             guard started else { return }
-            sections.append(Section(title: title, segments: Self.segments(from: lines)))
+            sections.append(
+                Section(
+                    title: title,
+                    segments: Self.segments(from: lines, sessionStartDate: sessionStartDate)))
         }
 
         for line in result.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -1685,14 +1725,14 @@ private struct CodeImpactResultView: View {
 
     /// セクション本文をプレーンテキストへ結合する(ページ内検索がセクション単位で検索語を
     /// 含むか判定するために使う。CodeImpactOverlayView.openMatchingSections 参照)。
-    /// choices/choicesPending は生 JSON を検索対象にしないため除く。
+    /// choices/weights/choicesPending は生 JSON を検索対象にしないため除く。
     fileprivate static func plainText(of segments: [Segment]) -> String {
         segments.map { segment -> String in
             switch segment {
             case .text(let lines): return lines.joined(separator: "\n")
             case .code(let code): return code
             case .mermaid(let code): return code
-            case .choices, .choicesPending: return ""
+            case .choices, .weights, .choicesPending: return ""
             }
         }.joined(separator: "\n")
     }
@@ -1815,7 +1855,7 @@ private struct CodeImpactResultView: View {
             switch segment {
             case .text(let lines):
                 combinedText += lines.joined(separator: "\n")
-            case .code, .mermaid, .choices, .choicesPending:
+            case .code, .mermaid, .choices, .weights, .choicesPending:
                 return false
             }
         }
@@ -1940,6 +1980,9 @@ private struct CodeImpactResultView: View {
             mermaidSegmentView(code)
         case .choices(let prompt):
             ChoicesView(prompt: prompt, model: model, isInteractive: isInteractive)
+        case .weights(let weights):
+            TopicWeightsView(weights: weights, model: model)
+                .padding(.top, 4)
         case .choicesPending:
             // body 側でターンの一番下へ引き上げて中央スピナーとして描くため、
             // セクション内では何も出さない(sectionsWithoutChoices で除外済みのはずだが網羅用)。

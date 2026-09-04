@@ -318,6 +318,24 @@ enum AgentCodeImpactAnalyzer {
         options は 2〜4 個。「その他」の選択肢は入れない(アプリ側が自由入力欄を自動で付ける)。ユーザーは選択肢のラベルか自由入力を次のメッセージで返してくるので、それを回答として扱って続きを答えること。
         """
 
+    /// questionPrompt 専用: 単一セッション対象(scope が .live か .pastSession)のときだけ、
+    /// 話題ごとの言及量を尋ねる質問に ```weights フェンスで応じさせる案内(questionPrompt 内で
+    /// scope により出し分ける)。グループ対象は複数セッションにまたがり単一の時刻範囲に
+    /// 展開できないため付けない。回数・合計時間はアプリ側(TopicWeights.parse)が実測するため、
+    /// AI は話題・実在する時刻範囲・measure(尺度)だけを出す。フェンスの言語名(weights)と
+    /// JSON のキー(title / measure / topics / label / ranges)は HearCatKit の
+    /// TopicWeights.parse とそのまま対応しているので、変える場合は両方直すこと。
+    private static let weightsParagraph = """
+        「相手が一番気にしていたこと」「何を繰り返していたか」「どの話題に時間を使ったか」を聞かれたときだけ、この回答の本文の直後(## \(nextStepSectionTitle) より前)に ```weights フェンスを 1 つだけ置く。1 回まで。それ以外の質問では置かない。話題は 3〜6 件、ranges の時刻は文字起こしに実在する発言の時刻(HH:MM:SS)だけを使い、時刻を作らない。回数や合計時間はここに書かない(アプリが測る)。
+        measure は、質問が「何回」「何度も」「繰り返し」のように回数を聞いているなら "count"、「どれだけ時間」「長く話した」のように時間を聞いているなら "time"、どちらとも取れない・判断できない場合は "time" にする。
+        ranges の要素の数え方: その話題が話題として出てきた 1 回を 1 つの range にする。同じ話が途切れず続いている間は 1 つの range にまとめ、いったん別の話題に移ってから再びその話題に戻ってきたら、それは別の range として追加する。
+        label は 14 文字以内の名詞句にする(文にしない)。
+        ```weights
+        {"measure": "count", "topics": [{"label": "価格", "ranges": [["13:02:10", "13:02:40"], ["13:10:05", "13:10:20"]]}]}
+        ```
+        例: 「相手が何度も言っていたことは?」という質問への回答なら、判定の一文の後にこのフェンスを置く(この例は繰り返しの回数を聞いているので measure は "count")。
+        """
+
     /// questionPrompt 専用: 決定の経緯質問への ```decision-history フェンスの出力契約。
     /// 「決まったことの記録」の索引 (AppModel.codeImpactDecisionContext) が添付されている
     /// ときだけ questionPrompt に入る。ここ (出力仕様の内側) に置くのは、末尾の
@@ -421,6 +439,9 @@ enum AgentCodeImpactAnalyzer {
         // 置かないと、末尾の autoExecutionNote に「別の書式指示」として無視されてしまう
         // (decisionHistoryParagraph のコメント参照)。
         let decisionHistorySection = hasDecisionIndex ? "\n\n\(decisionHistoryParagraph)" : ""
+        // ```weights は単一セッションの時刻範囲が前提のため、グループ対象
+        // (複数セッションにまたがる)には出さない。
+        let weightsSection: String = scope == .group ? "" : "\n\(weightsParagraph)"
         let readerLine =
             scope == .live
             ? "- 読み手は会議中で、数秒しか読めない。簡潔さを最優先し、前置き・言い換え・繰り返しをしない"
@@ -510,7 +531,7 @@ enum AgentCodeImpactAnalyzer {
 
             \(analysisExampleSection)出力は次の Markdown だけにしてください。前置きや後書きは不要です。
             ## \(answerSectionTitle)
-            \(answerLengthLine)
+            \(answerLengthLine)\(weightsSection)
             ## \(nextStepSectionTitle)
             回答だけでは質問の目的を達成できず、質問者が次に取るべき具体的な一手 (誰に何を確認するか、どこを見れば確定するか) が文字起こしから特定できる場合だけこのセクションを出し、1〜2 行で書く。次のいずれかに当たる場合は出力しない: 回答で完結している / 「本人や関係者に聞けば分かる」のような当然の行動しか書けない / ```choices で確認する内容と同じ。迷ったら出力しない。「出力しない」とは見出しごと省略すること。「(なし)」と書いて見出しを残すのは誤り (それは根拠と補足だけのルール)。
             ## 根拠と補足
