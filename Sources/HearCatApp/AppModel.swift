@@ -1593,6 +1593,12 @@ final class AppModel {
         let scope: AgentCodeImpactAnalyzer.TargetScope =
             codeImpactTargetGroup != nil
             ? .group : (codeImpactTargetDirectory != nil ? .pastSession : .live)
+        // ```deadlines フェンス(AgentCodeImpactAnalyzer.deadlinesParagraph)が「来週金曜」の
+        // ような相対表現を絶対日付へ直せるよう、対象セッションの開始日を渡す。文字起こし
+        // 自体には絶対日付が出てこないため、材料(標準入力)ではなくプロンプト側の
+        // meetingDate として渡す(buildPrompt のコメント参照)。グループ対象は単一の会議日を
+        // 持たないため、codeImpactTargetSessionStartDate 自体が nil を返す。
+        let meetingDate = codeImpactTargetSessionStartDate.map(Self.groupSessionDateFormatter.string(from:))
         // グループ対象は groupCodeImpactContext 側で既に予算管理済みの材料を渡しているため、
         // ストリーム側の recentTranscript(行単位・末尾優先の切り詰め)を確実に発動させない
         // よう、実際に組み立てた材料の長さ以上を limit として渡す(固定値だけを渡すと、
@@ -1668,6 +1674,7 @@ final class AppModel {
                         question: question,
                         priorConversation: priorConversation,
                         decisionContext: context.decisionContext,
+                        meetingDate: meetingDate,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,
                         scope: scope,
@@ -1681,6 +1688,7 @@ final class AppModel {
                         question: question,
                         priorConversation: priorConversation,
                         decisionContext: context.decisionContext,
+                        meetingDate: meetingDate,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,
                         scope: scope,

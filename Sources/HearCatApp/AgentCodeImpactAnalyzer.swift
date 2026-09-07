@@ -78,6 +78,7 @@ enum AgentCodeImpactAnalyzer {
         question: String? = nil,
         priorConversation: String? = nil,
         decisionContext: String? = nil,
+        meetingDate: String? = nil,
         scope: TargetScope = .live
     ) async throws -> String {
         try await AgentSummarizer.execute(
@@ -87,7 +88,7 @@ enum AgentCodeImpactAnalyzer {
             prompt: buildPrompt(
                 question: question, priorConversation: priorConversation, continuity: .fresh,
                 hasReferenceFolder: referenceFolder != nil, decisionContext: decisionContext,
-                scope: scope),
+                meetingDate: meetingDate, scope: scope),
             outputPrefix: "code-impact",
             model: model,
             // 質問応答は要約と違い、応答が「## 」見出しから始まらなくても本文として表示したいため、
@@ -137,9 +138,17 @@ enum AgentCodeImpactAnalyzer {
     /// (1会議の文字起こしか、複数会議の要約の連なりか)と読み手の状況(会議中か振り返りか)が
     /// 変わるため、書き出しの文言(basePrompt / questionPrompt の intro)と回答の書き方を
     /// 差し替える(AppModel.groupQuestionMaterial 参照)。
+    ///
+    /// meetingDate は対象セッションの開始日(yyyy-MM-dd。AppModel.codeImpactTargetSessionStartDate
+    /// を groupSessionDateFormatter で整形した値)。```deadlines フェンスが「来週金曜」のような
+    /// 相対表現を絶対日付へ直すために使う。文字起こし自体には日付が出てこないため、材料
+    /// (標準入力)側ではなくここ(プロンプトの出力仕様の内側)に埋め込む(添付文脈側に書いた
+    /// フェンス指示が無視される実績があるため。decisionHistoryParagraph のコメント参照)。
+    /// nil(グループ対象、または取得できない場合)なら deadlinesParagraph 自体を出力しない。
     static func buildPrompt(
         question: String?, priorConversation: String?, continuity: TranscriptContinuity,
-        hasReferenceFolder: Bool, decisionContext: String? = nil, scope: TargetScope
+        hasReferenceFolder: Bool, decisionContext: String? = nil, meetingDate: String? = nil,
+        scope: TargetScope
     ) -> String {
         let trimmedQuestion = question?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmedQuestion.isEmpty else {
@@ -172,7 +181,7 @@ enum AgentCodeImpactAnalyzer {
         parts.append(
             questionPrompt(
                 question: trimmedQuestion, hasReferenceFolder: hasReferenceFolder,
-                hasDecisionIndex: hasDecisionIndex, scope: scope))
+                hasDecisionIndex: hasDecisionIndex, meetingDate: meetingDate, scope: scope))
         return parts.joined(separator: "\n\n")
     }
 
@@ -336,6 +345,29 @@ enum AgentCodeImpactAnalyzer {
         例: 「相手が何度も言っていたことは?」という質問への回答なら、判定の一文の後にこのフェンスを置く(この例は繰り返しの回数を聞いているので measure は "count")。
         """
 
+    /// questionPrompt 専用: 単一セッション対象(scope が .live か .pastSession)、かつ
+    /// meetingDate が引ける場合だけ、期限・予定を尋ねる質問に ```deadlines フェンスで
+    /// 応じさせる案内(weightsParagraph と同じ理由でグループ対象には付けない)。
+    /// 文字起こし自体には絶対日付が出てこないため、会議の日付は標準入力(添付文脈)側では
+    /// なくここ(出力仕様の内側)に文として埋め込む。添付文脈側に書いたフェンス指示は
+    /// 末尾の autoExecutionNote に「別の書式指示」として無視される実績があるため
+    /// (decisionHistoryParagraph のコメント参照。この事情は日付という単なるデータでも
+    /// 変わらない: 出力仕様の文の中で使わせて初めて確実に読ませられる)。
+    /// フェンスの言語名(deadlines)と JSON のキー(title / items / label / who / at / due / kind)は
+    /// HearCatKit の DeadlineCalendar.parse とそのまま対応しているので、変える場合は
+    /// 両方直すこと。
+    private static func deadlinesParagraph(meetingDate: String) -> String {
+        """
+        「いつまでに」「締切」「期限」「次回までに何をすればいいか」を聞かれたときだけ、この回答の本文の直後(## \(nextStepSectionTitle) より前)に ```deadlines フェンスを1つだけ置く。1回まで。それ以外の質問では置かない。項目は1〜6件にし、期限の日付を言っていない宿題は出さない。
+        この会議の日付は \(meetingDate) です。at は文字起こしに実在する発言の時刻(HH:MM:SS)だけを使い、時刻を作らない。due はこの会議の日付を基準に、相対表現(来週金曜、明日まで、等)を yyyy-MM-dd の絶対日付に直す。日付そのものが分からない項目は出さない。
+        kind は、やることの締切なら "due"、次回の会議など決まっている予定なら "event" にする(省略時は "due" 扱い)。who は、自分の宿題なら "me"、相手の宿題なら "you"、どちらとも取れない・チーム全体などは省略する。label は14文字以内の名詞句にする(文にしない)。
+        ```deadlines
+        {"items": [{"label": "LP 差し替え", "who": "me", "at": "14:03:12", "due": "2026-09-10", "kind": "due"}, {"label": "次回定例", "at": "14:40:02", "due": "2026-09-16", "kind": "event"}]}
+        ```
+        例: 「次回までに何を準備すればいい?」という質問への回答なら、判定の一文の後にこのフェンスを置く。
+        """
+    }
+
     /// questionPrompt 専用: 決定の経緯質問への ```decision-history フェンスの出力契約。
     /// 「決まったことの記録」の索引 (AppModel.codeImpactDecisionContext) が添付されている
     /// ときだけ questionPrompt に入る。ここ (出力仕様の内側) に置くのは、末尾の
@@ -411,8 +443,12 @@ enum AgentCodeImpactAnalyzer {
     /// hasDecisionIndex は「決まったことの記録」の索引が添付されているか(=decisionContext が
     /// 非 nil かつ非空)。true のときだけ decisionHistoryParagraph を末尾に挟む(索引が無いのに
     /// フェンスの出し方だけ指示しても、AI が答えられる議題自体が無い)。
+    ///
+    /// meetingDate は対象セッションの開始日(yyyy-MM-dd)。非 nil のときだけ deadlinesParagraph
+    /// を末尾に挟む(会議の日付が分からなければ、AI は due の相対表現を絶対日付へ直せない)。
     private static func questionPrompt(
-        question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool, scope: TargetScope
+        question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool, meetingDate: String?,
+        scope: TargetScope
     ) -> String {
         // 文の前半 (材料の主語句) は scope だけで決まり、後半 (資料フォルダの有無) と独立に
         // 変わるため、全組み合わせを列挙せず前後で分けて組む。
@@ -442,6 +478,12 @@ enum AgentCodeImpactAnalyzer {
         // ```weights は単一セッションの時刻範囲が前提のため、グループ対象
         // (複数セッションにまたがる)には出さない。
         let weightsSection: String = scope == .group ? "" : "\n\(weightsParagraph)"
+        // ```deadlines は単一セッション前提(グループには出さない)に加え、会議の日付
+        // (meetingDate)が引けている場合だけ出す(引けなければ AI は絶対日付を組み立てられない)。
+        let deadlinesSection: String = {
+            guard scope != .group, let meetingDate else { return "" }
+            return "\n\(deadlinesParagraph(meetingDate: meetingDate))"
+        }()
         let readerLine =
             scope == .live
             ? "- 読み手は会議中で、数秒しか読めない。簡潔さを最優先し、前置き・言い換え・繰り返しをしない"
@@ -531,7 +573,7 @@ enum AgentCodeImpactAnalyzer {
 
             \(analysisExampleSection)出力は次の Markdown だけにしてください。前置きや後書きは不要です。
             ## \(answerSectionTitle)
-            \(answerLengthLine)\(weightsSection)
+            \(answerLengthLine)\(weightsSection)\(deadlinesSection)
             ## \(nextStepSectionTitle)
             回答だけでは質問の目的を達成できず、質問者が次に取るべき具体的な一手 (誰に何を確認するか、どこを見れば確定するか) が文字起こしから特定できる場合だけこのセクションを出し、1〜2 行で書く。次のいずれかに当たる場合は出力しない: 回答で完結している / 「本人や関係者に聞けば分かる」のような当然の行動しか書けない / ```choices で確認する内容と同じ。迷ったら出力しない。「出力しない」とは見出しごと省略すること。「(なし)」と書いて見出しを残すのは誤り (それは根拠と補足だけのルール)。
             ## 根拠と補足

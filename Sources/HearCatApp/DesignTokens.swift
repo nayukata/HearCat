@@ -184,6 +184,16 @@ enum HCDate {
         formatter.locale = Locale(identifier: "ja_JP")
         return formatter
     }()
+
+    /// 期限の暦(DeadlineCalendarView)の横軸ラベル用。`M/d`(ゼロ埋めなし)・`en_US_POSIX`。
+    /// 縦揃えは不要(横軸上に個別に浮かせるだけ)で、`list` のゼロ埋めは幅を無駄に取るため
+    /// 使わない。
+    static let axis: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
 }
 
 /// 動きのトークン。Animation をここ以外に直書きしない。

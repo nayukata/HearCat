@@ -1552,14 +1552,18 @@ private struct CodeImpactResultView: View {
         case choices(ChoicePrompt)
         /// ```weights フェンス(重みの棒)。パース済みの話題と時間。
         case weights(TopicWeights)
-        /// ストリーミング途中の書きかけ ```choices / ```weights フェンス。
+        /// ```deadlines フェンス(期限の暦)。パース済みの期限・予定。weights と同じく
+        /// ```回答 の直後に置く契約で、セクション内の元の位置にそのまま描かれる
+        /// (choices のようにターンの一番下へ引き上げはしない)。
+        case deadlines(DeadlineCalendar)
+        /// ストリーミング途中の書きかけ ```choices / ```weights / ```deadlines フェンス。
         /// 生 JSON は見せず、「準備中」の合図(中央スピナー)だけを出すための場所取り。
         /// choices と同じくターンの一番下へ引き上げて表示する(hasPendingChoices /
-        /// sectionsWithoutChoices が対象にする)。weights は ```回答 の直後に置く契約だが、
-        /// フェンスが閉じるまでは後続セクション自体がまだ届いていないため、「ターンの一番下」
-        /// は結果として「回答の直後」とほぼ一致する。フェンスが閉じて .weights に切り替わって
-        /// からは、他のセグメントと同じくセクション内の元の位置にそのまま描かれる(引き上げの
-        /// 対象外)。
+        /// sectionsWithoutChoices が対象にする)。weights・deadlines は ```回答 の直後に置く
+        /// 契約だが、フェンスが閉じるまでは後続セクション自体がまだ届いていないため、
+        /// 「ターンの一番下」は結果として「回答の直後」とほぼ一致する。フェンスが閉じて
+        /// .weights / .deadlines に切り替わってからは、他のセグメントと同じくセクション内の
+        /// 元の位置にそのまま描かれる(引き上げの対象外)。
         case choicesPending
     }
 
@@ -1675,11 +1679,29 @@ private struct CodeImpactResultView: View {
                     } else {
                         result.append(.code(joined))
                     }
+                } else if language == "deadlines" {
+                    if let sessionStartDate {
+                        if let calendar = DeadlineCalendar.parse(joined, offset: { stamp in
+                            TranscriptParser.offsetSeconds(
+                                forWallClock: stamp, sessionStart: sessionStartDate,
+                                allowDayCrossing: false
+                            ).map(TimeInterval.init)
+                        }) {
+                            result.append(.deadlines(calendar))
+                        } else {
+                            result.append(.code(joined))
+                        }
+                    } else if DeadlineCalendar.isWellFormed(joined) {
+                        // weights と同じ理由(sessionStartDate が引けず経過秒へ変換できない)で
+                        // 何も描画しない。
+                    } else {
+                        result.append(.code(joined))
+                    }
                 } else {
                     result.append(.code(joined))
                 }
                 index = cursor + 1
-            } else if language == "choices" || language == "weights" {
+            } else if language == "choices" || language == "weights" || language == "deadlines" {
                 // ストリーミング途中の書きかけフェンス。生 JSON を見せず、中央スピナー
                 // (choicesPending)で場所だけ知らせる。フェンスが閉じてパースできた時に
                 // それぞれの表示へ置き換わる。
@@ -1732,7 +1754,7 @@ private struct CodeImpactResultView: View {
             case .text(let lines): return lines.joined(separator: "\n")
             case .code(let code): return code
             case .mermaid(let code): return code
-            case .choices, .weights, .choicesPending: return ""
+            case .choices, .weights, .deadlines, .choicesPending: return ""
             }
         }.joined(separator: "\n")
     }
@@ -1855,7 +1877,7 @@ private struct CodeImpactResultView: View {
             switch segment {
             case .text(let lines):
                 combinedText += lines.joined(separator: "\n")
-            case .code, .mermaid, .choices, .weights, .choicesPending:
+            case .code, .mermaid, .choices, .weights, .deadlines, .choicesPending:
                 return false
             }
         }
@@ -1983,6 +2005,11 @@ private struct CodeImpactResultView: View {
         case .weights(let weights):
             TopicWeightsView(weights: weights, model: model)
                 .padding(.top, 4)
+        case .deadlines(let calendar):
+            if let sessionStartDate {
+                DeadlineCalendarView(calendar: calendar, sessionStartDate: sessionStartDate, model: model)
+                    .padding(.top, 4)
+            }
         case .choicesPending:
             // body 側でターンの一番下へ引き上げて中央スピナーとして描くため、
             // セクション内では何も出さない(sectionsWithoutChoices で除外済みのはずだが網羅用)。

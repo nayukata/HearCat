@@ -73,6 +73,8 @@ enum AgentCodeImpactStream {
     ///     必ず一致させるため(差分文字列を新規会話に渡す事故を防ぐ)。
     ///   - decisionContext: 「決まったことの記録」への索引添付(AgentCodeImpactAnalyzer.buildPrompt
     ///     参照)。質問が無ければ buildPrompt 側で使われない。
+    ///   - meetingDate: 対象セッションの開始日(yyyy-MM-dd)。```deadlines フェンスの案内
+    ///     (AgentCodeImpactAnalyzer.buildPrompt 参照)に使う。nil ならその案内を出さない。
     ///   - resumeSessionID: 継続したい claude セッション ID。nil なら新規会話。
     ///   - transcriptCharacterLimit: transcript を直近部分へ切り詰める際の上限文字数。
     ///     グループ対象は AppModel 側で既にセッション単位に間引いた材料を渡すため、
@@ -90,6 +92,7 @@ enum AgentCodeImpactStream {
         question: String?,
         priorConversation: String?,
         decisionContext: String?,
+        meetingDate: String? = nil,
         resumeSessionID: String?,
         transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
         scope: AgentCodeImpactAnalyzer.TargetScope = .live,
@@ -155,7 +158,7 @@ enum AgentCodeImpactStream {
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, priorConversation: priorConversation, continuity: continuity,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                scope: scope)
+                meetingDate: meetingDate, scope: scope)
 
             let arguments = arguments(
                 prompt: prompt, model: model, config: config,
@@ -217,7 +220,7 @@ enum AgentCodeImpactStream {
                     prompt: AgentCodeImpactAnalyzer.buildPrompt(
                         question: question, priorConversation: priorConversation, continuity: .fresh,
                         hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                        scope: scope),
+                        meetingDate: meetingDate, scope: scope),
                     outputPrefix: "code-impact-stream-fallback",
                     model: model,
                     extraction: AgentSummarizer.extractCodeImpactMarkdown)
