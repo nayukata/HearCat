@@ -42,13 +42,16 @@ enum CalendarMeetings {
         ])
     }
 
-    /// 今から horizon 秒後までに始まる直近の会議。grace 秒前までに始まったものも拾う
-    /// (会議の開始直後に Mac を開いた場合にも間に合わせるため)。
+    /// 今から horizon 秒後までに始まる会議を、開始時刻の早い順に並べたもの。grace 秒前までに
+    /// 始まったものも拾う(会議の開始直後に Mac を開いた場合にも間に合わせるため)。
+    ///
+    /// 開始時刻が60秒足らずしか離れていない会議が続く場合があるため、最も早い1件だけでなく
+    /// 窓に入る全件を返す。呼び出し側(tick)が予告済みのものを飛ばして次を選べるようにするため。
     static func upcoming(
         within horizon: TimeInterval, grace: TimeInterval,
         excludedIDs: Set<String> = [], keywords: [String] = []
-    ) async -> CalendarMeeting? {
-        guard let store = await CalendarAccess.authorizedStore() else { return nil }
+    ) async -> [CalendarMeeting] {
+        guard let store = await CalendarAccess.authorizedStore() else { return [] }
         let now = Date()
         let windowStart = now.addingTimeInterval(-grace)
         let windowEnd = now.addingTimeInterval(horizon)
@@ -64,8 +67,8 @@ enum CalendarMeetings {
                     eventIDs: exclusionIDs(of: event), title: event.title ?? "",
                     excludedIDs: excludedIDs, keywords: keywords)
             }
-        guard let next = candidates.min(by: { $0.startDate < $1.startDate }) else { return nil }
-        return meeting(from: next)
+            .sorted { $0.startDate < $1.startDate }
+        return candidates.map(meeting(from:))
     }
 
     /// これから horizon 秒のあいだに始まる、会議とみなされる予定。
@@ -162,11 +165,14 @@ final class MeetingAutoStartScheduler {
     private func tick() async {
         guard enabled else { return }
         let excluded = exclusions?() ?? (ids: [], keywords: [])
-        guard let meeting = await CalendarMeetings.upcoming(
+        let candidates = await CalendarMeetings.upcoming(
             within: Self.leadTime, grace: Self.grace,
             excludedIDs: excluded.ids, keywords: excluded.keywords)
-        else { return }
-        guard !handledIDs.contains(meeting.id) else { return }
+        // 開始時刻が近い会議が続くと、先頭が予告済みのまま次の tick まで残り続けることがある。
+        // 先頭固定ではなく、まだ予告していないものを開始時刻順に探す。
+        guard let meeting = candidates.first(where: { !handledIDs.contains($0.id) }) else {
+            return
+        }
         markHandled(meeting.id)
         onDue?(meeting)
     }
