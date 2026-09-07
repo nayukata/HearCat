@@ -679,7 +679,7 @@ struct SessionDetailView: View {
                 // 話者はライブ画面と同じチップで示す。同じ内容を2度読ませないよう、
                 // 本文からは話者ラベルを外す(コピーは元の「話者: 発言」のまま)。
                 if let speaker = line.speaker {
-                    SpeakerChip(speaker: speaker.rawValue)
+                    SpeakerChip(speaker: speaker.rawValue, name: line.speakerName)
                     Text(line.text)
                 } else {
                     Text(line.body)

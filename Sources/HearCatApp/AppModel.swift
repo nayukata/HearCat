@@ -2546,8 +2546,11 @@ final class AppModel {
     }
 
     /// キューの先頭を展開して確認画面に載せる。展開は I/O が重いので別スレッドで行う。
+    /// 文字起こしの取り込み画面が出ている間は待たせる。同じウィンドウに2枚のシートは
+    /// 載らず、Finder からファイルを渡されるのは画面を開いている最中でも起きるため、
+    /// ここで揃えないと片方が出ないまま消える。
     private func openNextImport() {
-        guard pendingImport == nil, !importQueue.isEmpty else { return }
+        guard pendingImport == nil, !showingTranscriptImport, !importQueue.isEmpty else { return }
         let url = importQueue.removeFirst()
         Task {
             do {
@@ -2584,6 +2587,50 @@ final class AppModel {
         pending.opened.discard()
         pendingImport = nil
         openNextImport()
+    }
+
+    // MARK: - 会議アプリの文字起こしの取り込み
+
+    /// Google Meet / Zoom の文字起こしを取り込む画面を出しているか。
+    /// .hearcat の取り込みと違い、渡された時点では何も展開していないので、
+    /// 閉じるときに片付けるものは無い。
+    var showingTranscriptImport = false
+
+    func requestTranscriptImport() {
+        // 受け取ったセッションの確認画面が出ている間は開かない(同じウィンドウに
+        // 2枚のシートは載らない)。
+        guard pendingImport == nil else { return }
+        // 取り込んだセッションを選択状態にして見せるため、履歴ウィンドウの上に出す。
+        showHistory()
+        showingTranscriptImport = true
+    }
+
+    /// 文字起こしの取り込み画面を閉じる。閉じている間に Finder から渡された .hearcat が
+    /// 待っていれば、続けてその確認画面を出す。
+    func dismissTranscriptImport() {
+        guard showingTranscriptImport else { return }
+        showingTranscriptImport = false
+        openNextImport()
+    }
+
+    /// 読み取れた文字起こしをセッションとして保存する。
+    func confirmTranscriptImport(
+        _ parsed: MeetingTranscriptImport.Parsed, name: String, startDate: Date,
+        me: String?, intoFolder folder: String?
+    ) {
+        // 画面が閉じるまでの間に2度押されても、同じ会議が2つ並ばないようにする
+        // (取り込み先は毎回ぶつからない名前で作られるため、防がないと両方保存される)。
+        guard showingTranscriptImport else { return }
+        showingTranscriptImport = false
+        defer { openNextImport() }
+        do {
+            let session = try MeetingTranscriptImport.install(
+                parsed, name: name, startDate: startDate, me: me, intoFolder: folder)
+            refreshSessions()
+            mainWindowSelectionRequest = session.id
+        } catch {
+            importError = error.localizedDescription
+        }
     }
 
     private func mutateSession(

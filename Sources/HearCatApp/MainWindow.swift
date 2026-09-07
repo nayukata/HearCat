@@ -464,19 +464,30 @@ struct MainWindow: View {
             .foregroundStyle(.secondary)
             .pointingHandOnHover()
             Spacer()
-            Button {
-                model.requestImportFromPanel()
+            // 取り込めるものが2種類(受け取ったセッションと、会議アプリの文字起こし)
+            // あるため、押した先で選ばせる。
+            Menu {
+                Button("セッション (.hearcat) を取り込む…") {
+                    model.requestImportFromPanel()
+                }
+                Button("Google Meet / Zoom の文字起こしを取り込む…") {
+                    model.requestTranscriptImport()
+                }
             } label: {
                 Image(systemName: "square.and.arrow.down")
                     .font(HCFont.callout)
             }
-            .buttonStyle(.plain)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .foregroundStyle(.secondary)
-            .help("受け取ったセッション (.hearcat) を取り込む")
+            .help("記録を取り込む")
             .pointingHandOnHover()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        // 一覧の上に浮かせている帯なので、地を敷かないと下を流れる行が透けて重なる。
+        .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }
 

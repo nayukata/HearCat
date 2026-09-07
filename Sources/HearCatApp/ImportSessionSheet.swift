@@ -188,6 +188,17 @@ struct SessionImportPresentation: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // 会議アプリの文字起こしの取り込み。.hearcat と同時には出ない
+            // (どちらもサイドバーの同じメニューから、片方ずつ開く)。
+            .sheet(
+                isPresented: Binding(
+                    get: { model.showingTranscriptImport },
+                    // Esc やシート外の操作で閉じられた場合も、待たせている .hearcat の
+                    // 確認画面へ進めるため、閉じる経路を1つにまとめる。
+                    set: { if !$0 { model.dismissTranscriptImport() } })
+            ) {
+                ImportTranscriptSheet(model: model)
+            }
             .sheet(
                 item: Binding(
                     get: { model.pendingImport },

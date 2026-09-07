@@ -18,6 +18,9 @@ public struct TranscriptLine: Identifiable, Sendable {
     public let body: String
     /// 行頭の話者。話者ラベルの付かない行は nil。
     public let speaker: Speaker?
+    /// 話者の実名。取り込んだ会議の文字起こし(「相手(菅原啓史): 発言」)だけが持つ。
+    /// 自分と相手しか登場しない録音セッションでは nil。
+    public let speakerName: String?
     /// 話者ラベルを除いた発言。話者の無い行は body と同じ。
     public let text: String
     /// セッション開始からの経過秒。時刻の無い行は nil。
@@ -31,16 +34,17 @@ public enum TranscriptParser {
         return bodyLines(from: text).enumerated().map { index, line in
             guard let (stamp, body) = split(line) else {
                 return TranscriptLine(
-                    id: index, stamp: nil, body: line, speaker: nil, text: line, offset: nil)
+                    id: index, stamp: nil, body: line, speaker: nil, speakerName: nil,
+                    text: line, offset: nil)
             }
-            let (speaker, spoken) = splitSpeaker(body)
+            let (speaker, speakerName, spoken) = splitSpeaker(body)
             // 行の時刻は時分秒だけなので、日をまたいだセッションでは開始より小さく見える
             // (allowDayCrossing: true で 24 時間補正する)。
             let offset = offsetSeconds(
                 forWallClock: stamp, sessionStart: sessionStart, allowDayCrossing: true)
             return TranscriptLine(
-                id: index, stamp: stamp, body: body, speaker: speaker, text: spoken,
-                offset: offset.map(TimeInterval.init))
+                id: index, stamp: stamp, body: body, speaker: speaker, speakerName: speakerName,
+                text: spoken, offset: offset.map(TimeInterval.init))
         }
     }
 
@@ -76,16 +80,32 @@ public enum TranscriptParser {
         return offset
     }
 
-    /// 「話者: 発言」を話者と発言に分ける。既知の話者ラベルで始まる行だけを対象にする
+    /// 「話者: 発言」を話者・実名・発言に分ける。既知の話者ラベルで始まる行だけを対象にする
     /// (発言の中のコロンを話者の区切りと取り違えないため)。
-    private static func splitSpeaker(_ body: String) -> (Speaker?, String) {
+    ///
+    /// 取り込んだ会議の文字起こしは「相手(菅原啓史): 発言」の形で実名を伴う。名前の終わりを
+    /// 最初の ")" で見分けられるのは、書き出し側(TranscriptWriter.line(time:speaker:name:text:))が
+    /// 名前から丸括弧を落としているため。
+    private static func splitSpeaker(_ body: String) -> (Speaker?, String?, String) {
         for speaker in Speaker.allCases {
-            let prefix = speaker.rawValue + ":"
-            guard body.hasPrefix(prefix) else { continue }
-            let spoken = body.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
-            return (speaker, spoken)
+            guard body.hasPrefix(speaker.rawValue) else { continue }
+            let rest = body.dropFirst(speaker.rawValue.count)
+            if rest.hasPrefix(":") {
+                return (speaker, nil, rest.dropFirst().trimmingCharacters(in: .whitespaces))
+            }
+            guard rest.hasPrefix("(") else { continue }
+            let nameStart = rest.index(after: rest.startIndex)
+            guard let close = rest[nameStart...].firstIndex(of: ")"),
+                close > nameStart,
+                rest[rest.index(after: close)...].hasPrefix(":")
+            else { continue }
+            let spoken = rest[rest.index(close, offsetBy: 2)...]
+            return (
+                speaker, String(rest[nameStart..<close]),
+                spoken.trimmingCharacters(in: .whitespaces)
+            )
         }
-        return (nil, body)
+        return (nil, nil, body)
     }
 
     /// コピー機能など、TranscriptLine への変換を経ずに整形済みの本文だけが必要な場面向け。
@@ -188,6 +208,32 @@ public actor TranscriptWriter {
     /// 確定分を同じ形式で複製するためにも参照する(書式の知識を1箇所にまとめる)。
     public static func line(for segment: TranscriptSegment) -> String {
         "[\(timeString(from: segment.timestamp))] \(segment.speaker): \(segment.text)"
+    }
+
+    /// 実名を伴う1行。取り込んだ会議の文字起こし(MeetingTranscriptImport)が書く形式の正本で、
+    /// 読み戻しは TranscriptParser が受け持つ。名前が空、または名前を落とした結果空になる
+    /// 場合は、実名の無い通常の行と同じ形にする。
+    public static func line(time: Date, speaker: Speaker, name: String?, text: String) -> String {
+        let cleaned = name.map(sanitizedSpeakerName) ?? ""
+        let label = cleaned.isEmpty ? speaker.rawValue : "\(speaker.rawValue)(\(cleaned))"
+        return "[\(timeString(from: time))] \(label): \(text)"
+    }
+
+    /// 実名を、行の書式を壊さない形に整える。TranscriptParser は名前の終わりを最初の ")" で
+    /// 見分けるため、半角の丸括弧が名前に残ると発言の頭が名前側へ食い込む。落とすと
+    /// 「山田太郎 (Host)」のような表示名が「山田太郎 Host」になってしまうので、
+    /// 取り違えの元にならない全角へ寄せて中身を残す。コロンと改行は落とす。
+    public static func sanitizedSpeakerName(_ raw: String) -> String {
+        String(
+            raw.map { character in
+                switch character {
+                case "(": return "（"
+                case ")": return "）"
+                default: return character
+                }
+            })
+            .filter { !":：\n\r\t".contains($0) }
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// "HH:mm:ss"(en_US_POSIX)で時刻を文字列化する。line(for:) が書く時刻表記と同じ書式にする

@@ -778,7 +778,10 @@ enum HCIcon {
 
 /// 話者チップ。LP の .u .s と同じ配色(自分=青 / 相手=オレンジ)。
 struct SpeakerChip: View {
+    /// 自分か相手か。色分けの根拠。
     let speaker: String
+    /// 取り込んだ会議の話者の実名。あればチップの文字はこちらになる(色は自分/相手のまま)。
+    var name: String?
     /// ライブ画面や共有カードは常に暗い背景だが、履歴画面はシステムの外観に従う。
     /// どちらでも読めるよう、実際に置かれた側の外観で色を選ぶ。
     @Environment(\.colorScheme) private var colorScheme
@@ -796,8 +799,9 @@ struct SpeakerChip: View {
     }
 
     var body: some View {
-        Text(speaker)
+        Text(name ?? speaker)
             .font(HCFont.style(.subheadline, weight: .bold))
+            .lineLimit(1)
             .padding(.horizontal, 9)
             .padding(.vertical, 1)
             .foregroundStyle(textColor)
