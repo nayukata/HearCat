@@ -16,6 +16,15 @@ struct GroupDetailView: View {
     let folder: String
     /// セッションタブで行を選ぶと、親(MainWindow)の selection をそのセッションへ切り替える。
     let onSelectSession: (String) -> Void
+    /// 右クリックメニューの「名前を変更…」。ダイアログの状態は履歴ウィンドウ側が持つので、
+    /// ここでは状態を複製せず依頼するだけにする。
+    let onRequestRename: (SessionInfo) -> Void
+    /// 右クリックメニューの「グループへ移動 > 新しいグループ…」。ダイアログの状態は
+    /// 履歴ウィンドウ側が持つので、ここでは依頼するだけにする。
+    let onRequestNewFolder: (SessionInfo) -> Void
+    /// 右クリックメニューの「削除…」。確認ダイアログの状態は履歴ウィンドウ側が持つので、
+    /// ここでは依頼するだけにする。グループ画面はこの1行だけを渡す。
+    let onRequestDelete: ([SessionInfo]) -> Void
 
     private enum Tab: String, CaseIterable {
         case sessions = "セッション"
@@ -203,19 +212,7 @@ struct GroupDetailView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(groupSessions) { session in
-                        Button {
-                            onSelectSession(session.id)
-                        } label: {
-                            SessionRow(session: session, sessionsVersion: model.sessionsVersion)
-                                // 文字の右の余白まで行全体をクリックできるように、ラベル自体を
-                                // 全幅へ広げてから当たり判定を付ける(.plain ではラベルの実寸が
-                                // そのまま当たり判定になるため、外側に付けても広がらない)。
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .pointingHandOnHover()
-                        .padding(.vertical, 4)
+                        sessionRow(session)
                         if session.id != groupSessions.last?.id {
                             Divider()
                         }
@@ -224,6 +221,44 @@ struct GroupDetailView: View {
                 .padding()
             }
         }
+    }
+
+    /// セッション1行。クリックで開く、ドラッグでサイドバーの未分類/他グループへ移せる、
+    /// 右クリックでサイドバー行と同じメニュー(名前変更・グループへ移動・削除)を出す。
+    private func sessionRow(_ session: SessionInfo) -> some View {
+        Button {
+            onSelectSession(session.id)
+        } label: {
+            SessionRow(session: session, sessionsVersion: model.sessionsVersion)
+                // 文字の右の余白まで行全体をクリックできるように、ラベル自体を
+                // 全幅へ広げてから当たり判定を付ける(.plain ではラベルの実寸が
+                // そのまま当たり判定になるため、外側に付けても広がらない)。
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointingHandOnHover()
+        .padding(.vertical, 4)
+        // 実績のある素の draggable(サイドバーのセッション行と同じ付け方。
+        // プレビュー付きはドロップ判定が死んだ)。
+        .draggable(session.id)
+        .contextMenu {
+            sessionContextMenuItems(
+                for: session,
+                bulkTargets: nil,
+                folders: model.folders,
+                onRename: onRequestRename,
+                onMove: moveSession,
+                onNewFolder: onRequestNewFolder,
+                onDelete: onRequestDelete)
+        }
+    }
+
+    /// 「グループへ移動」からの移動。サイドバー行の select(model.move(...)) と挙動を揃え、
+    /// 移動先のセッションを選んで開く(移動でセッション ID がフォルダ名込みに変わるため)。
+    private func moveSession(_ session: SessionInfo, toFolder newFolder: String?) {
+        guard let newID = model.move(session, toFolder: newFolder) else { return }
+        onSelectSession(newID)
     }
 
     // MARK: - 決まったことタブ

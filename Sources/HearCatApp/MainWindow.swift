@@ -144,7 +144,18 @@ struct MainWindow: View {
             } else if selection.count == 1, let id = selection.first,
                 let folder = Self.groupName(fromSelectionTag: id)
             {
-                GroupDetailView(model: model, folder: folder, onSelectSession: { select($0) })
+                GroupDetailView(
+                    model: model, folder: folder,
+                    onSelectSession: { select($0) },
+                    onRequestRename: { session in
+                        renameText = session.name
+                        renameTarget = session
+                    },
+                    onRequestNewFolder: { session in
+                        newFolderText = ""
+                        newFolderTarget = session
+                    },
+                    onRequestDelete: { deletingSessions = $0 })
             } else if selection.count == 1, let id = selection.first,
                 let session = model.sessions.first(where: { $0.id == id })
             {
@@ -619,40 +630,14 @@ struct MainWindow: View {
                 let bulkTargets = selection.count > 1 && selection.contains(session.id)
                     ? model.sessions.filter { selection.contains($0.id) }
                     : nil
-
-                Button("名前を変更…") {
-                    renameText = session.name
-                    renameTarget = session
-                }
-                .disabled(bulkTargets != nil)
-                Menu("グループへ移動") {
-                    ForEach(model.folders.filter { $0 != session.folder }, id: \.self) { folder in
-                        Button(folder) {
-                            select(model.move(session, toFolder: folder))
-                        }
-                    }
-                    if session.folder != nil {
-                        Button("未分類へ戻す") {
-                            select(model.move(session, toFolder: nil))
-                        }
-                    }
-                    Divider()
-                    Button("新しいグループ…") {
-                        newFolderText = ""
-                        newFolderTarget = session
-                    }
-                }
-                .disabled(bulkTargets != nil)
-                Divider()
-                if let bulkTargets {
-                    Button("\(bulkTargets.count) 件を削除…", role: .destructive) {
-                        deletingSessions = bulkTargets
-                    }
-                } else {
-                    Button("削除…", role: .destructive) {
-                        deletingSessions = [session]
-                    }
-                }
+                sessionContextMenuItems(
+                    for: session,
+                    bulkTargets: bulkTargets,
+                    folders: model.folders,
+                    onRename: { renameText = $0.name; renameTarget = $0 },
+                    onMove: { session, folder in select(model.move(session, toFolder: folder)) },
+                    onNewFolder: { newFolderText = ""; newFolderTarget = $0 },
+                    onDelete: { deletingSessions = $0 })
             }
     }
 
@@ -841,6 +826,54 @@ struct MainWindow: View {
         model.reorderFolders(order)
     }
 
+}
+
+/// セッション行の右クリックメニュー(名前を変更・グループへ移動・削除)。サイドバーの
+/// セッション行(MainWindow.sessionRow)とグループ画面の行(GroupDetailView.sessionRow)で
+/// 共用する。複数選択の一括操作(bulkTargets)を持つのはサイドバーだけで、
+/// グループ画面は常に単一行が対象のため nil を渡す。
+@MainActor
+@ViewBuilder
+func sessionContextMenuItems(
+    for session: SessionInfo,
+    bulkTargets: [SessionInfo]?,
+    folders: [String],
+    onRename: @escaping (SessionInfo) -> Void,
+    onMove: @escaping (SessionInfo, String?) -> Void,
+    onNewFolder: @escaping (SessionInfo) -> Void,
+    onDelete: @escaping ([SessionInfo]) -> Void
+) -> some View {
+    Button("名前を変更…") {
+        onRename(session)
+    }
+    .disabled(bulkTargets != nil)
+    Menu("グループへ移動") {
+        ForEach(folders.filter { $0 != session.folder }, id: \.self) { folder in
+            Button(folder) {
+                onMove(session, folder)
+            }
+        }
+        if session.folder != nil {
+            Button("未分類へ戻す") {
+                onMove(session, nil)
+            }
+        }
+        Divider()
+        Button("新しいグループ…") {
+            onNewFolder(session)
+        }
+    }
+    .disabled(bulkTargets != nil)
+    Divider()
+    if let bulkTargets {
+        Button("\(bulkTargets.count) 件を削除…", role: .destructive) {
+            onDelete(bulkTargets)
+        }
+    } else {
+        Button("削除…", role: .destructive) {
+            onDelete([session])
+        }
+    }
 }
 
 /// 「対象が入っていたら表示」のダイアログ用 Binding。閉じる時に対象を空にする。
