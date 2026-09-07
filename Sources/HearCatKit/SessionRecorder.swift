@@ -168,6 +168,11 @@ public actor SessionRecorder {
     public func pause() {
         micQueue.removeAll()
         systemQueue.removeAll()
+        // 借りを残したまま再開すると、無音で埋めた区間が一時停止の間にあったことを
+        // repayPadDebt が知らないまま、再開後に届いた本物の音声を借り分として捨ててしまう。
+        // 両音源を揃えて再開する以上、揃っていない間の借りは意味を失うので0に戻す。
+        micPadDebt = 0
+        systemPadDebt = 0
     }
 
     /// 残りを無音詰めで書き切り、生ファイル(.aac)を最終形式(.m4a)へ変換してファイルを閉じる。

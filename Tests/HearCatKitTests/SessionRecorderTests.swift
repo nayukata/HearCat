@@ -213,6 +213,34 @@ struct SessionRecorderTests {
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
+    /// pause() (録音トグルのオフ)で穴埋めの借りを0に戻さないと、再開直後の本物の音声が
+    /// 「借りの相殺」として repayPadDebt に食われてしまい、最大で穴埋め済みの秒数ぶん
+    /// (このテストの再現条件では15秒以上)録音が欠ける。
+    @Test func pauseすると穴埋めの借りも0に戻り再開後の音声が捨てられない() async throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let recorder = SessionRecorder(url: url, includesSystemChannel: true)
+        let silence = [Float](repeating: 0, count: blockFrames)
+        let tone = sineSamples(count: blockFrames, startIndex: 0, amplitude: 0.05, frequency: 220)
+
+        // システム側だけ配達が止まり、閾値(15秒)を超えて無音の穴埋め(=借り)が発生する状況を作る。
+        for _ in 0..<200 {
+            await recorder.appendMic(makeBuffer(silence))
+        }
+
+        // 録音トグルをオフ→オンした想定。借りが残ったままだと、この直後に届く本物の
+        // システム音声が「穴埋め済み区間の相殺」として repayPadDebt に捨てられる。
+        await recorder.pause()
+
+        for _ in 0..<20 {
+            await recorder.appendSystem(makeBuffer(tone))
+            await recorder.appendMic(makeBuffer(silence))
+        }
+        await recorder.close()
+
+        #expect(try readOverallRMS(url: url) > 0.01, "再開後のシステム音声が穴埋めの借りの相殺で捨てられている")
+    }
+
     @Test func システム音声は増幅せずそのままの音量で録る() async throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
