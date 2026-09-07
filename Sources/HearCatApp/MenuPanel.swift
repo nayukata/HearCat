@@ -286,7 +286,7 @@ struct MenuPanel: View {
                 Button {
                     openReferenceFolderLink(target: target)
                 } label: {
-                    Text("資料フォルダを紐付ける")
+                    Text(target.label)
                         .underline(pattern: .dot)
                         // グループ名の最低幅と両立させる。幅が足りない極端な場面でも
                         // 2 行に折り返さず 1 行を維持する。
@@ -322,6 +322,15 @@ struct MenuPanel: View {
     private enum ReferenceFolderLinkTarget {
         case existingGroup(String)
         case newGroupFromUnclassified
+
+        /// 未分類から押した場合は紐付けだけで終わらず、選んだフォルダ名のグループが
+        /// できて保存先もそこへ移る。起きることが違うので文言も分ける。
+        var label: String {
+            switch self {
+            case .existingGroup: return "資料フォルダを紐付ける"
+            case .newGroupFromUnclassified: return "フォルダを選んでグループを作成"
+            }
+        }
     }
 
     /// 資料フォルダの紐付けを勧める余地があるか。既に紐付け済みのグループでは出さない。

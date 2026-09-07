@@ -203,7 +203,7 @@ struct WelcomeStartIllustration: View {
             .foregroundStyle(HCColor.textBody)
             Text("・")
                 .foregroundStyle(HCColor.textDim)
-            Text("資料フォルダを紐付ける")
+            Text("フォルダを選んでグループを作成")
                 .underline(pattern: .dot)
                 .foregroundStyle(HCColor.textDim)
         }

@@ -1079,9 +1079,7 @@ struct SessionDetailView: View {
         // subtitle は macOS 14.4+ で利用可能(このプロジェクトのターゲットは macOS 26)。
         if let target = referenceFolderMenuTarget {
             menu.addItem(.separator())
-            // ラベルは機能名(関連フォルダ)でなく効能(要約精度が上がる)で語る
-            // (詳細は MainWindow.swift の同種の項目のコメント参照)。
-            let referenceFolderItem = summarizeMenuActionHandler.makeItem("資料フォルダと紐付けて要約精度を上げる…") {
+            let referenceFolderItem = summarizeMenuActionHandler.makeItem(target.label) {
                 switch target {
                 case .existingGroup(let folder):
                     Task { await ReferenceFolderPicker.pick(forGroup: folder, from: model.mainWindow) }
@@ -1245,6 +1243,17 @@ struct SessionDetailView: View {
     private enum ReferenceFolderMenuTarget {
         case existingGroup(String)
         case newGroupFromUnclassified
+
+        /// 未分類から押した場合は紐付けだけで終わらず、選んだフォルダ名のグループが
+        /// できてこの会議もそこへ移る。起きることが違うので文言も分ける。
+        var label: String {
+            switch self {
+            // 機能名(関連フォルダ)でなく効能で語る
+            // (詳細は MainWindow.swift の同種の項目のコメント参照)。
+            case .existingGroup: return "資料フォルダと紐付けて要約精度を上げる…"
+            case .newGroupFromUnclassified: return "フォルダを選んでグループを作成し、この会議を移す…"
+            }
+        }
     }
 
     /// 資料フォルダの紐付けを勧める余地があるか。所属グループが無ければ新規グループ作成、
