@@ -2663,15 +2663,22 @@ private final class ResolvedPathCache {
         guard !path.isEmpty else { return nil }
         let fileManager = FileManager.default
         guard let referenceFolder else { return nil }
-        if path.hasPrefix("/") {
-            // 文字起こし(外部音声由来)が混ざった出力を扱うため、資料フォルダの外を指す
-            // 絶対パスはリンク化しない。フォルダ外のファイルを開かせる導線を作らないこと
-            // を、開く便利さより優先する。
-            guard path == referenceFolder || path.hasPrefix(referenceFolder + "/") else { return nil }
-            return fileManager.fileExists(atPath: path) ? URL(fileURLWithPath: path) : nil
-        }
-        let resolved = (referenceFolder as NSString).appendingPathComponent(path)
-        return fileManager.fileExists(atPath: resolved) ? URL(fileURLWithPath: resolved) : nil
+        let candidatePath = path.hasPrefix("/")
+            ? path
+            : (referenceFolder as NSString).appendingPathComponent(path)
+        // 相対パスの「..」を含め、ここで正規化してから資料フォルダとの位置関係を見る。
+        // 正規化前の文字列比較だけだと、"資料フォルダ/sub/../../secrets" のような
+        // 相対パスが「フォルダ配下」の見た目のまま外へ抜けてしまう。
+        let normalizedCandidate = (candidatePath as NSString).standardizingPath
+        let normalizedFolder = (referenceFolder as NSString).standardizingPath
+        // 文字起こし(外部音声由来)が混ざった出力を扱うため、資料フォルダの外を指すパスは
+        // (相対・絶対を問わず)リンク化しない。フォルダ外のファイルを開かせる導線を
+        // 作らないことを、開く便利さより優先する。
+        guard normalizedCandidate == normalizedFolder
+            || normalizedCandidate.hasPrefix(normalizedFolder + "/")
+        else { return nil }
+        return fileManager.fileExists(atPath: normalizedCandidate)
+            ? URL(fileURLWithPath: normalizedCandidate) : nil
     }
 }
 
