@@ -38,8 +38,19 @@ func failUsage(_ message: String? = nil) -> Never {
     exit(64)
 }
 
+// requireResponse がタイムアウトと未起動を区別したメッセージを出すために、
+// 直近の失敗理由を残しておく(send は呼び出し側の大半が nil/not-nil しか見ないため
+// 戻り値そのものは Optional のまま保つ)。CLI は1コマンドを直列に処理するだけの
+// プロセスで並行アクセスが無いため、グローバルな可変状態でも安全。
+nonisolated(unsafe) var lastSendError: Error?
+
 func send(_ request: IPCRequest) -> IPCResponse? {
-    try? IPCClient.send(request)
+    do {
+        return try IPCClient.send(request)
+    } catch {
+        lastSendError = error
+        return nil
+    }
 }
 
 /// アプリを起動してソケットが開くまで待つ。導入済みでない場合は false を返す。
@@ -95,6 +106,9 @@ func printStatus(_ status: SessionEngine.Status) {
 
 func requireResponse(_ request: IPCRequest) -> IPCResponse {
     guard let response = send(request) else {
+        if let error = lastSendError as? IPCError, case .timedOut = error {
+            fail(error.localizedDescription)
+        }
         fail("アプリ(HearCat.app)が起動していません。`hearcat start` で起動できます。")
     }
     guard response.ok else {

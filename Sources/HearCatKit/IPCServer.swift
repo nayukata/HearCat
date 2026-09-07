@@ -82,9 +82,10 @@ public final class IPCServer: @unchecked Sendable {
             let handler = self.handler
             Task {
                 let response: IPCResponse
-                if let request = IPCSocket.readMessage(IPCRequest.self, from: clientFD) {
+                switch IPCSocket.readMessage(IPCRequest.self, from: clientFD) {
+                case .success(let request):
                     response = await handler(request)
-                } else {
+                case .timedOut, .failed:
                     response = IPCResponse(ok: false, error: "リクエストを読み取れませんでした")
                 }
                 IPCSocket.writeMessage(response, to: clientFD)
@@ -101,6 +102,7 @@ public enum IPCError: LocalizedError {
     case connectFailed(Int32)
     case pathTooLong
     case invalidResponse
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
@@ -110,6 +112,7 @@ public enum IPCError: LocalizedError {
         case .connectFailed(let code): return "アプリに接続できません (errno: \(code))"
         case .pathTooLong: return "ソケットパスが長すぎます"
         case .invalidResponse: return "アプリからの応答を解釈できませんでした"
+        case .timedOut: return "アプリが応答しません。HearCat.app が固まっていないか確かめてください"
         }
     }
 }
@@ -130,17 +133,32 @@ enum IPCSocket {
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     }
 
-    static func readMessage<T: Decodable>(_ type: T.Type, from fd: Int32) -> T? {
+    /// 読み取りの結果。タイムアウトかどうかを呼び出し側(IPCClient)が
+    /// 利用者向けメッセージに出し分けられるよう、単純な Optional ではなく区別して返す。
+    enum ReadOutcome<T> {
+        case success(T)
+        case timedOut
+        case failed
+    }
+
+    static func readMessage<T: Decodable>(_ type: T.Type, from fd: Int32) -> ReadOutcome<T> {
         var data = Data()
         var byte: UInt8 = 0
         // メッセージは高々数百バイト。1バイト読みでも実用上問題ない(接続は1往復で閉じる)。
         while data.count < 1_048_576 {
             let n = read(fd, &byte, 1)
-            guard n == 1 else { return nil }
+            if n < 0 {
+                // errno は次のシステムコールで上書きされるため、read() の直後、
+                // 他の呼び出しを挟む前にここで読む。
+                let code = errno
+                return code == EAGAIN || code == EWOULDBLOCK ? .timedOut : .failed
+            }
+            guard n == 1 else { return .failed }
             if byte == UInt8(ascii: "\n") { break }
             data.append(byte)
         }
-        return try? JSONDecoder().decode(type, from: data)
+        guard let decoded = try? JSONDecoder().decode(type, from: data) else { return .failed }
+        return .success(decoded)
     }
 
     static func writeMessage<T: Encodable>(_ message: T, to fd: Int32) {

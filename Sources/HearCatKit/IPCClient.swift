@@ -26,11 +26,17 @@ public enum IPCClient {
             }
         }
         guard connectResult == 0 else { throw IPCError.connectFailed(errno) }
+        // アプリ側のハンドラは await の間ずっと応答しない。初回起動はマイクや音声認識の
+        // 許可ダイアログを人が操作するまで待つし、停止は確定処理に十数秒かかることがある。
+        // それでもアプリが固まって永久に返らない経路(過去に10分ハングした実績がある)は
+        // 切り離したいので、それらより十分長い120秒で打ち切る。
+        IPCSocket.setTimeouts(on: fd, seconds: 120)
 
         IPCSocket.writeMessage(request, to: fd)
-        guard let response = IPCSocket.readMessage(IPCResponse.self, from: fd) else {
-            throw IPCError.invalidResponse
+        switch IPCSocket.readMessage(IPCResponse.self, from: fd) {
+        case .success(let response): return response
+        case .timedOut: throw IPCError.timedOut
+        case .failed: throw IPCError.invalidResponse
         }
-        return response
     }
 }
