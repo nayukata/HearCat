@@ -754,8 +754,13 @@ final class AppModel {
         guard settings.calendarNaming, let event = await CalendarNamer.currentEvent() else {
             return nil
         }
+        // 予定の開始ちょうどではなく先読みぶん手前から数える。先読みで名前が付いた1本目は
+        // 予定より数秒〜数分早く始まっているので、開始時刻で区切ると数え落として
+        // 2本目にも同じ名前とグループが付いてしまう。
         let recorded = Self.hasSession(
-            named: event.title, startedAfter: event.startDate, in: sessions)
+            named: event.title,
+            startedAfter: event.startDate.addingTimeInterval(-CalendarNamer.lookahead),
+            in: sessions)
         return recorded ? nil : event.title
     }
 

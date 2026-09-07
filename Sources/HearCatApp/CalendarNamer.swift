@@ -6,7 +6,9 @@ import Foundation
 /// EventKit 経由でそのまま読める。
 enum CalendarNamer {
     /// 会議の少し前に録音を始めることが多いため、これから始まる予定もこの秒数まで先読みする。
-    private static let lookahead: TimeInterval = 5 * 60
+    /// 「その予定の枠でもう録ったか」を数える側も、同じ秒数だけ予定の開始より前から数える
+    /// (先読みで付いた名前のセッションは予定の開始より前に始まっているため)。
+    static let lookahead: TimeInterval = 5 * 60
 
     /// 今の(またはまもなく始まる)予定。開始時刻を一緒に返すのは、「この予定の分は
     /// もう録れているか」を呼び出し側が判断できるようにするため。
