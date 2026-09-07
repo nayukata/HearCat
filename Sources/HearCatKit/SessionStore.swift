@@ -205,25 +205,33 @@ public enum SessionStore {
         let fm = FileManager.default
         let parent = parentDirectory(forFolder: folder)
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
-        let existing = Set((try? fm.contentsOfDirectory(atPath: parent.path)) ?? [])
+        // try? で握りつぶすと一覧取得の失敗が「既存なし」に化ける。
+        // 空集合のまま進むと既存セッションと同じ名前を「空き」と誤判定するので、失敗は伝播させる。
+        let existing = Set(try fm.contentsOfDirectory(atPath: parent.path))
         let resolved = uniqueSessionDirectoryName(
             startDate: startDate, name: name, existingNames: existing)
         let dir = parent.appendingPathComponent(resolved.directoryName, isDirectory: true)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        // withIntermediateDirectories: false にして、既存ディレクトリと衝突したら
+        // ここで失敗させる。上のユニーク名判定が最後の砦ではなく、ここが最後の砦になる
+        // (APFS は大文字小文字を無視するため、名前の畳み込みだけでは取りこぼしがあり得る)。
+        try fm.createDirectory(at: dir, withIntermediateDirectories: false)
         return (dir, resolved.name, folder)
     }
 
     /// createUniqueSessionDirectory が使う名前決めの本体。
     /// 「日時 名前」が既存と衝突する場合、名前に「(2)」から順に接尾辞を足して空きを探す。
+    /// APFS は大文字小文字を区別しないので、既存名との比較も小文字化して行う
+    /// (大文字小文字だけ違う名前を「空き」と誤判定しない)。
     static func uniqueSessionDirectoryName(
         startDate: Date, name: String, existingNames: Set<String>
     ) -> (directoryName: String, name: String) {
+        let existingNamesLowercased = Set(existingNames.map { $0.lowercased() })
         let base = sanitize(name)
         var candidate = base
         var suffix = 2
         while true {
             let dirName = directoryName(startDate: startDate, name: candidate)
-            if !existingNames.contains(dirName) {
+            if !existingNamesLowercased.contains(dirName.lowercased()) {
                 return (dirName, candidate)
             }
             candidate = base.isEmpty ? "(\(suffix))" : "\(base) (\(suffix))"

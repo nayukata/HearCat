@@ -249,4 +249,45 @@ struct SessionPackageTests {
             startDate: startDate, name: "", existingNames: [first.directoryName])
         #expect(second.directoryName == "\(first.directoryName) (2)")
     }
+
+    @Test func 大文字小文字だけ違う既存名も衝突として扱う() {
+        // APFS はディレクトリ名の大文字小文字を区別しないため、実ディスク上では
+        // これらは同じエントリを指す。
+        let existing = SessionStore.uniqueSessionDirectoryName(
+            startDate: startDate, name: "Team Sync", existingNames: []
+        ).directoryName
+        let resolved = SessionStore.uniqueSessionDirectoryName(
+            startDate: startDate, name: "Team Sync", existingNames: [existing.uppercased()])
+        #expect(resolved.name == "Team Sync (2)")
+    }
+
+    @Test func 大文字小文字だけ違う既存セッションへ取り込んでも中身が消えない() throws {
+        try withTemporaryStore { temp in
+            // 既存セッション: 取り込み先と同じ sessions ディレクトリ配下に置く
+            // (createUniqueSessionDirectory が衝突を見るのはここなので、temp 直下では
+            // 衝突が再現しない)。名前には英字を含める(大文字小文字の衝突を再現するため)。
+            let existing = try makeSession(in: SessionStore.sessionsDirectory, name: "Zoom")
+            let existingTranscript = try String(
+                contentsOf: #require(existing.transcriptURL), encoding: .utf8)
+
+            // 取り込むパッケージは同日時・大文字小文字だけ違う同名。
+            let sourceRoot = try makeTempDirectory()
+            defer { try? FileManager.default.removeItem(at: sourceRoot) }
+            let source = try makeSession(in: sourceRoot, name: "zoom")
+            let package = temp.appendingPathComponent("out.hearcat")
+            try SessionPackage.export(source, includeAudio: false, to: package)
+
+            let imported = try? SessionPackage.install(SessionPackage.open(package), intoFolder: nil)
+
+            // 取り込みは「(2)」付きの別ディレクトリに入るか失敗するかのどちらでもよいが、
+            // 既存セッションのファイルは消えずに残っていなければならない。
+            #expect(FileManager.default.fileExists(atPath: existing.directory.path))
+            #expect(
+                try String(contentsOf: #require(existing.transcriptURL), encoding: .utf8)
+                    == existingTranscript)
+            if let imported {
+                #expect(imported.directory != existing.directory)
+            }
+        }
+    }
 }
