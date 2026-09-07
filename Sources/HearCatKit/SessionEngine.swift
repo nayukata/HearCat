@@ -289,6 +289,16 @@ public final class SessionEngine {
         didSet { onStatusChange?(status) }
     }
 
+    /// teardown(マイク/システム音声の解放を含む後片付け)が進行中かどうか。
+    /// stop() は teardown を待たずに status を先に空へ倒す(UI を即座に反映するため)ので、
+    /// onStatusChange だけを見ているアプリ側は「もう止まった」と誤解してマイクを
+    /// 取りに行き、まだ teardown 中のセッションのマイクと衝突する。このフラグを
+    /// onStatusChange の didSet より前(status を倒す直前)に立てることで、
+    /// アプリ側が同期的に読んで衝突を避けられるようにする。
+    public private(set) var isTearingDown = false
+    /// teardown が完了した通知。onStatusChange と同じく MainActor 上で呼ばれる。
+    public var onTeardownFinished: (() -> Void)?
+
     /// 確定/暫定の文字起こしイベント。UI のライブ表示用。MainActor 上で呼ばれる。
     public var onEvent: ((TranscriberEvent) -> Void)?
     public var onStatusChange: ((Status) -> Void)?
@@ -408,7 +418,18 @@ public final class SessionEngine {
         self.locale = locale
     }
 
+    /// start() の開始処理中かどうか。status.active は startResources() の末尾でしか
+    /// true にならないため、それだけでは「開始処理の途中で2回目の start() が入る」ことを
+    /// 防げない(2組の音源が並行して立ち上がり、片方の参照を失って止められなくなる)。
+    /// このフラグと guard を、最初の await より前に同期的に見て立てることで、
+    /// @MainActor 上で競合なく弾ける(途中で他のタスクに実行が渡らない)。
+    private var isStarting = false
+
     public func start(record: Bool, transcribe: Bool, name: String = "", folder: String? = nil) async throws {
+        guard !isStarting else { throw EngineError.alreadyActive }
+        isStarting = true
+        defer { isStarting = false }
+
         // 直前の stop() の teardown がまだ進行中なら完了を待つ。待たずに進むと、
         // teardown が片付けている最中の mic/system/recorder を新しいセッションが
         // 同時に初期化してしまい、状態が壊れる。
@@ -778,12 +799,18 @@ public final class SessionEngine {
         // 音源停止→pump流し切り→SpeechAnalyzerの確定→ファイルクローズという直列処理は
         // 実測1.3秒以上かかり、UI がそれを待つと「停止ボタンを押すとフリーズする」ように
         // 見える。teardown の完了を待たずに状態だけ先に確定させ、即座に UI へ反映する。
+        // isTearingDown は status より先に立てる(status の didSet を見た側が、
+        // まだマイクが生きている間に「もう止まった」と早合点しないように)。
+        isTearingDown = true
         status = Status()
         await runTeardown()
     }
 
     /// teardown を他の start()/stop() から待ち合わせ可能な形で実行する。
+    /// start() の失敗経路からも呼ばれるため、isTearingDown はここでも(まだ立って
+    /// いなければ)立てて、完了後に必ず倒す。
     private func runTeardown() async {
+        isTearingDown = true
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.teardown()
@@ -791,6 +818,8 @@ public final class SessionEngine {
         teardownTask = task
         await task.value
         teardownTask = nil
+        isTearingDown = false
+        onTeardownFinished?()
     }
 
     private func teardown() async {

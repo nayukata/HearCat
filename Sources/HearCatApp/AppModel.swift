@@ -391,8 +391,14 @@ final class AppModel {
         engine.onStatusChange = { [weak self] status in
             self?.status = status
             self?.updateMenuIcon()
-            // セッションが終わってメーターの表示フラグがまだ立っていれば、プローブを再開する
-            // (セッション開始時に止めた分、終了時にここで元へ戻す)。
+            // ここで status は倒れているが後始末はまだ続いている(isTearingDown)ため、
+            // プローブの再開は onTeardownFinished 側に任せる。
+            self?.updateMicProbe()
+        }
+        // 後始末が終わってから改めてプローブを起こす
+        // (status の変化だけを見ると、まだ前のセッションが掴んでいるマイクへ
+        // プローブが割り込んで失敗し、そのまま復帰できなくなるため)。
+        engine.onTeardownFinished = { [weak self] in
             self?.updateMicProbe()
         }
         engine.onEvent = { [weak self] event in
@@ -639,7 +645,9 @@ final class AppModel {
     /// すべてがここを経由するため、開始/終了/デバイス切り替えの分岐がここに集約される。
     private func updateMicProbe() {
         stopMicProbe()
-        guard micMeterVisible, !status.active else { return }
+        // 後始末中はまだ前のセッションがマイクを掴んでいるため、ここで手を出さない
+        // (onTeardownFinished が完了後に改めて呼び直す)。
+        guard micMeterVisible, !status.active, !engine.isTearingDown else { return }
         startMicProbe()
     }
 
@@ -2618,6 +2626,9 @@ final class AppModel {
             guard !status.active else {
                 return IPCResponse(ok: false, error: EngineError.alreadyActive.localizedDescription)
             }
+            guard !busy else {
+                return IPCResponse(ok: false, error: "別の操作を処理中です。少し待ってからもう一度実行してください")
+            }
             await startSession(record: request.record ?? true, transcribe: request.transcribe ?? true)
             if let lastError {
                 self.lastError = nil
@@ -2628,6 +2639,9 @@ final class AppModel {
         case .stop:
             guard status.active else {
                 return IPCResponse(ok: false, error: EngineError.notActive.localizedDescription)
+            }
+            guard !busy else {
+                return IPCResponse(ok: false, error: "別の操作を処理中です。少し待ってからもう一度実行してください")
             }
             let transcriptPath = status.transcriptPath
             await stopSession()

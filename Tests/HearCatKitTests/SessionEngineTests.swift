@@ -109,6 +109,48 @@ struct SessionEngineTests {
         await engine.stop()
     }
 
+    /// status.active は startResources() の末尾でしか true にならないため、
+    /// それより前の await の合間に2回目の start() が入ると、ガードが効かず
+    /// 2組の音源が並行して立ち上がってしまう(片方の参照を失い止められなくなる)。
+    /// この開始処理中の窓を突く二重呼び出しでも、片方だけが拒否されることを確認する。
+    @Test func 開始処理中に二重startすると片方だけ拒否されディレクトリは1つしか増えない() async throws {
+        let root = try tempSessionsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = makeEngine(root: root)
+
+        async let firstOutcome: Result<Void, Error> = {
+            do {
+                try await engine.start(record: false, transcribe: false, name: "会議A")
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }()
+        async let secondOutcome: Result<Void, Error> = {
+            do {
+                try await engine.start(record: false, transcribe: false, name: "会議B")
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }()
+        let (first, second) = await (firstOutcome, secondOutcome)
+        let failures = [first, second].compactMap { outcome -> Error? in
+            if case .failure(let error) = outcome { return error }
+            return nil
+        }
+
+        // 片方だけが「開始処理中」として拒否される。
+        #expect(failures.count == 1)
+        #expect(failures.first is EngineError)
+        #expect(engine.status.active)
+
+        let entries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        #expect(entries.count == 1)
+
+        await engine.stop()
+    }
+
     // MARK: - start 失敗時の後始末
 
     @Test func 開始失敗時に作成済みのセッションディレクトリを片付けてエラーを伝える() async throws {
@@ -145,6 +187,33 @@ struct SessionEngineTests {
         // 2回目は何も壊さず早期リターンするだけ。
         await engine.stop()
         #expect(!engine.status.active)
+    }
+
+    /// stop() は teardown を待たずに status を先に空へ倒すため、onStatusChange だけを
+    /// 見ているアプリ側は「もう止まった」と早合点しうる。isTearingDown が
+    /// onStatusChange の時点で既に true であること、teardown 完了後に false へ戻り
+    /// onTeardownFinished が呼ばれることを確認する。
+    @Test func stop中はisTearingDownがtrueで完了後にfalseへ戻りonTeardownFinishedが呼ばれる() async throws {
+        let root = try tempSessionsDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = makeEngine(root: root)
+        try await engine.start(record: false, transcribe: false, name: "会議")
+
+        var isTearingDownAtStatusChange: Bool?
+        engine.onStatusChange = { _ in
+            isTearingDownAtStatusChange = engine.isTearingDown
+        }
+        var teardownFinishedCount = 0
+        engine.onTeardownFinished = {
+            teardownFinishedCount += 1
+        }
+
+        #expect(!engine.isTearingDown)
+        await engine.stop()
+
+        #expect(isTearingDownAtStatusChange == true)
+        #expect(!engine.isTearingDown)
+        #expect(teardownFinishedCount == 1)
     }
 
     // MARK: - stop → start の再実行
