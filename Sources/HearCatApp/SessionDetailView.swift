@@ -33,6 +33,14 @@ struct SessionDetailView: View {
     /// エージェント要約の実行タスク。「キャンセル」ボタンから止められるように保持する。
     /// オンデバイス要約はここに入れない(既存挙動のまま、キャンセル UI を出さない)。
     @State private var agentSummarizeTask: Task<Void, Never>?
+    /// 実行中の agentSummarizeTask を識別するトークン。セッション切り替え後に別の要約を
+    /// 始めた場合、先に終わった古いタスクが agentSummarizeTask を勝手に nil へ戻して
+    /// 新しいタスクのキャンセル UI を消してしまうのを防ぐ(自分が今の持ち主かの確認に使う)。
+    @State private var agentSummarizeToken: UUID?
+    /// 今この画面に表示中のセッション ID。session は let のため、Task のクロージャ内で
+    /// 読んでも生成時点の値のまま変わらない。切り替え後に完了した非同期処理が、
+    /// 表示がもう切り替わっていることに気づけるよう、この @State 側に控える。
+    @State private var displayedSessionID = ""
     /// 初回同意ダイアログの対象 CLI。nil でない間だけダイアログが出る。
     @State private var confirmingAgentCLI: AgentCLI?
     /// NSMenu をポップアップする位置の基準にする NSView(要約ボタンの実体)。
@@ -851,6 +859,7 @@ struct SessionDetailView: View {
     /// 書き出し中(exporting)は畳まない。処理自体は裏で続いているため、ここで false に
     /// 戻すと二重に走らせられてしまう。
     private func resetForNewSession() {
+        displayedSessionID = session.id
         summaryError = nil
         shareNotice = nil
         currentLineID = nil
@@ -858,8 +867,10 @@ struct SessionDetailView: View {
         confirmingDelete = false
         confirmingAgentCLI = nil
         // 実行中のエージェント要約は止めない(生成は AppModel 側で走り続ける)。
-        // この画面から離れた以上キャンセル UI は出せないので、参照だけ外す。
+        // この画面から離れた以上キャンセル UI は出せないので、参照だけ外す
+        // (完了時に自分の結果を書き込むかどうかは displayedSessionID との比較で判断する)。
         agentSummarizeTask = nil
+        agentSummarizeToken = nil
         decisionRows = []
         editingDecision = nil
         closeSearch()
@@ -1171,9 +1182,15 @@ struct SessionDetailView: View {
                     try SessionPackage.export(
                         target, includeAudio: includeAudio, to: destination)
                 }.value
-                notifyShare("\(destination.lastPathComponent) に書き出しました", isError: false)
+                // 書き出し先のファイルは正しく作られているので、既に別セッションへ
+                // 表示が切り替わっている場合は(そちらの画面に無関係な通知を出さないよう)黙る。
+                if displayedSessionID == target.id {
+                    notifyShare("\(destination.lastPathComponent) に書き出しました", isError: false)
+                }
             } catch {
-                notifyShare(error.localizedDescription, isError: true)
+                if displayedSessionID == target.id {
+                    notifyShare(error.localizedDescription, isError: true)
+                }
             }
             exporting = false
         }
@@ -1197,15 +1214,29 @@ struct SessionDetailView: View {
 
     private func runAgentSummary(_ cli: AgentCLI) {
         summaryError = nil
+        let targetID = session.id
+        let token = UUID()
+        agentSummarizeToken = token
         agentSummarizeTask = Task {
             do {
-                summary = try await model.generateAgentSummary(for: session, using: cli)
+                let result = try await model.generateAgentSummary(for: session, using: cli)
+                // 生成中に別セッションへ表示が切り替わっていたら、今の画面の summary は書き換えない。
+                if displayedSessionID == targetID {
+                    summary = result
+                }
             } catch is CancellationError {
                 // ユーザーによるキャンセルなのでエラー表示はしない。
             } catch {
-                summaryError = "要約に失敗しました: \(error.localizedDescription)"
+                if displayedSessionID == targetID {
+                    summaryError = "要約に失敗しました: \(error.localizedDescription)"
+                }
             }
-            agentSummarizeTask = nil
+            // 自分より後に始まった要約タスクの参照を、自分が終わったからといって
+            // 消してしまわないよう、今も自分が持ち主である場合だけ外す。
+            if agentSummarizeToken == token {
+                agentSummarizeTask = nil
+                agentSummarizeToken = nil
+            }
         }
     }
 
