@@ -107,8 +107,11 @@ make -C "$DIR" app CONFIG=release
 echo "==> ${APP_DIR}/HearCat.app へ配置"
 # 起動中の旧アプリが残っていると差し替え後も旧プロセスが生き続けるため、先に終了させる。
 osascript -e 'quit app id "dev.nayukata.hearcat"' >/dev/null 2>&1 || true
+rm -rf "$APP_DIR/HearCat.app.new"
+cp -R "$DIR/.build/release/HearCat.app" "$APP_DIR/HearCat.app.new"
+# コピー失敗時に旧アプリを残すため、コピー成功を確認してから旧アプリを消して改名する。
 rm -rf "$APP_DIR/HearCat.app"
-cp -R "$DIR/.build/release/HearCat.app" "$APP_DIR/HearCat.app"
+mv "$APP_DIR/HearCat.app.new" "$APP_DIR/HearCat.app"
 
 echo "==> ${BIN_DIR}/hearcat へ CLI を配置"
 install -m 0755 "$DIR/.build/release/hearcat" "$BIN_DIR/hearcat"
