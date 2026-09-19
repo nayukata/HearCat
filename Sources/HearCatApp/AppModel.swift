@@ -98,6 +98,22 @@ enum HealthIssueKind: Hashable {
             return false
         }
     }
+
+    /// セッションが動いている間だけ成り立つ知らせか。止めた時点で事実として残らないものは、
+    /// 停止と同時に引っ込める(終わった会議の知らせが待機中も出たままになるため)。
+    var isLiveOnly: Bool {
+        switch self {
+        // 相手の音声が届いていないのは、取得が続いている間だけの状態。止めれば届く相手も
+        // いなくなるので、そのまま残すと「今も何かおかしい」と誤って読める。
+        case .systemAudioSilent:
+            return true
+        // 許可の不足はセッションを止めても直らず、録音・録音ファイルの不具合は
+        // そのセッションに起きた事実として残る。
+        case .micPermissionDenied, .speechPermissionDenied, .systemAudioUnavailable,
+            .recordingWriteFailed, .recordingConversionFailed:
+            return false
+        }
+    }
 }
 
 /// メニューバーのパネルに出す異常1件分。
@@ -110,7 +126,6 @@ struct HealthIssue: Identifiable, Equatable {
     let settingsPane: String?
 
     var id: HealthIssueKind { kind }
-    var isOngoing: Bool { kind.isOngoing }
 }
 
 /// 過去セッションからの決定事項の一括取り込み(バックフィル)の進捗。UI 側はこれの有無
@@ -389,11 +404,13 @@ final class AppModel {
 
     private init() {
         engine.onStatusChange = { [weak self] status in
-            self?.status = status
-            self?.updateMenuIcon()
+            guard let self else { return }
+            self.status = status
+            if !status.active { resolveLiveOnlyHealthIssues() }
+            self.updateMenuIcon()
             // ここで status は倒れているが後始末はまだ続いている(isTearingDown)ため、
             // プローブの再開は onTeardownFinished 側に任せる。
-            self?.updateMicProbe()
+            self.updateMicProbe()
         }
         // 後始末が終わってから改めてプローブを起こす
         // (status の変化だけを見ると、まだ前のセッションが掴んでいるマイクへ
@@ -599,11 +616,26 @@ final class AppModel {
         collapsedHealthIssues.remove(kind)
     }
 
+    /// セッションが止まった時点で、進行中であることが前提の知らせを引っ込める。
+    /// 停止の入口が手動・IPC・ホットキーと複数あるため、経路ごとではなく
+    /// 「セッションが動いていない」という状態だけを見て消す。
+    private func resolveLiveOnlyHealthIssues() {
+        for kind in healthIssues.map(\.kind) where kind.isLiveOnly {
+            resolveHealthIssue(kind)
+        }
+    }
+
+    /// その異常がいま続いているか。種類だけでは決まらず、セッションが動いているかで変わる。
+    /// 止まっていればどれも終わった出来事なので、読んだら消せるようにする。
+    func isOngoing(_ issue: HealthIssue) -> Bool {
+        status.active && issue.kind.isOngoing
+    }
+
     /// パネルのバナーで「了解」を押した時に、その異常だけを引っ込める。
     /// 続いている異常は消さない(消せる導線をバナー側が出さないが、二重の歯止めとして
     /// ここでも弾く)。続いているものを引っ込めたい場合は畳む方を使う。
     func dismissHealthIssue(_ issue: HealthIssue) {
-        guard !issue.isOngoing else { return }
+        guard !isOngoing(issue) else { return }
         resolveHealthIssue(issue.kind)
     }
 

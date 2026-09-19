@@ -131,12 +131,13 @@ struct MenuPanel: View {
 
     // MARK: - 異常バナー
 
-    /// 進行中の異常をすべて縦に並べる。複数同時にあり得るので個別に畳む/消せる。
+    /// いま伝えるべき異常をすべて縦に並べる。複数同時にあり得るので個別に畳む/消せる。
     private var healthBannerSection: some View {
         VStack(spacing: 8) {
             ForEach(model.healthIssues) { issue in
                 HealthIssueBanner(
                     issue: issue,
+                    isOngoing: model.isOngoing(issue),
                     isCollapsed: model.collapsedHealthIssues.contains(issue.kind),
                     onToggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.15)) {

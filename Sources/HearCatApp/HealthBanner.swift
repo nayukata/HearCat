@@ -6,16 +6,18 @@ import SwiftUI
 ///
 /// 続いている異常(マイク未許可など)は読んだだけでは消せず、畳んで1行にするまでにとどめる。
 /// 消せてしまうと、自分の声が1文字も残らない状態のまま見た目だけ正常に戻るため。
-/// もう終わった出来事(録音ファイルの仕上げ失敗)だけ「了解」で消せる。
+/// もう終わった出来事(録音ファイルの仕上げ失敗、セッション停止後のすべて)は ✕ で消せる。
 struct HealthIssueBanner: View {
     let issue: HealthIssue
+    /// いま続いている異常か(AppModel.isOngoing で判定する)。
+    let isOngoing: Bool
     let isCollapsed: Bool
     let onToggleCollapsed: () -> Void
     let onDismiss: () -> Void
 
     var body: some View {
         Group {
-            if issue.isOngoing && isCollapsed {
+            if isOngoing && isCollapsed {
                 collapsedBody
             } else {
                 expandedBody
@@ -62,26 +64,43 @@ struct HealthIssueBanner: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
+                // 続いている異常は消させない。畳んでも印は残る、という意味を
+                // 「小さくする」の側で伝える。
+                if !isOngoing { closeButton }
             }
-            HStack(spacing: 8) {
-                Spacer()
-                if let pane = issue.settingsPane {
-                    Button("システム設定を開く") {
-                        openSystemSettings(pane: pane)
+            if hasActionRow {
+                HStack(spacing: 8) {
+                    Spacer()
+                    if let pane = issue.settingsPane {
+                        Button("システム設定を開く") {
+                            openSystemSettings(pane: pane)
+                        }
+                        .buttonStyle(.hcSecondary)
                     }
-                    .buttonStyle(.hcSecondary)
-                }
-                // 続いている異常は「了解」で消させない。畳んでも印は残る、という意味を
-                // ボタンの言葉でも伝える。
-                if issue.isOngoing {
-                    Button("小さくする", action: onToggleCollapsed)
-                        .buttonStyle(.hcSecondary)
-                } else {
-                    Button("了解", action: onDismiss)
-                        .buttonStyle(.hcSecondary)
+                    if isOngoing {
+                        Button("小さくする", action: onToggleCollapsed)
+                            .buttonStyle(.hcSecondary)
+                    }
                 }
             }
         }
+    }
+
+    private var hasActionRow: Bool { issue.settingsPane != nil || isOngoing }
+
+    private var closeButton: some View {
+        Button(action: onDismiss) {
+            Image(systemName: "xmark")
+                .font(HCFont.caption)
+                // 記号そのものは小さいので、押せる範囲を周りまで広げる。
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+                .foregroundStyle(HCColor.mistWhiteDim)
+        }
+        .buttonStyle(.plain)
+        .pointingHandOnHover()
+        .focusEffectDisabled()
+        .help("閉じる")
     }
 
     private var warningIcon: some View {
