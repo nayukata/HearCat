@@ -1,5 +1,6 @@
 import EventKit
 import Foundation
+import HearCatKit
 
 /// セッション開始時に「今の予定」を引く。セッション名の自動提案と、保存先グループの
 /// 推測に使う。macOS のカレンダーに追加したアカウント(Google 等)の予定も
@@ -26,13 +27,17 @@ enum CalendarNamer {
         let predicate = store.predicateForEvents(
             withStart: now, end: now.addingTimeInterval(Self.lookahead), calendars: nil)
         let events = store.events(matching: predicate).filter { !$0.isAllDay }
-        // 進行中の予定を優先し、重なっていたら一番あとに始まったもの(=今の会議の可能性が高い)。
-        // 進行中が無ければ、まもなく始まる直近の予定。
-        let current = events.filter { $0.startDate <= now }.max { $0.startDate < $1.startDate }
-        let upcoming = events.filter { $0.startDate > now }.min { $0.startDate < $1.startDate }
-        guard let event = current ?? upcoming,
-              let title = event.title, !title.isEmpty
+        // 「有休(全日)」のように全日フラグ無しで長く同期される予定に、入れ子の
+        // 個別会議が埋もれないよう、選ぶ規則自体は CurrentEventRule に委ねる。
+        // startDate / endDate は EventKit 側で Date! (暗黙アンラップ) のため、
+        // 欠けていた場合は候補から静かに外す。
+        let candidates = events.compactMap { event -> CurrentEventRule.Candidate? in
+            guard let start = event.startDate, let end = event.endDate else { return nil }
+            return CurrentEventRule.Candidate(title: event.title ?? "", start: start, end: end)
+        }
+        guard let picked = CurrentEventRule.pick(candidates, now: now, lookahead: Self.lookahead),
+              !picked.title.isEmpty
         else { return nil }
-        return Event(title: title, startDate: event.startDate)
+        return Event(title: picked.title, startDate: picked.start)
     }
 }
