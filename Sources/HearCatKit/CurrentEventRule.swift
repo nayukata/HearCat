@@ -13,11 +13,14 @@ public enum CurrentEventRule {
         public let title: String
         public let start: Date
         public let end: Date
+        /// 自動録音で「録らない」とした予定。選ばれることはないが、入れ物の判定には加える。
+        public let excluded: Bool
 
-        public init(title: String, start: Date, end: Date) {
+        public init(title: String, start: Date, end: Date, excluded: Bool = false) {
             self.title = title
             self.start = start
             self.end = end
+            self.excluded = excluded
         }
     }
 
@@ -31,9 +34,12 @@ public enum CurrentEventRule {
     ///    予定を含む判定に混ぜて短い予定を誤って落とさないようにする。
     /// 2. 他の候補の期間を丸ごと含む(厳密に大きい)予定を外す。同一期間どうしは
     ///    互いに含む関係とみなさず、両方残す。
-    /// 3. 残った候補のうち、進行中(start <= now)を優先し、複数あれば一番あとに
+    ///    録らない予定もここまでは残す。先に外すと、録らない予定だけを包んでいた長い枠
+    ///    (「有休」など)が入れ物と判定されなくなり、代わりに選ばれてしまう。
+    /// 3. 録らない予定を外す。
+    /// 4. 残った候補のうち、進行中(start <= now)を優先し、複数あれば一番あとに
     ///    始まったもの(=今の会議の可能性が高い)。
-    /// 4. 進行中が無ければ、まもなく始まる(start > now)予定のうち一番早く始まるもの。
+    /// 5. 進行中が無ければ、まもなく始まる(start > now)予定のうち一番早く始まるもの。
     public static func pick(_ candidates: [Candidate], now: Date, lookahead: TimeInterval)
         -> Candidate?
     {
@@ -46,7 +52,7 @@ public enum CurrentEventRule {
                 candidate.start <= other.start && candidate.end >= other.end
                     && (candidate.start, candidate.end) != (other.start, other.end)
             }
-        }
+        }.filter { !$0.excluded }
         let current = narrowed.filter { $0.start <= now }.max { $0.start < $1.start }
         let upcoming = narrowed.filter { $0.start > now }.min { $0.start < $1.start }
         return current ?? upcoming

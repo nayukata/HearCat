@@ -783,7 +783,11 @@ final class AppModel {
     /// その名前の履歴からその会議のグループへ保存されてしまうため。
     /// 2本目以降は日時だけの名前・未分類になり、後から自分で名前とグループを決められる。
     private func currentEventTitleForNewSession() async -> String? {
-        guard settings.calendarNaming, let event = await CalendarNamer.currentEvent() else {
+        guard settings.calendarNaming,
+            let event = await CalendarNamer.currentEvent(
+                excludedIDs: Set(settings.excludedMeetings.keys),
+                keywords: settings.excludedMeetingKeywords)
+        else {
             return nil
         }
         // 予定の開始ちょうどではなく先読みぶん手前から数える。先読みで名前が付いた1本目は

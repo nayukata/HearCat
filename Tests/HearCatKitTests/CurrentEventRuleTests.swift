@@ -124,4 +124,49 @@ struct CurrentEventRuleTests {
             [broken, normal], now: Self.at(14, 10), lookahead: Self.fiveMinutes)
         #expect(picked == normal)
     }
+
+    /// 録らない予定が進行中でも、まもなく始まる本当の予定を選ぶ。
+    @Test func 録らない予定が進行中でも次の予定を選ぶ() {
+        let skipped = CurrentEventRule.Candidate(
+            title: "もくもく会", start: Self.at(13), end: Self.at(14), excluded: true)
+        let real = CurrentEventRule.Candidate(title: "定例", start: Self.at(14), end: Self.at(15))
+        let picked = CurrentEventRule.pick(
+            [skipped, real], now: Self.at(13, 57), lookahead: Self.fiveMinutes)
+        #expect(picked == real)
+    }
+
+    @Test func 録らない予定しか無ければ何も選ばない() {
+        let skipped = CurrentEventRule.Candidate(
+            title: "もくもく会", start: Self.at(13), end: Self.at(14), excluded: true)
+        let picked = CurrentEventRule.pick([skipped], now: Self.at(13.5), lookahead: Self.fiveMinutes)
+        #expect(picked == nil)
+    }
+
+    /// 録らない予定だけを包む長い枠は、入れ物のまま外れる(長い枠の名前は付かない)。
+    @Test func 録らない予定を包む長い枠は選ばない() {
+        let long = CurrentEventRule.Candidate(title: "有休", start: Self.at(5), end: Self.at(22))
+        let skipped = CurrentEventRule.Candidate(
+            title: "もくもく会", start: Self.at(13), end: Self.at(14), excluded: true)
+        let picked = CurrentEventRule.pick(
+            [long, skipped], now: Self.at(13.5), lookahead: Self.fiveMinutes)
+        #expect(picked == nil)
+    }
+
+    @Test func 録らない予定が本当の予定を包むなら本当の予定を選ぶ() {
+        let skipped = CurrentEventRule.Candidate(
+            title: "作業枠", start: Self.at(9), end: Self.at(18), excluded: true)
+        let real = CurrentEventRule.Candidate(title: "定例", start: Self.at(14), end: Self.at(15))
+        let picked = CurrentEventRule.pick(
+            [skipped, real], now: Self.at(14.5), lookahead: Self.fiveMinutes)
+        #expect(picked == real)
+    }
+
+    @Test func 録らない予定と同じ時間の本当の予定を選ぶ() {
+        let skipped = CurrentEventRule.Candidate(
+            title: "もくもく会", start: Self.at(14), end: Self.at(15), excluded: true)
+        let real = CurrentEventRule.Candidate(title: "定例", start: Self.at(14), end: Self.at(15))
+        let picked = CurrentEventRule.pick(
+            [skipped, real], now: Self.at(14.5), lookahead: Self.fiveMinutes)
+        #expect(picked == real)
+    }
 }

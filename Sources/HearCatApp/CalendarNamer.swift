@@ -20,7 +20,11 @@ enum CalendarNamer {
 
     /// 今の時刻に重なる(またはまもなく始まる)予定。
     /// 許可が下りない・予定が無い・予定名が空の場合は nil(セッションは日時のみの名前になる)。
-    static func currentEvent() async -> Event? {
+    ///
+    /// 自動録音で「録らない」とした予定も候補から外す。外さないと、録らない予定が
+    /// 進行中のあいだに次の会議を手で録り始めたとき、録らない予定の名前が付き、
+    /// そのグループへ保存されてしまう。
+    static func currentEvent(excludedIDs: Set<String>, keywords: [String]) async -> Event? {
         guard let store = await CalendarAccess.authorizedStore() else { return nil }
 
         let now = Date()
@@ -33,7 +37,12 @@ enum CalendarNamer {
         // 欠けていた場合は候補から静かに外す。
         let candidates = events.compactMap { event -> CurrentEventRule.Candidate? in
             guard let start = event.startDate, let end = event.endDate else { return nil }
-            return CurrentEventRule.Candidate(title: event.title ?? "", start: start, end: end)
+            let title = event.title ?? ""
+            let excluded = MeetingRule.isExcluded(
+                eventIDs: CalendarMeetings.exclusionIDs(of: event), title: title,
+                excludedIDs: excludedIDs, keywords: keywords)
+            return CurrentEventRule.Candidate(
+                title: title, start: start, end: end, excluded: excluded)
         }
         guard let picked = CurrentEventRule.pick(candidates, now: now, lookahead: Self.lookahead),
               !picked.title.isEmpty

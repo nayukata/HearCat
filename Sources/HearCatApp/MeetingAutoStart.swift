@@ -111,7 +111,7 @@ enum CalendarMeetings {
 
     /// 除外の判定に使う ID。新しく保存する分は seriesID だが、以前のバージョンが
     /// eventIdentifier で保存した分も外れたままになるよう両方を渡す。
-    private static func exclusionIDs(of event: EKEvent) -> [String] {
+    static func exclusionIDs(of event: EKEvent) -> [String] {
         let identifier = event.eventIdentifier ?? event.calendarItemIdentifier
         let series = seriesID(of: event)
         return series == identifier ? [identifier] : [series, identifier]
