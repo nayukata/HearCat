@@ -11,7 +11,7 @@ import os
 private let decisionInspectionLogger = Logger(
     subsystem: SessionStore.bundleIdentifier, category: "decision-inspection")
 
-/// 過去セッションの詳細。文字起こしの閲覧、録音の再生、要約の生成、削除ができる。
+/// 過去セッションの詳細。文字起こしの閲覧、録音の再生、要約の生成、削除(録音・録画だけの削除を含む)ができる。
 struct SessionDetailView: View {
     let model: AppModel
     let session: SessionInfo
@@ -30,6 +30,8 @@ struct SessionDetailView: View {
     @State private var player: SessionPlayer?
     @State private var summaryError: String?
     @State private var confirmingDelete = false
+    /// 削除確認に「録音・録画だけ削除」を出すための、録音・録画の合計サイズ。
+    @State private var deletableRecordingsBytes: Int64 = 0
     /// エージェント要約の実行タスク。「キャンセル」ボタンから止められるように保持する。
     /// オンデバイス要約はここに入れない(既存挙動のまま、キャンセル UI を出さない)。
     @State private var agentSummarizeTask: Task<Void, Never>?
@@ -248,6 +250,9 @@ struct SessionDetailView: View {
                 Label("Finder で表示", systemImage: "folder")
             }
             Button(role: .destructive) {
+                // ダイアログはボタン構成が表示時点で固まるため、出す前に数える。
+                deletableRecordingsBytes = SessionDeletionCopy.recordingsBytes(
+                    of: [session], model: model)
                 confirmingDelete = true
             } label: {
                 Label("削除", systemImage: "trash")
@@ -263,8 +268,23 @@ struct SessionDetailView: View {
                 }
                 // 一括削除側(BulkDeleteConfirmation)と同じく、Enter で確定できるよう明示する。
                 .keyboardShortcut(.defaultAction)
+                if deletableRecordingsBytes > 0 {
+                    Button(
+                        SessionDeletionCopy.recordingsOnlyButton(bytes: deletableRecordingsBytes),
+                        role: .destructive
+                    ) {
+                        // 再生中のファイルを消すため先に畳み、nil にしておくことで
+                        // sessionsVersion の変化に伴う load で録音なしの状態に作り直させる。
+                        player?.teardown()
+                        player = nil
+                        model.deleteRecordings(of: [session])
+                    }
+                }
             } message: {
-                Text(SessionDeletionCopy.message)
+                Text(
+                    deletableRecordingsBytes > 0
+                        ? SessionDeletionCopy.messageWithRecordingsOption
+                        : SessionDeletionCopy.message)
             }
         }
         .padding()

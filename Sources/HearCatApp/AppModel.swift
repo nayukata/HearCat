@@ -2786,6 +2786,15 @@ final class AppModel {
         refreshSessions()
     }
 
+    /// 録音・画面録画だけを消し、文字起こしと要約は残す(古いセッションのディスクを空ける用途)。
+    /// 録音中のセッションは書き込み先を失うため対象から外す。
+    func deleteRecordings(of sessions: [SessionInfo]) {
+        for session in sessions where session.id != status.sessionID {
+            SessionStore.deleteRecordings(of: session)
+        }
+        refreshSessions()
+    }
+
     /// セッション名を変更し、変更後の ID を返す(履歴の選択の維持に使う)。失敗時は nil。
     /// GUI の名前変更・自動題名付け(autoSummarize)の共通経路。
     func rename(_ session: SessionInfo, to name: String) -> String? {

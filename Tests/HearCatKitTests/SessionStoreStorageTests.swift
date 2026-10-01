@@ -135,6 +135,50 @@ extension SessionPackageTests {
         }
     }
 
+    // MARK: - recordingsBytes / deleteRecordings(of:)
+
+    @Test func セッション単位で録音と録画だけを削除すると文字起こしと要約は残る() throws {
+        try withTemporaryStorageStore { _ in
+            let session = try makeStorageSession(
+                startDate: Date().addingTimeInterval(-100 * storageTestDay), name: "古い会議",
+                audioBytes: 5000, transcriptBytes: 40)
+            let dirName = session.directory.lastPathComponent
+            try Data(repeating: 0x01, count: 2000)
+                .write(to: session.directory.appendingPathComponent("\(dirName)-相手.m4a"))
+            try Data(repeating: 0x02, count: 7000)
+                .write(to: session.directory.appendingPathComponent("\(dirName).mov"))
+            try Data("要約".utf8)
+                .write(to: session.directory.appendingPathComponent("summary.md"))
+            let other = try makeStorageSession(
+                startDate: Date().addingTimeInterval(-100 * storageTestDay), name: "別の会議",
+                audioBytes: 3000)
+
+            #expect(SessionStore.recordingsBytes(of: session) == 14000)
+
+            let freed = SessionStore.deleteRecordings(of: session)
+
+            #expect(freed == 14000)
+            #expect(session.audioURL == nil)
+            #expect(session.audioOtherURL == nil)
+            #expect(session.videoURL == nil)
+            #expect(session.transcriptURL != nil)
+            #expect(session.summaryURL != nil)
+            #expect(SessionStore.recordingsBytes(of: session) == 0)
+            // 指定していないセッションの録音には触れない。
+            #expect(other.audioURL != nil)
+        }
+    }
+
+    @Test func 録音の無いセッションの録音削除は何もしない() throws {
+        try withTemporaryStorageStore { _ in
+            let session = try makeStorageSession(
+                startDate: Date(), name: "録音なし", audioBytes: 0)
+
+            #expect(SessionStore.deleteRecordings(of: session) == 0)
+            #expect(session.transcriptURL != nil)
+        }
+    }
+
     // MARK: - フォルダの並び順(folder-order.json)
 
     @Test func 並び順を指定するとその通りにlistFoldersが返す() throws {

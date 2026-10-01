@@ -215,8 +215,10 @@ struct MainWindow: View {
         }
         .onDeleteCommand(perform: requestDeletion)
         .modifier(BulkDeleteConfirmation(
+            model: model,
             targets: $deletingSessions,
-            onConfirm: performDeletion))
+            onConfirm: performDeletion,
+            onConfirmRecordingsOnly: performRecordingsDeletion))
         .modifier(SessionImportPresentation(model: model))
         .alert(
             "セッション名を変更", isPresented: presented($renameTarget), presenting: renameTarget
@@ -689,6 +691,13 @@ struct MainWindow: View {
         deletingSessions = []
     }
 
+    /// 確認ダイアログの「録音・録画だけ削除」から呼ぶ。セッション自体は残るので
+    /// 選択はそのまま(詳細画面は sessionsVersion の変化で読み直す)。
+    private func performRecordingsDeletion() {
+        model.deleteRecordings(of: deletingSessions)
+        deletingSessions = []
+    }
+
     /// リネーム/移動でセッション ID が変わるため、成功したら選択を追従させる。
     /// 単一選択の枠(選択解除→対象を選び直す)は多選択時と混ざらないように独立で扱う。
     private func select(_ id: String?) {
@@ -909,16 +918,41 @@ enum SessionDeletionCopy {
     }
 
     static let message = "元に戻せません。文字起こしと録音も一緒に消えます。"
+
+    /// 録音・録画だけを消す選択肢。古いセッションで「記録は残してディスクだけ空けたい」
+    /// 場面向けに、セッションごと消す操作と同じダイアログに並べる(入口を増やさず、
+    /// 削除しようとした時点で「録音だけで足りる」ことに気づけるように)。
+    static func recordingsOnlyButton(bytes: Int64) -> String {
+        "録音・録画だけ削除 (\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)))"
+    }
+
+    static let messageWithRecordingsOption =
+        "元に戻せません。「録音・録画だけ削除」なら、文字起こしと要約は残ります。"
+
+    /// 対象の録音・録画の合計サイズ。録音中のセッションは消さないので数えない
+    /// (AppModel.deleteRecordings と揃える)。
+    @MainActor
+    static func recordingsBytes(of sessions: [SessionInfo], model: AppModel) -> Int64 {
+        sessions
+            .filter { $0.id != model.status.sessionID }
+            .reduce(0) { $0 + SessionStore.recordingsBytes(of: $1) }
+    }
 }
 
 /// 一括削除の確認ダイアログを提供する ViewModifier。MainWindow.body が
 /// 型推論のタイムアウトに達したため、修飾子を外へ切り出す。
 private struct BulkDeleteConfirmation: ViewModifier {
+    let model: AppModel
     @Binding var targets: [SessionInfo]
     let onConfirm: () -> Void
+    let onConfirmRecordingsOnly: () -> Void
 
     func body(content: Content) -> some View {
-        content.confirmationDialog(
+        // ダイアログを出している間だけディスクを見る。macOS の確認ダイアログは表示時点の
+        // ボタン構成で固まるため、onChange で後から数えると選択肢が出ないことがある。
+        let recordingsBytes = targets.isEmpty
+            ? 0 : SessionDeletionCopy.recordingsBytes(of: targets, model: model)
+        return content.confirmationDialog(
             SessionDeletionCopy.title(count: targets.count),
             isPresented: Binding(
                 get: { !targets.isEmpty },
@@ -932,8 +966,16 @@ private struct BulkDeleteConfirmation: ViewModifier {
                 // ビープ音だけになる。キーボードで確定したい要望により明示的に既定にする
                 // (Esc のキャンセルは confirmationDialog の標準挙動のまま)。
                 .keyboardShortcut(.defaultAction)
+            if recordingsBytes > 0 {
+                Button(
+                    SessionDeletionCopy.recordingsOnlyButton(bytes: recordingsBytes),
+                    role: .destructive, action: onConfirmRecordingsOnly)
+            }
         } message: {
-            Text(SessionDeletionCopy.message)
+            Text(
+                recordingsBytes > 0
+                    ? SessionDeletionCopy.messageWithRecordingsOption
+                    : SessionDeletionCopy.message)
         }
     }
 }
