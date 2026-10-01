@@ -3,6 +3,7 @@ import Foundation
 import Observation
 import HearCatKit
 import HearCatSummarize
+@preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
 import os
 
@@ -83,6 +84,10 @@ enum HealthIssueKind: Hashable {
     case systemAudioSilent
     case recordingWriteFailed
     case recordingConversionFailed
+    case screenPermissionDenied
+    /// 録画が途中で止まった、または始められなかった(対象が閉じた・書き込み失敗など)。
+    case screenStopped
+    case screenCloseFailed
 
     /// いまも続いている不調か。続いているものは、読んだだけで画面から消せないようにする。
     /// 消せてしまうと、自分の声が1文字も残らないまま見た目だけ正常に戻り、
@@ -95,6 +100,10 @@ enum HealthIssueKind: Hashable {
         // 録音ファイルの仕上げ失敗は、起きた時点で終わっている出来事。元の録音データは
         // 残っていて、以後の記録にも影響しないため、読んだら消してよい。
         case .recordingConversionFailed:
+            return false
+        // 録画の失敗は、録画のスイッチがオフに戻った時点で終わっている出来事。
+        // 録音と文字起こしには影響しないので、読んだら消してよい。
+        case .screenPermissionDenied, .screenStopped, .screenCloseFailed:
             return false
         }
     }
@@ -110,7 +119,8 @@ enum HealthIssueKind: Hashable {
         // 許可の不足はセッションを止めても直らず、録音・録音ファイルの不具合は
         // そのセッションに起きた事実として残る。
         case .micPermissionDenied, .speechPermissionDenied, .systemAudioUnavailable,
-            .recordingWriteFailed, .recordingConversionFailed:
+            .recordingWriteFailed, .recordingConversionFailed,
+            .screenPermissionDenied, .screenStopped, .screenCloseFailed:
             return false
         }
     }
@@ -180,6 +190,28 @@ final class AppModel {
     var lastError: String?
     /// 開始/停止処理の実行中。パネルのボタン連打で二重開始しないよう UI を無効化する。
     private(set) var busy = false
+
+    /// 画面録画をオンにする操作の進み具合。選択画面を出している間も、
+    /// 選ばれた対象で録画を始めている間も、スイッチはオンのままに見せる。
+    enum ScreenPhase: Equatable {
+        case idle
+        /// 録画の対象を選んでもらっている(macOS の選択画面が開いている)。
+        case choosing
+        /// 対象が決まり、録画を始めている最中。
+        case starting
+    }
+    private(set) var screenPhase: ScreenPhase = .idle
+    /// 録画の行に出す、いま録画している(直近に録画した)対象の名前。セッションが終わるまで持つ。
+    private(set) var screenTargetLabel: String?
+    /// いまの録画開始の操作を指す印。選択画面の結果が、取り消された操作や終わったセッションの
+    /// ものとして遅れて届いた時に、無視するために照合する。
+    @ObservationIgnored private var screenRequestID: UUID?
+    /// 録画だけで始めたセッションの最初の選択を指す(request id とセッション ID)。
+    /// 選択画面が開いている間にスイッチを切られた時、取り消しと同じく空のセッションを破棄するために覚える。
+    @ObservationIgnored private var firstScreenPick: (requestID: UUID, sessionID: String?)?
+
+    /// 録画のスイッチの見た目。録画中に加え、選択画面を待っている間と開始中もオンとして見せる。
+    var screenSwitchOn: Bool { status.screenRecording || screenPhase != .idle }
 
     /// 質問パネル(関連資料との照合)の対象。nil ならライブ(進行中の会議)、非 nil なら
     /// その過去セッションのディレクトリパス(status.sessionDirectory と同じ形式)。
@@ -406,7 +438,11 @@ final class AppModel {
         engine.onStatusChange = { [weak self] status in
             guard let self else { return }
             self.status = status
-            if !status.active { resolveLiveOnlyHealthIssues() }
+            if !status.active {
+                resolveLiveOnlyHealthIssues()
+                cancelScreenRequest()
+                screenTargetLabel = nil
+            }
             self.updateMenuIcon()
             // ここで status は倒れているが後始末はまだ続いている(isTearingDown)ため、
             // プローブの再開は onTeardownFinished 側に任せる。
@@ -582,6 +618,18 @@ final class AppModel {
                 detail: "元の録音データは残っています。",
                 settingsPane: nil)
             shouldNotify = true
+        case .screenRecordingStopped(let reason):
+            issue = Self.screenIssue(for: reason, whileStarting: false)
+            // 録画は止まったが、録音と文字起こしは続いている。パネルを閉じていると気づけない。
+            shouldNotify = true
+            screenTargetLabel = nil
+        case .screenRecordingCloseFailed:
+            issue = HealthIssue(
+                kind: .screenCloseFailed,
+                title: "録画ファイルを最後まで仕上げられませんでした",
+                detail: "確定済みの分までは再生できます。",
+                settingsPane: nil)
+            shouldNotify = true
         }
         present(issue, notify: shouldNotify)
     }
@@ -722,7 +770,7 @@ final class AppModel {
     /// folder を渡さずに呼ぶことで、同じ推測経路を通る。
     /// ホットキーの選択画面で確定した値は .explicit で渡す。
     func startSession(
-        record: Bool = true, transcribe: Bool = true,
+        record: Bool = true, transcribe: Bool = true, screen: Bool = false,
         folder: SessionFolder = .auto
     ) async {
         guard !busy else { return }
@@ -758,6 +806,12 @@ final class AppModel {
             try await engine.start(
                 record: record, transcribe: transcribe,
                 name: calendarTitle ?? "", folder: resolvedFolder)
+            // 録音と文字起こしは選択画面を待たずに先に始めてある。録画は選択画面が出たところで
+            // 戻るので、ここで busy を握り続けない(選択中でも停止できる)。
+            // 録画だけで始めた場合、最初の選択が取り消し・失敗で終わったらセッションごと破棄する。
+            if screen {
+                _ = await startScreenRecording(discardSessionIfFirstPickFails: !record && !transcribe)
+            }
             // 実際の保存先をパネルの表示にも反映する。ここを揃えないと、
             // 会議名から推測して別グループへ保存したのに、パネルは前回のグループを
             // 出したままになり「切り替わっていない」ように見える。
@@ -769,6 +823,21 @@ final class AppModel {
             lastError = error.localizedDescription
         }
     }
+
+    /// 保存済みの組み合わせなど、選んだ内容でセッションを始める。
+    /// 何もオンでなければ始めない(始めても何も残らない)。理由は画面に出す。
+    func startSession(with selection: SessionStartSelection, folder: SessionFolder = .auto) async {
+        guard !selection.isEmpty else {
+            lastError = Self.nothingToStartMessage
+            HealthNotifier.notify(title: Self.nothingToStartMessage, body: nil)
+            return
+        }
+        await startSession(
+            record: selection.record, transcribe: selection.transcribe, screen: selection.screen,
+            folder: folder)
+    }
+
+    static let nothingToStartMessage = "録音・文字起こし・録画がすべてオフのため、始められません"
 
     /// 予定名の有無を1つの値にそろえる。空文字と nil はどちらも「予定なし」。
     private static func eventKey(_ title: String?) -> String? {
@@ -906,6 +975,13 @@ final class AppModel {
         // 予定の開始時刻ちょうどに始める。既に始まっている会議を拾った場合でも、
         // 押す間もなく始まらないよう最低5秒は猶予を置く。
         let deadline = max(meeting.startDate, Date().addingTimeInterval(5))
+        // 押しボタンの操作は、そのまま次回以降の既定として保存する。
+        let choice = NudgeStartChoice(initial: settings.lastStartSelection) { [weak self] selection in
+            guard let self else { return }
+            settings.lastStartRecord = selection.record
+            settings.lastStartTranscribe = selection.transcribe
+            settings.lastStartScreen = selection.screen
+        }
         pendingMeetingStart?.cancel()
         pendingMeetingStart = Task { [weak self] in
             try? await Task.sleep(for: .seconds(deadline.timeIntervalSinceNow))
@@ -913,7 +989,10 @@ final class AppModel {
             // 自分の待ち合わせは役目を終えた。ここで手放しておかないと、この先の
             // startSession が「待機中の予告を取り消す」処理で自分自身を止めてしまう。
             self.pendingMeetingStart = nil
-            await self.startSession()
+            // 開始時刻に何もオンでなければ始めない。予告は残し、押しボタンをオンにしてから
+            // 「今すぐ始める」で始められるようにする。
+            guard !choice.selection.isEmpty else { return }
+            await self.startSession(with: choice.selection)
         }
         let name = meeting.title.isEmpty ? "会議" : meeting.title
         presentNudge(
@@ -921,8 +1000,10 @@ final class AppModel {
             prompt: NudgePrompt(
                 icon: "calendar.badge.clock",
                 title: "まもなく「\(name)」が始まります",
-                detail: "この時間になったら、録音と文字起こしを自動で始めます。",
+                detail: "この時間になったら、自動で始めます。",
                 deadline: deadline,
+                startChoice: choice,
+                emptyChoiceDetail: "録音・文字起こし・録画がすべてオフのため、自動では始めません。",
                 actions: [
                     // 毎回「今回はやめる」を押させないための逃げ道。繰り返しの予定は
                     // ID が全回で共通なので、一度押せば以後この予定では予告も出ない。
@@ -934,12 +1015,13 @@ final class AppModel {
                     NudgeAction(title: "今回はやめる") { [weak self] in
                         self?.cancelPendingMeetingStart()
                     },
-                    NudgeAction(title: "今すぐ始める", isPrimary: true) { [weak self] in
-                        guard let self else { return }
+                    NudgeAction(title: "今すぐ始める", isPrimary: true, needsStartChoice: true) {
+                        [weak self] in
+                        guard let self, !choice.selection.isEmpty else { return }
                         self.pendingMeetingStart?.cancel()
                         self.pendingMeetingStart = nil
                         self.dismissNudge(.meetingStart)
-                        Task { await self.startSession() }
+                        Task { await self.startSession(with: choice.selection) }
                     },
                 ]))
     }
@@ -1046,6 +1128,8 @@ final class AppModel {
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        // 録画の対象を選んでいる最中なら、その結果はもう要らない。
+        cancelScreenRequest()
         // 止めた以上、止めるかどうかの確認は用済み。
         dismissNudge(.silence)
         dismissNudge(.closing)
@@ -1059,6 +1143,22 @@ final class AppModel {
         if let lastEndedSessionID {
             autoSummarize(sessionID: lastEndedSessionID)
         }
+    }
+
+    /// 何も記録していないセッションを履歴に残さず止める。停止や開始の処理中は譲る
+    /// (その処理がセッションの行き先を決める)。
+    private func discardSessionIfEmpty(sessionID: String?) async {
+        guard !busy, status.active, status.sessionID == sessionID else { return }
+        busy = true
+        defer { busy = false }
+        // 選択画面は、呼び出し元が結果を受けた後か取り消した後なので、ここでは閉じない。
+        guard await engine.discardIfNothingRecorded() else { return }
+        dismissNudge(.silence)
+        dismissNudge(.closing)
+        liveTimeline.clearVolatiles()
+        micLevel = 0
+        systemLevel = 0
+        refreshSessions()
     }
 
     // MARK: - 要約
@@ -2137,6 +2237,236 @@ final class AppModel {
         if !on { liveTimeline.clearVolatiles() }
     }
 
+    // MARK: - 画面録画
+
+    /// 録画をオンにした結果。
+    enum ScreenStartOutcome {
+        /// 録画が始まった(または、すでに始まっている・始めている最中)。
+        case started
+        /// 対象を選ぶ画面を出した。選ばれるまで録画は始まらない。
+        case choosing
+        /// 始められなかった。理由はユーザー向けの文言。
+        case failed(String)
+    }
+
+    /// 進行中のスイッチ・ホットキー・CLI からの、録画のオン。
+    /// 開始や停止の処理中は受け付けない(二重に走って状態が食い違うため)。
+    @discardableResult
+    func requestScreenRecording() async -> ScreenStartOutcome {
+        guard !busy else { return .failed(Self.busyMessage) }
+        return await startScreenRecording()
+    }
+
+    /// 進行中のスイッチ・ホットキーからの、録画のオン/オフ。結果は画面の状態で伝わる。
+    func setScreenRecording(_ on: Bool) {
+        guard status.active else { return }
+        Task {
+            if on {
+                await requestScreenRecording()
+            } else {
+                await stopScreenRecording()
+            }
+        }
+    }
+
+    /// 録画の行のメニューから、録画の対象を選び直す。選び直している間も、
+    /// 録画は前の対象で続く(選ばれた時点で差し替わる)。
+    func chooseScreenTarget() {
+        guard status.active, !busy, screenPhase == .idle else { return }
+        beginChoosingScreenTarget(replacing: true)
+    }
+
+    /// 録画をオフにする。選択画面を待っている最中なら、その選択を取り消す。
+    func stopScreenRecording() async {
+        // 最初の選択を待っている間のオフは、選択画面の取り消しと同じ意図(cancelScreenRequest が消す前に控える)。
+        let discarding = firstScreenPick.flatMap { $0.requestID == screenRequestID ? $0 : nil }
+        // 選び直しの選択画面が開いていても、オフにした以上は結果を受け取らない。
+        cancelScreenRequest()
+        try? await engine.stopScreenRecording()
+        if let discarding { await discardSessionIfEmpty(sessionID: discarding.sessionID) }
+    }
+
+    /// 録画を始める。同じセッションで前に録画した対象が残っていれば、選択画面を出さずに
+    /// その対象で再開する。再開できなければ(対象が閉じられた等)選択画面を出す。
+    /// - Parameter discardSessionIfFirstPickFails: 録画だけで始めたセッションの最初の選択。
+    ///   選択画面が取り消し・失敗で終わったら、何も記録していないセッションを破棄する。
+    private func startScreenRecording(
+        discardSessionIfFirstPickFails: Bool = false
+    ) async -> ScreenStartOutcome {
+        guard status.active else { return .failed(EngineError.notActive.localizedDescription) }
+        if status.screenRecording || screenPhase == .starting { return .started }
+        if screenPhase == .choosing { return .choosing }
+        if engine.canResumeScreenRecording {
+            let id = UUID()
+            screenRequestID = id
+            screenPhase = .starting
+            do {
+                try await engine.startScreenRecording()
+                // 開始を待つ間にオフ操作が入っていたら、始まってしまった録画を止める。
+                guard screenRequestID == id else {
+                    if screenRequestID == nil { try? await engine.stopScreenRecording() }
+                    return .failed(EngineError.screenRecordingCancelled.localizedDescription)
+                }
+                finishScreenRequest(id)
+                refreshScreenTargetLabel()
+                resolveScreenIssues()
+                return .started
+            } catch EngineError.screenRecordingFailed(.targetGone) {
+                finishScreenRequest(id)
+                // 前の対象はもう無い。選び直してもらう。
+            } catch {
+                finishScreenRequest(id)
+                return reportScreenStartFailure(error)
+            }
+        }
+        beginChoosingScreenTarget(
+            replacing: false, discardSessionIfNotStarted: discardSessionIfFirstPickFails)
+        return .choosing
+    }
+
+    /// 選択画面を出し、選ばれた対象で録画を始める。選択を待つ間はこの関数から戻る。
+    /// - Parameter replacing: 録画中の対象の差し替え。取り消されても前の録画は続けるため、
+    ///   スイッチの見た目も変えない。
+    /// - Parameter discardSessionIfNotStarted: 選択が取り消し・失敗で終わったら、何も記録して
+    ///   いないセッションを破棄する(最初の選択だけ。2回目以降のオンでは止めない)。
+    private func beginChoosingScreenTarget(replacing: Bool, discardSessionIfNotStarted: Bool = false) {
+        let id = UUID()
+        screenRequestID = id
+        if !replacing { screenPhase = .choosing }
+        let sessionID = status.sessionID
+        if discardSessionIfNotStarted { firstScreenPick = (id, sessionID) }
+        Task { [weak self] in
+            let outcome = await ScreenTargetPicker.shared.pick()
+            // 取り消し・上書き・セッション終了のどれかで、この選択はもう要らない。
+            guard let self, self.screenRequestID == id else { return }
+            guard self.status.active, self.status.sessionID == sessionID else {
+                self.finishScreenRequest(id)
+                return
+            }
+            let filter: SCContentFilter
+            switch outcome {
+            case .picked(let picked):
+                filter = picked
+                self.firstScreenPick = nil
+            case .cancelled:
+                self.firstScreenPick = nil
+                self.finishScreenRequest(id)
+                // ユーザー自身の操作なので通知は出さない。
+                if discardSessionIfNotStarted { await self.discardSessionIfEmpty(sessionID: sessionID) }
+                return
+            case .failed(let error):
+                self.firstScreenPick = nil
+                _ = self.reportScreenStartFailure(error)
+                self.finishScreenRequest(id)
+                if discardSessionIfNotStarted { await self.discardSessionIfEmpty(sessionID: sessionID) }
+                return
+            }
+            // 差し替えの停止を待つ間もスイッチが一瞬オフに見えないよう、await の前に立てる。
+            self.screenPhase = .starting
+            if replacing {
+                // 差し替えは一度止めてから新しい対象で始める(同じファイルに続く)。
+                try? await self.engine.stopScreenRecording()
+                // 停止を待つ間にユーザーがスイッチをオフにした場合は、新しい対象で始めない。
+                guard self.screenRequestID == id else { return }
+            }
+            do {
+                try await self.engine.startScreenRecording(filter: filter)
+                if self.screenRequestID == id {
+                    self.refreshScreenTargetLabel()
+                    self.resolveScreenIssues()
+                } else if self.screenRequestID == nil {
+                    // 開始を待つ間にオフ操作が入っていた。始まってしまった録画を止める。
+                    try? await self.engine.stopScreenRecording()
+                }
+            } catch {
+                _ = self.reportScreenStartFailure(error)
+            }
+            self.finishScreenRequest(id)
+        }
+    }
+
+    /// 録画開始の操作を終える。別の操作に置き換わっていたら触らない。
+    private func finishScreenRequest(_ id: UUID) {
+        guard screenRequestID == id else { return }
+        screenRequestID = nil
+        screenPhase = .idle
+    }
+
+    /// 録画開始の操作を取り消す。開いている選択画面の結果は、以後どこにも届かない。
+    private func cancelScreenRequest() {
+        screenRequestID = nil
+        firstScreenPick = nil
+        screenPhase = .idle
+        ScreenTargetPicker.shared.cancel()
+    }
+
+    /// 録画の行に出す対象の名前を、エンジンが覚えている直近の対象から作る。
+    /// 録画が実際に始まっている時だけ入れる(始められていなければ名前を出さない)。
+    private func refreshScreenTargetLabel() {
+        guard status.screenRecording, let filter = engine.lastScreenFilter else { return }
+        screenTargetLabel = ScreenTargetPicker.label(for: filter)
+    }
+
+    private func resolveScreenIssues() {
+        resolveHealthIssue(.screenPermissionDenied)
+        resolveHealthIssue(.screenStopped)
+    }
+
+    /// 録画を始められなかった理由を、既存の異常の表示に載せる。
+    private func reportScreenStartFailure(_ error: Error) -> ScreenStartOutcome {
+        switch error {
+        case EngineError.notActive, EngineError.screenRecordingCancelled:
+            // 選んでいる間にセッションが終わった、または開始中にユーザーが止めた。見せる異常ではない。
+            return .failed(error.localizedDescription)
+        default:
+            break
+        }
+        let reason: ScreenRecordingStopReason
+        if case EngineError.screenRecordingFailed(let stopReason) = error {
+            reason = stopReason
+        } else {
+            reason = .other(reason: error.localizedDescription)
+        }
+        let issue = Self.screenIssue(for: reason, whileStarting: true)
+        // 選択画面にフォーカスが移ってパネルが閉じているため、通知でも知らせる。
+        present(issue, notify: true)
+        return .failed(issue.title)
+    }
+
+    /// 録画が止まった・始められなかった理由を、パネルに出す文言にする。
+    private static func screenIssue(
+        for reason: ScreenRecordingStopReason, whileStarting: Bool
+    ) -> HealthIssue {
+        switch reason {
+        case .permissionDenied:
+            return HealthIssue(
+                kind: .screenPermissionDenied,
+                title: "画面収録が許可されていません",
+                detail: "システム設定の「画面収録」で HearCat を許可してください。",
+                settingsPane: "Privacy_ScreenCapture")
+        case .targetGone:
+            return HealthIssue(
+                kind: .screenStopped,
+                title: "録画の対象が閉じられたため録画を止めました",
+                detail: "録画のスイッチをオンにすると、対象を選び直せます。",
+                settingsPane: nil)
+        case .writeFailed:
+            return HealthIssue(
+                kind: .screenStopped,
+                title: "動画を書き込めないため録画を止めました",
+                detail: "ディスクの空き容量を確認してください。",
+                settingsPane: nil)
+        case .other(let detail):
+            return HealthIssue(
+                kind: .screenStopped,
+                title: whileStarting ? "録画を始められませんでした" : "録画が止まりました",
+                detail: detail,
+                settingsPane: nil)
+        }
+    }
+
+    private static let busyMessage = "別の操作を処理中です。少し待ってからもう一度実行してください"
+
     /// 確定はチャンネルごとに遅延が違い、発話順と届く順が入れ替わることがある。
     /// liveFinals はコピー用なので、ファイルと同じタイムスタンプ(発話開始時刻)順を保つ。
     /// 画面の並びは liveTimeline が持ち、こちらは席を固定する(LiveTimeline のコメント参照)。
@@ -2155,7 +2485,8 @@ final class AppModel {
     /// Timer で回してアニメーションさせ、待機中は止めて静止画にする。
     private func updateMenuIcon() {
         let frames: [NSImage] =
-            switch (status.active, status.recording, status.transcribing) {
+            // 録画中も「録音中」と同じ絵にする(録画だけの絵は作らない)。
+            switch (status.active, status.recording || status.screenRecording, status.transcribing) {
             case (false, _, _): HCIcon.menuIdle
             case (true, true, true): HCIcon.menuRecordingAndTranscribing
             case (true, true, false): HCIcon.menuRecording
@@ -2188,7 +2519,7 @@ final class AppModel {
                 if status.active {
                     await stopSession()
                 } else {
-                    await startSessionViaHotkey(record: true, transcribe: true)
+                    await startSessionViaHotkey(selection: settings.lastStartSelection)
                 }
             }
         // 録音/文字起こしのキーはセッション外では「その機能だけオンで開始」。
@@ -2197,13 +2528,28 @@ final class AppModel {
             if status.active {
                 setRecording(!status.recording)
             } else {
-                Task { await startSessionViaHotkey(record: true, transcribe: false) }
+                Task {
+                    await startSessionViaHotkey(
+                        selection: SessionStartSelection(record: true, transcribe: false, screen: false))
+                }
+            }
+        case .toggleScreenRecording:
+            if status.active {
+                setScreenRecording(!screenSwitchOn)
+            } else {
+                Task {
+                    await startSessionViaHotkey(
+                        selection: SessionStartSelection(record: false, transcribe: false, screen: true))
+                }
             }
         case .toggleTranscribing:
             if status.active {
                 setTranscribing(!status.transcribing)
             } else {
-                Task { await startSessionViaHotkey(record: false, transcribe: true) }
+                Task {
+                    await startSessionViaHotkey(
+                        selection: SessionStartSelection(record: false, transcribe: true, screen: false))
+                }
             }
         case .analyzeCodeImpact:
             openCodeImpactPanel()
@@ -2217,9 +2563,9 @@ final class AppModel {
     /// ホットキーからのセッション開始。hotkeyGroupPicker が有効なら開始前に
     /// グループ選択の小さい画面を出し、ESC・キャンセルなら開始自体を中止する。
     /// 選択画面は NSAlert(モーダル)のため、この呼び出し自体は同期的にブロックする。
-    private func startSessionViaHotkey(record: Bool, transcribe: Bool) async {
+    private func startSessionViaHotkey(selection: SessionStartSelection) async {
         guard settings.hotkeyGroupPicker else {
-            await startSession(record: record, transcribe: transcribe)
+            await startSession(with: selection)
             return
         }
         // 選択画面の初期選択も、カレンダーの予定名+履歴からの推測に合わせる
@@ -2235,7 +2581,7 @@ final class AppModel {
         }
         // 選択画面で確定した値は、ユーザーが手で選んだ既定として扱う。
         selectFolder(result.folder)
-        await startSession(record: record, transcribe: transcribe, folder: .explicit(result.folder))
+        await startSession(with: selection, folder: .explicit(result.folder))
     }
 
     // MARK: - ウィンドウ表示
@@ -2725,7 +3071,9 @@ final class AppModel {
             guard !busy else {
                 return IPCResponse(ok: false, error: "別の操作を処理中です。少し待ってからもう一度実行してください")
             }
-            await startSession(record: request.record ?? true, transcribe: request.transcribe ?? true)
+            await startSession(
+                record: request.record ?? true, transcribe: request.transcribe ?? true,
+                screen: request.screen ?? false)
             if let lastError {
                 self.lastError = nil
                 return IPCResponse(ok: false, error: lastError)
@@ -2756,6 +3104,17 @@ final class AppModel {
                 if let transcribe = request.transcribe {
                     try engine.setTranscribing(transcribe)
                     if !transcribe { liveTimeline.clearVolatiles() }
+                }
+                if let screen = request.screen {
+                    guard status.active else { throw EngineError.notActive }
+                    if screen {
+                        // 対象の選択を待たずに返す。選択画面は Mac の画面に出ている。
+                        if case .failed(let message) = await requestScreenRecording() {
+                            return IPCResponse(ok: false, error: message)
+                        }
+                    } else {
+                        await stopScreenRecording()
+                    }
                 }
                 if let autostart = request.autostart { try LoginItem.setEnabled(autostart) }
                 return IPCResponse(ok: true, status: status)

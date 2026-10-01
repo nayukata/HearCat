@@ -142,10 +142,12 @@ struct WelcomeStartIllustration: View {
     private var panel: some View {
         VStack(alignment: .leading, spacing: 12) {
             panelHeader
+            switchRows
             startRow
             destRow
             footerRow
         }
+        .tint(HCColor.accent)
         .padding(12)
         .background(HCRadius.shape(HCRadius.panel).fill(HCColor.panel))
         .overlay(HCRadius.shape(HCRadius.panel).stroke(HCColor.strokeLine, lineWidth: 1))
@@ -166,29 +168,35 @@ struct WelcomeStartIllustration: View {
         }
     }
 
+    /// 実物(MenuPanel.swift の開始前のスイッチ3本)と同じ並び。
+    private var switchRows: some View {
+        VStack(spacing: 12) {
+            ForEach(Array([("録音", true), ("文字起こし", true), ("録画", false)].enumerated()), id: \.offset) { _, row in
+                HStack {
+                    Text(row.0)
+                    Spacer()
+                    Toggle(row.0, isOn: .constant(row.1))
+                        .labelsHidden()
+                }
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+    }
+
     /// 開始ボタンの外側に textPrimary 2pt の枠(角丸はボタンに合わせ 3pt 外側)で強調する。
     /// 負のパディングで枠だけを外側にはみ出させ、周りのレイアウトは動かさない。
     private var startRow: some View {
-        HStack(spacing: 6) {
-            Button {
-            } label: {
-                Label(
-                    SessionStartMode.recordAndTranscribe.buttonLabel,
-                    systemImage: SessionStartMode.recordAndTranscribe.systemImage)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.hcPrimary)
-            .overlay(
-                RoundedRectangle(cornerRadius: HCRadius.control + 3, style: .continuous)
-                    .stroke(HCColor.textPrimary, lineWidth: 2)
-                    .padding(-3))
-
-            Button {
-            } label: {
-                Image(systemName: "chevron.down")
-            }
-            .buttonStyle(.hcSecondary)
+        Button {
+        } label: {
+            Label("開始する", systemImage: "record.circle")
+                .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.hcPrimary)
+        .overlay(
+            RoundedRectangle(cornerRadius: HCRadius.control + 3, style: .continuous)
+                .stroke(HCColor.textPrimary, lineWidth: 2)
+                .padding(-3))
     }
 
     private var destRow: some View {

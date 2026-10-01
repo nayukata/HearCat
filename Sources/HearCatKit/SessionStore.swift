@@ -20,6 +20,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
         case transcript
         case audio
         case audioOther
+        case video
         case summary
         case summaryEngine
         case cleaned
@@ -31,6 +32,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
             case .transcript: return "\(directoryName).md"
             case .audio: return "\(directoryName).m4a"
             case .audioOther: return "\(directoryName)-相手.m4a"
+            case .video: return "\(directoryName).mov"
             case .summary: return "summary.md"
             case .summaryEngine: return "summary.engine"
             case .cleaned: return "cleaned.md"
@@ -42,9 +44,16 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
         public var isAudio: Bool {
             switch self {
             case .audio, .audioOther: return true
-            case .transcript, .summary, .summaryEngine, .cleaned: return false
+            case .transcript, .video, .summary, .summaryEngine, .cleaned: return false
             }
         }
+
+        /// 画面録画か。巨大になるため、受け渡しパッケージには含めない(SessionPackage が除く)。
+        public var isVideo: Bool { self == .video }
+
+        /// 容量管理(集計・古いものの削除)で「録音」として一括りにするもの。
+        /// 音声だけ消えて動画だけ残る、またはその逆にならないよう、同じ扱いにする。
+        var isMedia: Bool { isAudio || isVideo }
 
         /// ディレクトリ名に依存しない固定名。旧形式(transcript.md / audio.m4a)の
         /// セッションを読むときの別名であり、受け渡しパッケージ(SessionPackage)の
@@ -54,6 +63,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
             case .transcript: return "transcript.md"
             case .audio: return "audio.m4a"
             case .audioOther: return "audio-other.m4a"
+            case .video: return "video.mov"
             case .summary, .summaryEngine, .cleaned:
                 // ディレクトリ名を使わない成果物は、保存時の名前がそのまま固定名。
                 return fileName(inDirectoryNamed: "")
@@ -84,6 +94,8 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     /// 自分の声だけの録音は作らない。聞き直す場面が無いわりに、環境ノイズへ自動ゲインが
     /// 掛かるぶん最も容量を食う(実測で混ぜたものとほぼ同じ 1時間 44MB)。
     public var audioOtherURL: URL? { url(of: .audioOther) }
+    /// 画面録画。録画を一度もオンにしなかったセッションには無い。
+    public var videoURL: URL? { url(of: .video) }
     /// 要約はアプリ内で表示する用途のため固定名。
     public var summaryURL: URL? { url(of: .summary) }
     /// エージェント CLI で清書した文字起こし(hearcat-clean スキル由来)。無ければ nil。
@@ -369,9 +381,10 @@ public enum SessionStore {
 
     // MARK: - 容量管理
 
-    /// sessions ディレクトリの合計使用量。録音ファイル(.m4a)とそれ以外(文字起こし・要約など)に
-    /// 分けて返す。ファイル種別ではなく拡張子で判定するので、SessionInfo.Artifact に無い
-    /// 未知のファイルが混じっていてもディスク使用量の実態から漏れない。
+    /// sessions ディレクトリの合計使用量。録音ファイル(.m4a)と画面録画(.mov)をまとめた
+    /// 録音側と、それ以外(文字起こし・要約など)に分けて返す。
+    /// ファイル種別ではなく拡張子で判定するので、SessionInfo.Artifact に無い未知のファイルが
+    /// 混じっていてもディスク使用量の実態から漏れない。
     public struct StorageUsage: Sendable, Equatable {
         public let audioBytes: Int64
         public let otherBytes: Int64
@@ -383,7 +396,7 @@ public enum SessionStore {
         var otherBytes: Int64 = 0
         for url in regularFiles(under: sessionsDirectory) {
             let size = fileSize(at: url)
-            if url.pathExtension == "m4a" {
+            if url.pathExtension == "m4a" || url.pathExtension == "mov" {
                 audioBytes += size
             } else {
                 otherBytes += size
@@ -392,7 +405,7 @@ public enum SessionStore {
         return StorageUsage(audioBytes: audioBytes, otherBytes: otherBytes)
     }
 
-    /// 指定日数より古いセッションのうち、録音ファイルを持つものの件数と合計サイズ。
+    /// 指定日数より古いセッションのうち、録音ファイル(画面録画を含む)を持つものの件数と合計サイズ。
     /// 実際に削除する前に、確認画面へ見せる用途。
     public struct OldRecordingsSummary: Sendable, Equatable {
         public let sessionCount: Int
@@ -412,7 +425,7 @@ public enum SessionStore {
         return OldRecordingsSummary(sessionCount: count, bytes: bytes)
     }
 
-    /// 指定日数より古いセッションの録音ファイルだけを削除する。文字起こし・要約は残す
+    /// 指定日数より古いセッションの録音ファイル(画面録画を含む)だけを削除する。文字起こし・要約は残す
     /// (容量管理の目的は「聞き直しはもう要らないが記録は残したい」ため)。
     /// 個々のファイル削除が失敗しても他のセッションの削除は続け、実際に空いたバイト数を返す。
     @discardableResult
@@ -420,7 +433,7 @@ public enum SessionStore {
         let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
         var freed: Int64 = 0
         for session in list() where session.startDate < cutoff {
-            for artifact in SessionInfo.Artifact.allCases where artifact.isAudio {
+            for artifact in SessionInfo.Artifact.allCases where artifact.isMedia {
                 guard let url = session.url(of: artifact) else { continue }
                 let size = fileSize(at: url)
                 guard (try? FileManager.default.removeItem(at: url)) != nil else { continue }
@@ -432,7 +445,7 @@ public enum SessionStore {
 
     private static func audioBytes(of session: SessionInfo) -> Int64 {
         SessionInfo.Artifact.allCases
-            .filter(\.isAudio)
+            .filter(\.isMedia)
             .compactMap(session.url(of:))
             .reduce(0) { $0 + fileSize(at: $1) }
     }

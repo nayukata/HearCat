@@ -18,15 +18,18 @@ public struct IPCRequest: Codable, Sendable {
     public var transcribe: Bool?
     /// set: ログイン時の自動起動(ログイン項目)の切り替え先。
     public var autostart: Bool?
+    /// 画面録画の切り替え先(set)。オンにする場合の録画対象は、アプリ側が画面共有の選択画面でユーザーに選ばせる。
+    public var screen: Bool?
 
     public init(
         command: IPCCommand, record: Bool? = nil, transcribe: Bool? = nil,
-        autostart: Bool? = nil
+        autostart: Bool? = nil, screen: Bool? = nil
     ) {
         self.command = command
         self.record = record
         self.transcribe = transcribe
         self.autostart = autostart
+        self.screen = screen
     }
 }
 

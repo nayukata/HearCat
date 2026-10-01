@@ -1,16 +1,32 @@
 @preconcurrency import AVFoundation
 import Foundation
+@preconcurrency import ScreenCaptureKit
 import Speech
 import os
 
 public enum EngineError: LocalizedError {
     case alreadyActive
     case notActive
+    /// 画面録画を始められなかった(許可がない、対象が無くなっている等)。
+    case screenRecordingFailed(ScreenRecordingStopReason)
+    /// 前回の録画対象が無く、対象の指定もなかった。
+    case noScreenTarget
+    /// 開始処理の途中で、画面録画を止める操作が入った。録画は始まっていない。
+    case screenRecordingCancelled
 
     public var errorDescription: String? {
         switch self {
         case .alreadyActive: return "すでにセッションが進行中です"
         case .notActive: return "進行中のセッションがありません"
+        case .screenRecordingFailed(let reason):
+            switch reason {
+            case .permissionDenied: return "画面収録が許可されていません"
+            case .targetGone: return "録画する対象が見つかりません"
+            case .writeFailed: return "動画ファイルを書けません"
+            case .other(let detail): return "画面録画を開始できません(\(detail))"
+            }
+        case .noScreenTarget: return "録画する対象が指定されていません"
+        case .screenRecordingCancelled: return "録画の開始中に止められました"
         }
     }
 }
@@ -29,6 +45,11 @@ public enum SessionHealthEvent: Sendable {
     case recordingWriteFailed
     /// 録音の最終ファイル(.m4a)への変換が停止時に失敗した。生データ(.aac)は消さずに残している。
     case recordingConversionFailed
+    /// 画面録画がシステム側の都合で止まった(許可なし・対象が無くなった・書き込み失敗など)。
+    /// 録音と文字起こしは止まらない。status.screenRecording はオフに戻っている。
+    case screenRecordingStopped(ScreenRecordingStopReason)
+    /// 画面録画の動画ファイルを停止時に最後まで仕上げられなかった。確定済みの分までは再生できる形で残している。
+    case screenRecordingCloseFailed
 }
 
 /// item.buffer と同じフォーマット・フレーム長の無音バッファを作る(SilenceGate.Action.silence 用)。
@@ -61,8 +82,24 @@ public final class SessionEngine {
         public var startedAt: Date?
         /// システム音声(相手)の取得に失敗した場合の理由。署名なしビルド等で起きる。
         public var systemAudioError: String?
+        /// 画面録画中か。録音(recording)とは独立で、セッション中に何度でも切り替わる。
+        public var screenRecording = false
 
         public init() {}
+
+        // 新しい項目は、持たない古いアプリが返した Status も読めるよう、無ければ既定値にする。
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            active = try container.decode(Bool.self, forKey: .active)
+            recording = try container.decode(Bool.self, forKey: .recording)
+            transcribing = try container.decode(Bool.self, forKey: .transcribing)
+            sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+            sessionDirectory = try container.decodeIfPresent(String.self, forKey: .sessionDirectory)
+            transcriptPath = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
+            startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt)
+            systemAudioError = try container.decodeIfPresent(String.self, forKey: .systemAudioError)
+            screenRecording = try container.decodeIfPresent(Bool.self, forKey: .screenRecording) ?? false
+        }
     }
 
     /// 無音区間を文字起こしに流さないゲート。
@@ -277,6 +314,8 @@ public final class SessionEngine {
     internal var requestMicAccess: () async -> Bool = {
         await AVCaptureDevice.requestAccess(for: .audio)
     }
+    /// 画面の取得元を作る。既定は実機の ScreenCaptureSource(画面収録の許可が要る)。
+    internal var screenFrameSourceFactory: () -> any ScreenFrameSource = { ScreenCaptureSource() }
     /// セッションの保存先ディレクトリを作る。既定は SessionStore(本番の
     /// Application Support 配下)。テストでは一時ディレクトリを返す差し替えを使い、
     /// SessionStore.rootDirectory 自体には触れない。
@@ -332,11 +371,15 @@ public final class SessionEngine {
 
     private let locale: Locale
     private var toggles: Toggles?
+    /// このセッションで録音・文字起こし・録画のどれかが一度でもオンになったか。
+    /// オフに戻しても落とさない(空のセッションとして破棄してよいかの判定に使う)。
+    private var everRecorded = false
     private var mic: (any AudioBufferSource)?
     private var system: (any AudioBufferSource)?
     private var mine: (any ChannelTranscribing)?
     private var theirs: (any ChannelTranscribing)?
     private var recorder: SessionRecorder?
+    private var videoWriter: ScreenVideoWriter?
     private var writer: TranscriptWriter?
     private var pumps: [Task<Void, Never>] = []
     private var eventTask: Task<Void, Never>?
@@ -346,6 +389,27 @@ public final class SessionEngine {
     /// 最中に start() が割り込むと同じ資源を同時に触って壊れる。start() の先頭で
     /// このタスクの完了を待つことで割り込みを防ぐ。
     private var teardownTask: Task<Void, Never>?
+    /// 画面録画の1回のオン(取得元の start から stop まで)。
+    @MainActor private final class ScreenSession {
+        let source: any ScreenFrameSource
+        var pump: Task<Void, Never>?
+        /// 開始処理の間は true。この間に取得元が失敗した場合は、イベントではなく start のエラーで伝える。
+        var isStarting = true
+        var failure: ScreenRecordingStopReason?
+
+        init(source: any ScreenFrameSource) { self.source = source }
+    }
+    /// いまオン(または開始処理中)の画面録画。nil ならオフ。
+    /// start の await をまたぐため、await の前に同期的に代入して二重 start を弾く。
+    private var screenSession: ScreenSession?
+    /// 進行中の停止処理。停止が終わらないうちに次の start が同じ動画へフレームを流し込まないよう、
+    /// start の先頭で完了を待つ。
+    private var screenStopTask: Task<Void, Never>?
+    /// 直近に録画した対象。対象を渡さない start(再オン)で使う。セッションをまたいでは持ち越さない。
+    private var lastScreenTarget: ScreenTarget?
+    /// 取得元の stop とフレーム転送の終了を待つ上限(秒)。返らない場合に停止全体が固まらないようにする。
+    private static let screenStopDeadline = 3.0
+
     /// 録音音量。セッション開始前に設定された値も、開始時に recorder へ引き継ぐ。
     private var micGain: Float = 1
     private var systemGain: Float = 1
@@ -478,6 +542,7 @@ public final class SessionEngine {
 
         let toggles = Toggles(recording: record, transcribing: transcribe)
         self.toggles = toggles
+        everRecorded = record || transcribe
 
         // 無音監視の判定材料。音量(pump)と確定文(eventTask)の両方が更新し、
         // watchdog が読む。音量だけに頼らないのは、環境音は音量で誤魔化せても
@@ -610,6 +675,15 @@ public final class SessionEngine {
             }
         }
         self.recorder = recorder
+
+        // --- 画面録画の書き出し(ファイルは最初のフレームが来るまで作らない) ---
+        // 音声は録音ファイルと同じブロックをここへ分けてもらう。
+        let videoWriter = ScreenVideoWriter(url: audioURL(.video), audioActive: record)
+        videoWriter.setOnFailure { [weak self] in
+            Task { @MainActor in self?.screenWriteFailed() }
+        }
+        self.videoWriter = videoWriter
+        await recorder.setBlockTap { videoWriter.appendAudio($0) }
 
         // --- pump: 音源 → 文字起こし/録音への分岐 ---
         // 無音監視の音量側の更新はここで行う。録音/文字起こしのトグルとは独立に
@@ -828,6 +902,14 @@ public final class SessionEngine {
         silenceWatchTask = nil
         lastVoiceAt = nil
 
+        // 画面の取得を止める(録音の末尾の音声をまだ動画へ渡すため、動画の書き出しは閉じない)。
+        if let screenStopTask { await screenStopTask.value }
+        if let session = screenSession {
+            screenSession = nil
+            await stopScreenSource(session)
+        }
+        videoWriter?.markEnd()
+
         // 1. 音源を止めてバッファストリームを finish させ、pump が末尾まで流し切るのを待つ。
         mic?.stop()
         system?.stop()
@@ -851,19 +933,43 @@ public final class SessionEngine {
             let converted = await recorder.close()
             if !converted { onHealthEvent?(.recordingConversionFailed) }
         }
+        if let videoWriter {
+            let failedBefore = videoWriter.isFailed
+            let closed = await videoWriter.close()
+            // 書き込み失敗は発生時に伝えてあるので、重ねて知らせない。
+            if !closed, !failedBefore { onHealthEvent?(.screenRecordingCloseFailed) }
+        }
 
         mic = nil
         system = nil
         mine = nil
         theirs = nil
         recorder = nil
+        videoWriter = nil
+        screenStopTask = nil
+        lastScreenTarget = nil
         writer = nil
         toggles = nil
+    }
+
+    /// 何も記録していないセッションを、履歴に残さず止める(ディレクトリごと消す)。
+    /// 録音・文字起こし・録画のどれかが一度でもオンになっていたら何もしない(止めもしない)。
+    /// 破棄したら true。
+    public func discardIfNothingRecorded() async -> Bool {
+        guard status.active, !isTearingDown, !everRecorded, let directory = status.sessionDirectory
+        else { return false }
+        isTearingDown = true
+        status = Status()
+        await runTeardown()
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: directory))
+        return true
     }
 
     public func setRecording(_ on: Bool) throws {
         guard status.active, let toggles else { throw EngineError.notActive }
         toggles.recording.withLock { $0 = on }
+        if on { everRecorded = true }
+        videoWriter?.setAudioActive(on)
         status.recording = on
         if !on {
             // 中途半端に残ったサンプルを捨て、再開時に左右チャンネルが揃った状態から始める。
@@ -872,9 +978,137 @@ public final class SessionEngine {
         }
     }
 
+    // MARK: - 画面録画
+
+    /// 画面録画をオンにする。録画対象(ユーザーが画面共有の選択画面で選んだもの)を渡す。
+    /// nil なら、このセッションで直近に録画した対象で再開する(無ければ noScreenTarget)。
+    /// すでにオン(または開始処理中)なら何もしない。セッション外は notActive。
+    /// 開始できなければ screenRecordingFailed を投げ、status は変わらない。
+    public func startScreenRecording(filter: SCContentFilter? = nil) async throws {
+        try await startScreenRecording(target: filter.map { ScreenTarget(filter: $0) })
+    }
+
+    /// 前回の録画対象が残っているか。再オンの UI で、選択画面を出さずに再開できるかの判断に使う。
+    public var canResumeScreenRecording: Bool { lastScreenTarget != nil }
+
+    /// 前回の録画対象の filter。再開した時に、録画の行へ出す対象の名前を作り直すために使う。
+    public var lastScreenFilter: SCContentFilter? { lastScreenTarget?.filter }
+
+    internal func startScreenRecording(target requested: ScreenTarget?) async throws {
+        guard status.active, videoWriter != nil else { throw EngineError.notActive }
+        if let screenStopTask { await screenStopTask.value }
+        // 待っている間にセッションが終わった場合。
+        guard status.active, let videoWriter else { throw EngineError.notActive }
+        guard screenSession == nil else { return }
+        guard let target = requested ?? lastScreenTarget else { throw EngineError.noScreenTarget }
+        // 書き込みに失敗した動画には、以後何も書けない。オンのまま何も録れない状態にしない。
+        guard !videoWriter.isFailed else { throw EngineError.screenRecordingFailed(.writeFailed) }
+
+        let session = ScreenSession(source: screenFrameSourceFactory())
+        screenSession = session
+        session.source.setOnFailure { [weak self, weak session] reason in
+            Task { @MainActor in
+                guard let self, let session else { return }
+                self.endScreenSession(session, reason: reason)
+            }
+        }
+        do {
+            try await session.source.start(target: target)
+        } catch {
+            if screenSession === session { screenSession = nil }
+            await session.source.stop()
+            if case ScreenCaptureError.stoppedWhileStarting = error {
+                throw EngineError.screenRecordingCancelled
+            }
+            throw EngineError.screenRecordingFailed(ScreenRecordingStopReason(error: error))
+        }
+        // 開始処理の間に、止める操作・取得元の失敗・セッション終了が入った場合は、使われない
+        // 取得元を片付け、録画は始まっていないことをエラーで伝える。
+        if let reason = session.failure {
+            await session.source.stop()
+            throw EngineError.screenRecordingFailed(reason)
+        }
+        guard screenSession === session, status.active else {
+            await session.source.stop()
+            throw EngineError.screenRecordingCancelled
+        }
+        session.isStarting = false
+        lastScreenTarget = target
+        let frames = session.source.frames
+        session.pump = Task.detached(priority: .userInitiated) {
+            for await frame in frames { videoWriter.append(frame) }
+        }
+        status.screenRecording = true
+        everRecorded = true
+    }
+
+    /// 画面録画をオフにする。すでにオフなら何もしない。セッション外は notActive。
+    /// オフにした区間は動画から詰められ、再オンで同じファイルに続く。
+    public func stopScreenRecording() async throws {
+        guard status.active, videoWriter != nil else { throw EngineError.notActive }
+        guard let session = screenSession else {
+            await screenStopTask?.value
+            return
+        }
+        screenSession = nil
+        status.screenRecording = false
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.finishScreenSession(session)
+        }
+        screenStopTask = task
+        await task.value
+    }
+
+    /// 取得元の側から止められた(許可なし・対象が無くなった・書き込み失敗)。
+    /// 画面録画だけをオフに戻し、録音と文字起こしは続ける。
+    private func endScreenSession(_ session: ScreenSession, reason: ScreenRecordingStopReason) {
+        guard screenSession === session else { return }
+        screenSession = nil
+        if session.isStarting {
+            session.failure = reason
+            return
+        }
+        status.screenRecording = false
+        errorLog("画面録画が止まりました: \(reason)")
+        screenStopTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.finishScreenSession(session)
+        }
+        onHealthEvent?(.screenRecordingStopped(reason))
+    }
+
+    private func screenWriteFailed() {
+        // 画面オフの間(録音オンへの切り替え時の書き込みなど)の失敗も知らせる。
+        guard let session = screenSession else {
+            onHealthEvent?(.screenRecordingStopped(.writeFailed))
+            return
+        }
+        endScreenSession(session, reason: .writeFailed)
+    }
+
+    /// 取得元を止め、動画の今の区間を閉じる(次のオンは新しい区間になる)。
+    private func finishScreenSession(_ session: ScreenSession) async {
+        await stopScreenSource(session)
+        videoWriter?.pauseVideo()
+    }
+
+    /// 取得元を止めて、転送タスクが残りのフレームを書き終えるのを待つ。上限内に返らなければ
+    /// 待たずに打ち切る。
+    private func stopScreenSource(_ session: ScreenSession) async {
+        let source = session.source
+        let pump = session.pump
+        _ = await withDeadline(seconds: Self.screenStopDeadline) {
+            await source.stop()
+            await pump?.value
+        }
+        pump?.cancel()
+    }
+
     public func setTranscribing(_ on: Bool) throws {
         guard status.active, let toggles else { throw EngineError.notActive }
         toggles.transcribing.withLock { $0 = on }
+        if on { everRecorded = true }
         status.transcribing = on
     }
 

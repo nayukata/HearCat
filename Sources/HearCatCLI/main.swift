@@ -7,12 +7,16 @@ import HearCatKit
 let usage = """
 使い方:
   hearcat help | --help | -h                     このヘルプを表示する
-  hearcat start [--no-record] [--no-transcribe]  セッションを開始する(アプリ未起動なら起動する)
+  hearcat start [--no-record] [--no-transcribe] [--screen]
+                                                 セッションを開始する(アプリ未起動なら起動する)。
+                                                 --screen で画面録画もオンにする(既定はオフ)
   hearcat stop                                   セッションを停止して保存する
   hearcat status                                 現在の状態を表示する
   hearcat latest                                 最新の文字起こしファイルのパスを表示する
   hearcat set record on|off                      録音だけを切り替える
   hearcat set transcribe on|off                  文字起こしだけを切り替える
+  hearcat set screen on|off                      画面録画だけを切り替える(オンにすると Mac の画面に
+                                                 録画対象の選択画面が出る。選ぶまで録画は始まらない)
   hearcat set autostart on|off                   ログイン時の自動起動を切り替える
   hearcat sessions [--folder <name>]             セッション一覧を TSV で出す
   hearcat read [<session>] [--summary|--cleaned] [--tail <N>]
@@ -96,11 +100,23 @@ func printStatus(_ status: SessionEngine.Status) {
         print("状態: セッション進行中")
         print("録音: \(status.recording ? "オン" : "オフ")")
         print("文字起こし: \(status.transcribing ? "オン" : "オフ")")
+        print("録画: \(status.screenRecording ? "オン" : "オフ")")
         if let path = status.transcriptPath { print("transcript: \(path)") }
         if let dir = status.sessionDirectory { print("session: \(dir)") }
         if let error = status.systemAudioError { print("注意: \(error)") }
     } else {
         print("状態: 待機中")
+    }
+}
+
+/// 録画をオンにしたのに、まだ録画が始まっていない時の案内。録画対象は Mac の画面に出る
+/// 選択画面でユーザーが選ぶため、選ぶまで status の録画はオフのまま。
+/// startedSession: このコマンドでセッションを始めた場合(録画だけなら、取り消しでセッションごと終わる)。
+func printScreenPickNotice(_ status: SessionEngine.Status?, startedSession: Bool = false) {
+    guard let status, status.active, !status.screenRecording else { return }
+    print("録画する対象は、Mac の画面に出ている選択画面で選んでください(選ぶと録画が始まります)")
+    if startedSession, !status.recording, !status.transcribing {
+        print("選択画面で取り消すと、何も記録せずにセッションを終えます")
     }
 }
 
@@ -185,14 +201,17 @@ case "help", "--help", "-h":
 case "start":
     let record = !arguments.contains("--no-record")
     let transcribe = !arguments.contains("--no-transcribe")
+    let screen = arguments.contains("--screen")
     if send(IPCRequest(command: .status)) == nil {
         guard launchAppAndWait() else {
             fail("HearCat.app を起動できません。install.sh で導入されているか確認してください。")
         }
     }
-    let response = requireResponse(IPCRequest(command: .start, record: record, transcribe: transcribe))
+    let response = requireResponse(
+        IPCRequest(command: .start, record: record, transcribe: transcribe, screen: screen ? true : nil))
     print("開始しました")
     if let status = response.status { printStatus(status) }
+    if screen { printScreenPickNotice(response.status, startedSession: true) }
 
 case "stop":
     let response = requireResponse(IPCRequest(command: .stop))
@@ -222,11 +241,11 @@ case "latest":
 
 case "set":
     guard arguments.count == 2, let on = ["on": true, "off": false][arguments[1]],
-          ["record", "transcribe", "autostart"].contains(arguments[0]) else {
+          ["record", "transcribe", "screen", "autostart"].contains(arguments[0]) else {
         failUsage()
     }
     // autostart の登録はアプリ内でしか行えないため、未起動なら起動して届ける。
-    // record/transcribe はセッション中の操作なので、未起動ならそのままエラーでよい。
+    // record/transcribe/screen はセッション中の操作なので、未起動ならそのままエラーでよい。
     if arguments[0] == "autostart", send(IPCRequest(command: .status)) == nil {
         guard launchAppAndWait() else {
             fail("HearCat.app を起動できません。install.sh で導入されているか確認してください。")
@@ -235,11 +254,13 @@ case "set":
     let request = switch arguments[0] {
     case "record": IPCRequest(command: .set, record: on)
     case "transcribe": IPCRequest(command: .set, transcribe: on)
+    case "screen": IPCRequest(command: .set, screen: on)
     default: IPCRequest(command: .set, autostart: on)
     }
     let response = requireResponse(request)
     print("切り替えました")
     if let status = response.status { printStatus(status) }
+    if arguments[0] == "screen", on { printScreenPickNotice(response.status) }
 
 case "sessions":
     // セッション一覧。TSV(id\t開始日時 ISO8601\tセッション名\tフォルダ) で出す。

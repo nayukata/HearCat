@@ -16,12 +16,40 @@ struct NudgeAction: Identifiable {
     let title: String
     /// 強調して置く方の選択肢(1つだけ)。
     let isPrimary: Bool
+    /// 押しボタンの選択が空の間は押せなくする(始めても何も残らない開始のため)。
+    let needsStartChoice: Bool
     let handler: @MainActor () -> Void
 
-    init(title: String, isPrimary: Bool = false, handler: @escaping @MainActor () -> Void) {
+    init(
+        title: String, isPrimary: Bool = false, needsStartChoice: Bool = false,
+        handler: @escaping @MainActor () -> Void
+    ) {
         self.title = title
         self.isPrimary = isPrimary
+        self.needsStartChoice = needsStartChoice
         self.handler = handler
+    }
+}
+
+/// 予告パネルの押しボタン(録音・文字起こし・録画)の状態。押すたびに onChange で保存へ流す。
+@MainActor
+@Observable
+final class NudgeStartChoice {
+    var record: Bool { didSet { onChange(selection) } }
+    var transcribe: Bool { didSet { onChange(selection) } }
+    var screen: Bool { didSet { onChange(selection) } }
+
+    @ObservationIgnored private let onChange: (SessionStartSelection) -> Void
+
+    var selection: SessionStartSelection {
+        SessionStartSelection(record: record, transcribe: transcribe, screen: screen)
+    }
+
+    init(initial: SessionStartSelection, onChange: @escaping (SessionStartSelection) -> Void) {
+        record = initial.record
+        transcribe = initial.transcribe
+        screen = initial.screen
+        self.onChange = onChange
     }
 }
 
@@ -32,6 +60,10 @@ struct NudgePrompt {
     /// 残り時間を出す締め切り。nil なら出さない。
     /// 「あと何秒で勝手に始まるのか」が見えないと、予告の意味がないため。
     var deadline: Date?
+    /// 始める内容の押しボタン。nil ならボタンの行を出さない。
+    var startChoice: NudgeStartChoice?
+    /// 押しボタンがすべてオフの間、detail の代わりに出す文面。
+    var emptyChoiceDetail: String?
     var actions: [NudgeAction]
 }
 
@@ -54,18 +86,31 @@ final class NudgeOverlayController {
     /// 内訳(実測、日本語は同梱の Noto Sans JP): 6文字のボタンが3つで約 300pt、
     /// パネルの左右余白 32pt。折り返さない下限は約 340pt だが、字幅は環境で少し動くため
     /// 400pt にして余裕を持たせる。ボタンの文言を長くする時はここも見直す。
-    static let size = NSSize(width: 400, height: 178)
+    static let width: CGFloat = 400
+    private static let baseHeight: CGFloat = 178
+    /// 始める内容の押しボタンの行(約 28pt)と、その上の余白 12pt。
+    private static let choiceRowHeight: CGFloat = 40
+
+    /// 押しボタンの行がある予告だけ、その行の分だけ高くする。
+    static func size(for prompt: NudgePrompt?) -> NSSize {
+        NSSize(
+            width: width,
+            height: baseHeight + (prompt?.startChoice == nil ? 0 : choiceRowHeight))
+    }
 
     private init() {
         let state = NudgeOverlayState()
         self.state = state
         panel = FloatingPanel.make(
-            size: Self.size, title: "HearCat", content: NudgeOverlayView(state: state, motion: motion))
+            size: Self.size(for: nil), title: "HearCat",
+            content: NudgeOverlayView(state: state, motion: motion))
         motion.attach(to: panel)
     }
 
     func present(_ prompt: NudgePrompt) {
         state.prompt = prompt
+        // 位置決めは枠の大きさに依るので、先に大きさを確定させる。
+        panel.setContentSize(Self.size(for: prompt))
         positionNearTopRight()
         motion.open(target: panel.frame.origin, makeKey: false)
     }
@@ -111,8 +156,8 @@ private struct NudgeOverlayView: View {
             }
         }
         .frame(
-            width: NudgeOverlayController.size.width,
-            height: NudgeOverlayController.size.height)
+            width: NudgeOverlayController.size(for: state.prompt).width,
+            height: NudgeOverlayController.size(for: state.prompt).height)
         .background(HCColor.panel)
         .overlay(
             HCRadius.shape(HCRadius.panel)
@@ -132,14 +177,15 @@ private struct NudgeOverlayView: View {
                     Text(prompt.title)
                         .font(HCFont.style(.subheadline, weight: .semibold))
                         .foregroundStyle(HCColor.textPrimary)
-                    Text(prompt.detail)
+                    Text(detail(of: prompt))
                         .font(HCFont.subheadline)
                         .foregroundStyle(HCColor.textBody)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineLimit(3)
                 }
             }
-            if let deadline = prompt.deadline {
+            // すべてオフの間は何も始まらないので、残り時間は出さない。
+            if let deadline = prompt.deadline, !isChoiceEmpty(prompt) {
                 HStack(spacing: 6) {
                     Image(systemName: "timer")
                         .font(HCFont.caption)
@@ -148,6 +194,9 @@ private struct NudgeOverlayView: View {
                 }
                 .foregroundStyle(HCColor.accentText)
             }
+            if let choice = prompt.startChoice {
+                NudgeChoiceRow(choice: choice)
+            }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
                 Spacer()
@@ -155,6 +204,7 @@ private struct NudgeOverlayView: View {
                     if action.isPrimary {
                         Button(action.title, action: action.handler)
                             .buttonStyle(.hcPrimary)
+                            .disabled(action.needsStartChoice && isChoiceEmpty(prompt))
                     } else {
                         Button(action.title, action: action.handler)
                             .buttonStyle(.hcSecondary)
@@ -167,5 +217,70 @@ private struct NudgeOverlayView: View {
             .fixedSize(horizontal: true, vertical: false)
         }
         .padding(16)
+    }
+
+    private func isChoiceEmpty(_ prompt: NudgePrompt) -> Bool {
+        prompt.startChoice?.selection.isEmpty ?? false
+    }
+
+    private func detail(of prompt: NudgePrompt) -> String {
+        if isChoiceEmpty(prompt), let empty = prompt.emptyChoiceDetail { return empty }
+        return prompt.detail
+    }
+}
+
+/// 始める内容(録音・文字起こし・録画)を、押して切り替える押しボタンで並べた行。
+/// オンは色付き、オフは枠だけ。
+private struct NudgeChoiceRow: View {
+    @Bindable var choice: NudgeStartChoice
+
+    var body: some View {
+        HStack(spacing: 8) {
+            NudgeChoiceChip(title: "録音", isOn: $choice.record)
+            NudgeChoiceChip(title: "文字起こし", isOn: $choice.transcribe)
+            NudgeChoiceChip(title: "録画", isOn: $choice.screen)
+        }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct NudgeChoiceChip: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: isOn ? "circle.fill" : "circle")
+                    .font(.system(size: 8))
+                Text(title)
+            }
+        }
+        .buttonStyle(NudgeChoiceChipStyle(isOn: isOn))
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(isOn ? "オン" : "オフ")
+    }
+}
+
+private struct NudgeChoiceChipStyle: ButtonStyle {
+    let isOn: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(HCFont.callout)
+            .foregroundStyle(isOn ? HCColor.accentText : HCColor.textDim)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                HCRadius.shape(HCRadius.control)
+                    .fill(isOn ? HCColor.accent.opacity(0.16) : Color.clear))
+            .overlay(
+                HCRadius.shape(HCRadius.control)
+                    .stroke(isOn ? HCColor.accent : HCColor.strokeLine, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .pointingHandOnHover()
     }
 }

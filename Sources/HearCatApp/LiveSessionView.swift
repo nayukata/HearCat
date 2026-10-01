@@ -41,6 +41,10 @@ struct LiveSessionView: View {
                 get: { model.status.transcribing },
                 set: { model.setTranscribing($0) }))
                 .pointingHandOnHover()
+            Toggle("録画", isOn: Binding(
+                get: { model.screenSwitchOn },
+                set: { model.setScreenRecording($0) }))
+                .pointingHandOnHover()
             if !AgentCLIDetector.shared.availableCLIs.isEmpty {
                 Button {
                     model.openCodeImpactPanel()

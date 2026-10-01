@@ -120,6 +120,8 @@ public enum SessionPackage {
             // 自分だけ・相手だけの録音も同じ扱いにする(片方だけ渡すと、受け取った側で
             // 再生の選択肢が中途半端に欠ける)。
             if artifact.isAudio, audio == nil { continue }
+            // 画面録画は巨大で、パッケージの目的(記録の受け渡し)に見合わないため入れない。
+            if artifact.isVideo { continue }
             guard let source = session.url(of: artifact) else { continue }
             try place(source, at: staging.appendingPathComponent(artifact.portableFileName))
         }
@@ -240,7 +242,8 @@ public enum SessionPackage {
     /// もう一度書き直さずに済む)。名前は宛先のディレクトリ名に合わせて揃える。
     static func moveKnownEntries(from staging: URL, to directory: URL) throws {
         let dirName = directory.lastPathComponent
-        for artifact in SessionInfo.Artifact.allCases {
+        for artifact in SessionInfo.Artifact.allCases where !artifact.isVideo {
+            // 画面録画は書き出さないので、入っていても取り込まない。
             guard let source = entry(artifact, in: staging) else { continue }
             try FileManager.default.moveItem(
                 at: source,

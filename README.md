@@ -96,12 +96,14 @@ dmg を GitHub Releases などに置き、LP のダウンロードボタンか�
 
 ## 使い方
 
-メニューバーの猫アイコンからパネルを開いて「録音 ＋ 文字起こしを開始」、または:
+メニューバーの猫アイコンからパネルを開き、録音・文字起こし・録画のスイッチを選んで「開始する」、または:
 
 ```sh
 hearcat start                   # セッション開始(録音+文字起こし。アプリ未起動なら起動する)
 hearcat set record off          # 録音だけ止める(文字起こしは続く)
 hearcat set transcribe off      # 文字起こしだけ止める
+hearcat start --screen          # 画面録画もオンで開始(録画する対象は Mac の画面に出る選択画面で選ぶ)
+hearcat set screen on|off       # 画面録画だけを切り替える
 hearcat set autostart on        # ログイン時の自動起動を有効にする(設定画面からも可)
 hearcat status                  # 状態確認
 hearcat latest                  # 最新の文字起こしファイルのパス
@@ -156,7 +158,8 @@ make icon   # アプリアイコンを生成し直す(デザイン変更時の�
 
 - **マイク**: `NSMicrophoneUsageDescription`
 - **音声認識**: `NSSpeechRecognitionUsageDescription`
-- **システム音声**: `NSAudioCaptureUsageDescription`。画面録画の許可は不要。
+- **システム音声**: `NSAudioCaptureUsageDescription`。録音と文字起こしだけなら、画面収録の許可は不要。
+- **画面収録**: 画面録画を使う時だけ必要。録画の対象は macOS の選択画面（画面・ウィンドウ・アプリ）で選び、許可がなければシステム設定の「画面収録」で HearCat を許可する。
   - システム音声のキャプチャは、バイナリが安定した署名を持たないと**無音のまま失敗**する。相手側が文字起こしされない場合は署名を確認する。
 - **カレンダー**: `NSCalendarsFullAccessUsageDescription`。セッション名の自動命名を使うときのみ。オフにしていれば要求されない。App Sandbox を有効にする場合は `com.apple.security.personal-information.calendars` の entitlement も必要（現在は非サンドボックス構成）
 

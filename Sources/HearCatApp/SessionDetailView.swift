@@ -59,6 +59,8 @@ struct SessionDetailView: View {
     /// 録音があるか。session.audioURL は実体の存在確認を伴うため、body の評価のたびに
     /// ディスクを見にいかないよう、読み込み時に控えた値を使う。
     @State private var hasAudio = false
+    /// 画面録画の動画があるか。hasAudio と同じ理由で、読み込み時に控えた値を使う。
+    @State private var videoURL: URL?
     /// 再生位置が今どの行にあたるか。再生位置そのもの(0.25 秒ごとに変わる)ではなく
     /// 行の切り替わりだけをここに持つことで、文字起こしの描き直しを最小限にする。
     @State private var currentLineID: TranscriptLine.ID?
@@ -232,6 +234,14 @@ struct SessionDetailView: View {
                 .controlSize(.small)
             }
             shareButton
+            // 埋め込み再生はせず、標準のプレイヤーで開く。動画が無いセッションには出さない。
+            if let videoURL {
+                Button {
+                    NSWorkspace.shared.open(videoURL)
+                } label: {
+                    Label("録画を開く", systemImage: "play.rectangle")
+                }
+            }
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([session.directory])
             } label: {
@@ -893,6 +903,7 @@ struct SessionDetailView: View {
         summaryEngine = session.summaryEngine
         let audioURL = session.audioURL
         hasAudio = audioURL != nil
+        videoURL = session.videoURL
         if forceNewPlayer || player?.hasAudio != true {
             // 前のセッションの再生と読み込みを止めてから差し替える。ビューを使い回すように
             // なったため、ここで畳まないと切り替え後も前の録音が鳴り続ける。

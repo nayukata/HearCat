@@ -52,6 +52,9 @@ public actor SessionRecorder {
     /// actor の外から設定・actor の外の文脈(呼び出し元のスレッド)で呼ばれ得るため
     /// @Sendable クロージャとして持つ。
     private var onFailureHandler: (@Sendable () -> Void)?
+    /// 書いたブロック(モノラル 48kHz、.m4a に入るものと同じミックス)の写しを渡す先。
+    /// 画面録画の音声に、録音ファイルと同じ音・同じ補正済みの時間軸を載せるために使う。
+    private var blockTap: (@Sendable ([Float]) -> Void)?
 
     /// 各音源の待ち行列。ミックスは時間軸が揃っていないと成立しないため、
     /// 両方が揃った分だけブロック単位で合成してファイルへ書く。
@@ -135,6 +138,12 @@ public actor SessionRecorder {
     /// 書き込み失敗の通知先を設定する。SessionEngine がセッション開始時に一度だけ呼ぶ。
     public func setOnFailure(_ handler: @escaping @Sendable () -> Void) {
         onFailureHandler = handler
+    }
+
+    /// 書き出すブロックの写しの渡し先を設定する。呼び出しはこの actor の上で同期的に行われるため、
+    /// 受け側は重い処理や actor 越えの待ちを持たないこと。
+    public func setBlockTap(_ tap: (@Sendable ([Float]) -> Void)?) {
+        blockTap = tap
     }
 
     public func appendMic(_ buffer: AVAudioPCMBuffer) {
@@ -285,16 +294,19 @@ public actor SessionRecorder {
             // 2音源を重み付きで足し込む。同時発話で振り切れると折り返しノイズになるため [-1, 1] に収める。
             let out = data[0]
             let otherOut = otherBlock?.floatChannelData?[0]
+            var mixed = blockTap == nil ? [] : [Float](repeating: 0, count: frames)
             micQueue.withUnsafeBufferPointer { mic in
                 systemQueue.withUnsafeBufferPointer { system in
                     for i in 0..<frames {
                         let me = mic[i] * micGain
                         let other = system[i] * systemGain
                         out[i] = max(-1, min(1, me + other))
+                        if !mixed.isEmpty { mixed[i] = out[i] }
                         otherOut?[i] = max(-1, min(1, other))
                     }
                 }
             }
+            blockTap?(mixed)
             try file.write(from: block)
             // 相手だけの録音が書けなくなっても、混ぜた本体は残す(再生の選択肢が
             // 減るだけで済ませ、録音そのものを落とさない)。

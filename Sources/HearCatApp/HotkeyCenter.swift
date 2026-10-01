@@ -6,6 +6,7 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
     case toggleSession
     case toggleRecording
     case toggleTranscribing
+    case toggleScreenRecording
     case analyzeCodeImpact
     case openHistory
     case openSettings
@@ -17,6 +18,7 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleSession: "セッション開始/停止"
         case .toggleRecording: "録音オン/オフ"
         case .toggleTranscribing: "文字起こしオン/オフ"
+        case .toggleScreenRecording: "録画オン/オフ"
         case .analyzeCodeImpact: "会話について AI に質問"
         case .openHistory: "履歴ウィンドウを開く"
         case .openSettings: "設定を開く"
@@ -29,6 +31,7 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleSession: 1
         case .toggleRecording: 2
         case .toggleTranscribing: 3
+        case .toggleScreenRecording: 7
         case .analyzeCodeImpact: 6
         case .openHistory: 4
         case .openSettings: 5

@@ -2,40 +2,6 @@ import AppKit
 import HearCatKit
 import SwiftUI
 
-/// GUI の開始ボタンで選べる録音/文字起こしの組み合わせ。
-enum SessionStartMode: String, CaseIterable {
-    case recordAndTranscribe
-    case transcribeOnly
-    case recordOnly
-
-    var buttonLabel: String {
-        switch self {
-        case .recordAndTranscribe: return "録音 ＋ 文字起こしを開始"
-        case .transcribeOnly: return "文字起こしを開始"
-        case .recordOnly: return "録音を開始"
-        }
-    }
-
-    var menuLabel: String {
-        switch self {
-        case .recordAndTranscribe: return "録音 ＋ 文字起こし"
-        case .transcribeOnly: return "文字起こしのみ"
-        case .recordOnly: return "録音のみ"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .recordAndTranscribe: return "record.circle"
-        case .transcribeOnly: return "text.quote"
-        case .recordOnly: return "mic"
-        }
-    }
-
-    var record: Bool { self != .transcribeOnly }
-    var transcribe: Bool { self != .recordOnly }
-}
-
 /// メニューバーから開くパネル。開始/停止・トグル・入力メーターをここに集約する。
 /// (MenuBarExtra の .window スタイルで表示するリッチ版メニュー)
 struct MenuPanel: View {
@@ -156,39 +122,36 @@ struct MenuPanel: View {
             if let recent = model.recentlyEndedSession {
                 recentSessionCard(recent)
             }
-            startButtonRow
+            // 開始前の操作は、次に始める組み合わせとして保存される(進行中の操作は保存されない)。
+            VStack(spacing: 12) {
+                toggleRow("録音", isOn: startBinding(\.lastStartRecord))
+                toggleRow("文字起こし", isOn: startBinding(\.lastStartTranscribe))
+                toggleRow("録画", isOn: startBinding(\.lastStartScreen))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            startButton
             savingDestinationRow
         }
         .disabled(model.busy)
     }
 
-    /// 大きい開始ボタン(前回選んだモードを反映)+ モード切替。
-    /// この環境は Tab キーがボタンに止まらない設定のため、モードの選択肢一覧は
-    /// 自前のカスタム UI で組まず、NSMenu 裏付けの Menu にする。
-    private var startButtonRow: some View {
-        let mode = model.settings.lastSessionStartMode
-        return HStack(spacing: 6) {
-            Button {
-                Task { await model.startSession(record: mode.record, transcribe: mode.transcribe) }
-            } label: {
-                Label(mode.buttonLabel, systemImage: mode.systemImage)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.hcPrimaryLarge)
-
-            Menu {
-                ForEach(SessionStartMode.allCases, id: \.self) { candidate in
-                    Button(candidate.menuLabel) {
-                        model.settings.lastSessionStartMode = candidate
-                    }
-                }
-            } label: {
-                Image(systemName: "chevron.down")
-            }
-            .menuStyle(.button)
-            .buttonStyle(.hcSecondary)
-            .help("開始する内容を選ぶ")
+    /// 大きい開始ボタン。3つともオフのときは、始めても何も残らないので押せなくする。
+    private var startButton: some View {
+        Button {
+            Task { await model.startSession(with: model.settings.lastStartSelection) }
+        } label: {
+            Label("開始する", systemImage: "record.circle")
+                .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.hcPrimaryLarge)
+        .disabled(model.settings.lastStartSelection.isEmpty)
+    }
+
+    private func startBinding(_ keyPath: ReferenceWritableKeyPath<AppSettings, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { model.settings[keyPath: keyPath] },
+            set: { model.settings[keyPath: keyPath] = $0 })
     }
 
     /// 直前に終わったセッションへ戻るための行。停止したあと画面上では何も起きないため、
@@ -246,7 +209,7 @@ struct MenuPanel: View {
 
             // グループ名だけ本文色にして押せることを示す。この環境は Tab キーが
             // ボタンに止まらない設定のため、選択肢一覧は自前で組まず NSMenu 裏付けの
-            // Menu にする(startButtonRow のモード切替と同じ理由)。
+            // Menu にする(録画の行の対象選択と同じ理由)。
             Menu {
                 // 素の Button の羅列だと選択中の印が出ない。Picker を入れ子にして、
                 // 選択中項目へのチェックマーク描画をシステムに任せる。
@@ -382,6 +345,7 @@ struct MenuPanel: View {
 
             toggleRow("録音", isOn: recordingBinding)
             toggleRow("文字起こし", isOn: transcribingBinding)
+            screenRow
 
             VStack(alignment: .leading, spacing: 6) {
                 meterRow(label: "自分", level: model.micLevel)
@@ -445,6 +409,50 @@ struct MenuPanel: View {
         }
     }
 
+    /// 録画の行。録画中は対象の名前を出し、押すと選び直せる。選択画面が開いている間は、
+    /// 選ばれるまで録画が始まっていないことをここで伝え続ける。
+    private var screenRow: some View {
+        HStack(spacing: 8) {
+            Text("録画")
+            if model.screenPhase == .choosing {
+                Text("対象を選んでください")
+                    .font(HCFont.caption)
+                    .foregroundStyle(HCColor.textDim)
+            } else if model.screenSwitchOn, let label = model.screenTargetLabel {
+                screenTargetMenu(label: label)
+            }
+            Spacer()
+            Toggle("録画", isOn: screenBinding)
+                .labelsHidden()
+                .pointingHandOnHover()
+        }
+    }
+
+    /// 録画の対象の名前と、選び直しの入口。この環境は Tab キーがボタンに止まらない設定の
+    /// ため、選択肢の一覧は自前で組まず NSMenu 裏付けの Menu にする。
+    private func screenTargetMenu(label: String) -> some View {
+        Menu {
+            Button("対象を選び直す…") { model.chooseScreenTarget() }
+        } label: {
+            HStack(spacing: 2) {
+                Text(label)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .medium))
+            }
+            .foregroundStyle(HCColor.textPrimary)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .tint(HCColor.textPrimary)
+        .font(HCFont.caption)
+        // 長いウィンドウ名でスイッチが押し出されないよう、名前の側を縮める。
+        .frame(maxWidth: 160, alignment: .leading)
+        .pointingHandOnHover()
+    }
+
     private func meterRow(label: String, level: Float) -> some View {
         HStack(spacing: 8) {
             Text(label)
@@ -489,6 +497,12 @@ struct MenuPanel: View {
         Binding(
             get: { model.status.recording },
             set: { model.setRecording($0) })
+    }
+
+    private var screenBinding: Binding<Bool> {
+        Binding(
+            get: { model.screenSwitchOn },
+            set: { model.setScreenRecording($0) })
     }
 
     private var transcribingBinding: Binding<Bool> {

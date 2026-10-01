@@ -3,6 +3,16 @@ import HearCatKit
 import HearCatSummarize
 import Observation
 
+/// セッションを始める時に何をオンにするか。開始前のスイッチ・予告パネル・ホットキーが共有する。
+struct SessionStartSelection: Equatable {
+    var record: Bool
+    var transcribe: Bool
+    var screen: Bool
+
+    /// 何もオンでなければ、始めても何も残らない。
+    var isEmpty: Bool { !record && !transcribe && !screen }
+}
+
 /// ユーザー設定。UserDefaults に永続化し、変更は即座に反映系の closure へ流す。
 /// (エンジンやホットキー登録への反映は AppModel が closure を差し込んで行う。
 ///  設定がエンジンを直接知ると層が逆転するため。)
@@ -129,6 +139,16 @@ final class AppSettings {
         Self.trimmed(codeImpactAgentModels[cli])
     }
 
+    /// 旧キーの値を新しい3つの組み合わせへ読み替える。未設定・知らない値は
+    /// 既定(録音と文字起こしがオン)に落とす。
+    static func legacyStartSelection(_ raw: String?) -> SessionStartSelection {
+        switch raw {
+        case "transcribeOnly": SessionStartSelection(record: false, transcribe: true, screen: false)
+        case "recordOnly": SessionStartSelection(record: true, transcribe: false, screen: false)
+        default: SessionStartSelection(record: true, transcribe: true, screen: false)
+        }
+    }
+
     private static func trimmed(_ raw: String?) -> String? {
         let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? nil : value
@@ -152,11 +172,23 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(hotkeyGroupPicker, forKey: Self.hotkeyGroupPickerKey) }
     }
 
-    /// パネルの開始ボタンで最後に選んだ録音/文字起こしの組み合わせ。次回の既定にする。
-    var lastSessionStartMode: SessionStartMode {
-        didSet {
-            UserDefaults.standard.set(lastSessionStartMode.rawValue, forKey: Self.lastSessionStartModeKey)
-        }
+    /// 開始前のスイッチと予告パネルの押しボタンで最後に選んだ、録音・文字起こし・録画の組み合わせ。
+    /// 次に始めるセッションの既定になる。進行中のオン・オフはここへ書かない
+    /// (会議中に一時的に切っただけで、次の会議の自動開始が変わらないようにするため)。
+    var lastStartRecord: Bool {
+        didSet { UserDefaults.standard.set(lastStartRecord, forKey: Self.lastStartRecordKey) }
+    }
+    var lastStartTranscribe: Bool {
+        didSet { UserDefaults.standard.set(lastStartTranscribe, forKey: Self.lastStartTranscribeKey) }
+    }
+    var lastStartScreen: Bool {
+        didSet { UserDefaults.standard.set(lastStartScreen, forKey: Self.lastStartScreenKey) }
+    }
+
+    /// 3つとも保存済みの組み合わせとして読む。
+    var lastStartSelection: SessionStartSelection {
+        SessionStartSelection(
+            record: lastStartRecord, transcribe: lastStartTranscribe, screen: lastStartScreen)
     }
 
     /// 無音(マイクとシステム音声の両方)が5分続いたら、セッションを止めるか確認するか。
@@ -243,7 +275,12 @@ final class AppSettings {
     private static let legacyCodeImpactModelsKey = "codeImpactModels"
     private static let autoSummaryEngineKey = "autoSummaryEngine"
     private static let hotkeyGroupPickerKey = "hotkeyGroupPicker"
-    private static let lastSessionStartModeKey = "lastSessionStartMode"
+    private static let lastStartRecordKey = "lastStartRecord"
+    private static let lastStartTranscribeKey = "lastStartTranscribe"
+    private static let lastStartScreenKey = "lastStartScreen"
+    /// 録画が加わる前の、録音/文字起こしの3通りを1つの文字列で持っていたキー。
+    /// 初回の移行でだけ読む。
+    private static let legacyStartModeKey = "lastSessionStartMode"
     /// 「無音が5分続いたら自動で終了」だった頃からのキー。挙動は確認ダイアログに
     /// 変わったが、ユーザーが選んだオン/オフは引き継ぐためキー名は変えない。
     private static let confirmStopOnSilenceKey = "autoStopOnSilence"
@@ -314,8 +351,20 @@ final class AppSettings {
         // セッションが溜まり続ける原因になるため、保存値ごと掃除する。
         defaults.removeObject(forKey: "defaultSessionGroup")
         hotkeyGroupPicker = defaults.object(forKey: Self.hotkeyGroupPickerKey) as? Bool ?? true
-        lastSessionStartMode = defaults.string(forKey: Self.lastSessionStartModeKey)
-            .flatMap(SessionStartMode.init(rawValue:)) ?? .recordAndTranscribe
+        let legacyStart = Self.legacyStartSelection(defaults.string(forKey: Self.legacyStartModeKey))
+        let startRecord = defaults.object(forKey: Self.lastStartRecordKey) as? Bool ?? legacyStart.record
+        let startTranscribe = defaults.object(forKey: Self.lastStartTranscribeKey) as? Bool
+            ?? legacyStart.transcribe
+        let startScreen = defaults.object(forKey: Self.lastStartScreenKey) as? Bool ?? false
+        lastStartRecord = startRecord
+        lastStartTranscribe = startTranscribe
+        lastStartScreen = startScreen
+        // 移行は一度きり。3つを新しいキーへ書き出して旧キーを消す
+        // (init 内の代入では didSet が走らないため、ここで明示的に書く)。
+        defaults.set(startRecord, forKey: Self.lastStartRecordKey)
+        defaults.set(startTranscribe, forKey: Self.lastStartTranscribeKey)
+        defaults.set(startScreen, forKey: Self.lastStartScreenKey)
+        defaults.removeObject(forKey: Self.legacyStartModeKey)
         confirmStopOnSilence = defaults.object(forKey: Self.confirmStopOnSilenceKey) as? Bool ?? true
         confirmStopOnClosing = defaults.object(forKey: Self.confirmStopOnClosingKey) as? Bool ?? true
         meetingAutoStart = defaults.object(forKey: Self.meetingAutoStartKey) as? Bool ?? false
