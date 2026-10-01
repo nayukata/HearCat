@@ -417,7 +417,7 @@ public enum SessionStore {
         var count = 0
         var bytes: Int64 = 0
         for session in list() where session.startDate < cutoff {
-            let sessionBytes = audioBytes(of: session)
+            let sessionBytes = recordingsBytes(of: session)
             guard sessionBytes > 0 else { continue }
             count += 1
             bytes += sessionBytes
@@ -431,19 +431,28 @@ public enum SessionStore {
     @discardableResult
     public static func deleteOldRecordings(olderThanDays days: Int) -> Int64 {
         let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
+        return list()
+            .filter { $0.startDate < cutoff }
+            .reduce(0) { $0 + deleteRecordings(of: $1) }
+    }
+
+    /// 1セッションの録音ファイル(画面録画を含む)だけを削除し、文字起こし・要約は残す。
+    /// 古いセッションを個別に選んで「記録は残してディスクだけ空けたい」用途。
+    /// 個々のファイル削除が失敗しても残りは続け、実際に空いたバイト数を返す。
+    @discardableResult
+    public static func deleteRecordings(of session: SessionInfo) -> Int64 {
         var freed: Int64 = 0
-        for session in list() where session.startDate < cutoff {
-            for artifact in SessionInfo.Artifact.allCases where artifact.isMedia {
-                guard let url = session.url(of: artifact) else { continue }
-                let size = fileSize(at: url)
-                guard (try? FileManager.default.removeItem(at: url)) != nil else { continue }
-                freed += size
-            }
+        for artifact in SessionInfo.Artifact.allCases where artifact.isMedia {
+            guard let url = session.url(of: artifact) else { continue }
+            let size = fileSize(at: url)
+            guard (try? FileManager.default.removeItem(at: url)) != nil else { continue }
+            freed += size
         }
         return freed
     }
 
-    private static func audioBytes(of session: SessionInfo) -> Int64 {
+    /// 1セッションの録音ファイル(画面録画を含む)の合計サイズ。無ければ 0。
+    public static func recordingsBytes(of session: SessionInfo) -> Int64 {
         SessionInfo.Artifact.allCases
             .filter(\.isMedia)
             .compactMap(session.url(of:))
