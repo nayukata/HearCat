@@ -2,22 +2,50 @@
 import Layout from "../layouts/Layout.astro";
 import Nav from "../components/Nav.astro";
 import Hero from "../components/Hero.astro";
+import Define from "../components/Define.astro";
+import Minutes from "../components/Minutes.astro";
 import Features from "../components/Features.astro";
-import History from "../components/History.astro";
-import Ai from "../components/Ai.astro";
-import Privacy from "../components/Privacy.astro";
+import Local from "../components/Local.astro";
 import Install from "../components/Install.astro";
+import Faq, { faqs } from "../components/Faq.astro";
 import Footer from "../components/Footer.astro";
-import RevealObserver from "../components/RevealObserver.astro";
+
+const site = Astro.site?.toString() ?? "";
+const jsonLd = [
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((f) => ({
+      "@type": "Question",
+      name: f.q,
+      acceptedAnswer: { "@type": "Answer", text: `${f.lead}${f.rest ? ` ${f.rest}` : ""}` },
+    })),
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: "HearCat",
+    applicationCategory: "BusinessApplication",
+    operatingSystem: "macOS 26 以降",
+    inLanguage: "ja",
+    url: site,
+    description: "会議の声をその場で日本語の文字にして、あとから AI に聞き返せる Mac 用アプリ。",
+  },
+];
 ---
 <Layout>
+  <Fragment slot="head">
+    {jsonLd.map((d) => <script type="application/ld+json" set:html={JSON.stringify(d)} />)}
+  </Fragment>
   <Nav />
-  <Hero />
-  <Features />
-  <History />
-  <Ai />
-  <Privacy />
-  <Install />
+  <main>
+    <Hero />
+    <Define />
+    <Minutes />
+    <Features />
+    <Local />
+    <Install />
+    <Faq />
+  </main>
   <Footer />
-  <RevealObserver />
 </Layout>

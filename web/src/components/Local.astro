@@ -1,0 +1,42 @@
+---
+const inside = [
+  "録音",
+  "文字起こし(macOS 内蔵の音声認識)",
+  "要約(Apple Intelligence のオンデバイス処理)",
+  "会議へのボット招待は、要らない",
+];
+---
+<section id="local" class="bg-cream py-16 md:py-[88px]">
+  <div class="mx-auto max-w-[1120px] px-6">
+    <div class="grid grid-cols-1 items-center gap-7 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] md:gap-14">
+      <img class="mx-auto h-auto w-[min(70%,260px)] md:w-[min(100%,300px)]" src="/lp/clay-box.webp" width="800" height="762" alt="鍵のかかった粘土の小箱" loading="lazy" />
+      <div>
+        <h2 class="font-head text-[clamp(26px,4.4vw,44px)] leading-[1.4] font-black tracking-[.01em]">録音も文字起こしも、この Mac の中で。</h2>
+        <p class="mt-[18px] text-[clamp(18px,2.2vw,24px)] leading-snug font-black text-balance">ボットの招待も、会社の承認もいらない。</p>
+        <p class="mt-3 max-w-[34em] text-[15px] text-ink-dim">記録は自分のライブラリに保存され、閲覧も削除も、いつでもできます。</p>
+      </div>
+    </div>
+
+    <div class="mt-12 grid grid-cols-1 items-stretch gap-6 md:grid-cols-2">
+      <div class="clay px-7 py-7">
+        <h3 class="font-head text-xl leading-normal font-black">この Mac の中で完結すること</h3>
+        <ul class="mt-4 flex list-none flex-col gap-2.5 text-[15.5px]">
+          {inside.map((t) => (
+            <li class="relative pl-7 before:absolute before:top-[.55em] before:left-0 before:size-3.5 before:rounded-full before:bg-sage before:shadow-clay-dot-on">{t}</li>
+          ))}
+        </ul>
+      </div>
+      <div class="rounded-clay border-2 border-[#E0A24A] bg-[linear-gradient(160deg,#FFF0D2,#FFE2B0)] px-7 py-7 shadow-clay-sm">
+        <h3 class="flex items-center gap-3 font-head text-xl leading-normal font-black">
+          <svg class="shrink-0" width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" fill="#E0A24A" />
+            <path d="M12 7v6" stroke="#3A2A20" stroke-width="2.4" stroke-linecap="round" />
+            <circle cx="12" cy="16.8" r="1.4" fill="#3A2A20" />
+          </svg>
+          AI に聞くときは、外に出ます
+        </h3>
+        <p class="mt-4 text-[15.5px]">AI に質問する機能と高精度の要約には、Claude Code や Codex を使います。そのとき、質問に使う記録がそのサービスに送られます。<b class="font-black">使うかどうかは、自分で選べます。</b></p>
+      </div>
+    </div>
+  </div>
+</section>

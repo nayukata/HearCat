@@ -1,39 +1,44 @@
 ---
-import Card from "./Card.astro";
 ---
-<section id="features" class="py-24 bg-bg-soft">
-  <div class="wrap">
-    <div class="reveal">
-      <p class="kicker">できること</p>
-      <h2 class="sec-h2">会議のあいだ、静かに、確かに。</h2>
-      <p class="sec-lead">操作はメニューバーから「セッションを開始」するだけ。あとは HearCat が両方の声を聞き分けて、読める記録に変えていきます。</p>
-    </div>
-    <div class="mt-12 grid gap-[18px]" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
-      <Card title="両方の声を聞き分ける">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-        マイクの声は「自分」、通話相手など Mac から出る音は「相手」。発言が確定するたび、時刻と話者付きで記録に追記されます。
-      </Card>
-      <Card title="会議をまるごと録音">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="#C89060" stroke="none"/></svg>
-        文字起こしと同時に、会議の音声も保存します。無音が5分続けば自動で停止するので、録りっぱなしになりません。
-      </Card>
-      <Card title="途中経過もその場で見える">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-        話している最中の暫定テキストは、ライブ画面でリアルタイムに確認できます。記録ファイルには確定した発言だけが残ります。
-      </Card>
-      <Card title="話題ごとに、自動で要約">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" y1="10" x2="7" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="21" y1="18" x2="7" y2="18"/></svg>
-        セッションを止めると、オンデバイス AI が話題ごとの要約を自動で作ります。Claude Code や Codex にワンクリックで任せて、精度を上げることもできます。
-        <small class="block text-[12px] mt-[6px]" style="color:#9AA0AC;">要約は Apple Intelligence が有効な Apple Silicon 機のみ。</small>
-      </Card>
-      <Card title="マイクの感度調整">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v3a8 8 0 0 0 16 0v-3"/><line x1="12" y1="19" x2="12" y2="23"/><rect x="9" y="3" width="6" height="12" rx="3"/></svg>
-        エコー除去と入力感度の調整で、スピーカーから出た相手の声を「自分」と拾うのを防ぎます。感度は自動でも手動でも。
-      </Card>
-      <Card title="どこからでも呼び出す">
-        <svg slot="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C89060" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6" y2="10"/><line x1="10" y1="10" x2="10" y2="10"/><line x1="14" y1="10" x2="14" y2="10"/><line x1="18" y1="10" x2="18" y2="10"/><line x1="8" y1="14" x2="16" y2="14"/></svg>
-        開始/停止・録音・文字起こし・履歴・設定にホットキーを割り当てられます。他のアプリを使っている最中でも 1 発で呼び出せます。
-      </Card>
+<section id="features" class="bg-cream-2 py-16 md:py-[88px]">
+  <div class="mx-auto max-w-[1120px] px-6">
+    <h2 class="section-h2">できること</h2>
+    <div class="mt-12 grid grid-cols-1 gap-5 min-[901px]:grid-cols-6 min-[901px]:gap-6">
+      <article class="clay px-6 pt-[26px] pb-[30px] min-[901px]:col-span-4 min-[901px]:px-10 min-[901px]:pt-10 min-[901px]:pb-11 min-[901px]:rounded-[40px_28px_40px_28px]">
+        <h3 class="font-head text-[clamp(22px,2.4vw,28px)] leading-normal font-black">自分と相手の声を、聞き分ける</h3>
+        <p class="mt-3 text-[clamp(17px,1.8vw,20px)] leading-snug font-black text-ink">自分の声か相手の声か、分けて残る。</p>
+        <p class="mt-3 text-[15.5px] leading-[1.9] text-ink-dim">マイクの声は「自分」、Mac から出る音は「相手」として、時刻つきで追記されます。話している最中の途中経過も、ライブ画面で見えます。エコー除去と入力感度の調整で、相手の声を「自分」と拾うのを防ぎます。</p>
+      </article>
+      <article class="clay px-6 pt-[26px] pb-[30px] min-[901px]:col-span-2 min-[901px]:px-8 min-[901px]:pt-[30px] min-[901px]:pb-[34px]">
+        <h3 class="font-head text-lg leading-normal font-black">会議をまるごと録音</h3>
+        <p class="mt-2.5 text-base leading-snug font-black text-ink">声も、あとから聞き直せる。</p>
+        <p class="mt-2.5 text-sm leading-[1.85] text-ink-dim">文字起こしと一緒に音声を残します。<b class="font-black text-sage-deep">5 分</b>無音が続いたり「お疲れ様でした」が聞こえたら、止めるか聞きます。返事をするまで録音は止まりません。</p>
+      </article>
+      <article class="clay px-6 pt-[26px] pb-[30px] min-[901px]:col-span-2 min-[901px]:px-8 min-[901px]:pt-[30px] min-[901px]:pb-[34px]">
+        <h3 class="font-head text-lg leading-normal font-black">話題ごとに、自動で要約</h3>
+        <p class="mt-2.5 text-base leading-snug font-black text-ink">終わったら、要点がもう出ている。</p>
+        <p class="mt-2.5 text-sm leading-[1.85] text-ink-dim">セッションを止めると、オンデバイス AI が話題ごとの要約を作ります。Apple Intelligence が有効な Apple Silicon 搭載 Mac で使えます。</p>
+      </article>
+      <article class="clay px-6 pt-[26px] pb-[30px] min-[901px]:col-span-4 min-[901px]:px-10 min-[901px]:pt-10 min-[901px]:pb-11 min-[901px]:rounded-[28px_40px_28px_40px]">
+        <h3 class="font-head text-[clamp(22px,2.4vw,28px)] leading-normal font-black">会議の途中でも、あとからでも、AI に聞ける</h3>
+        <p class="mt-3 text-[clamp(17px,1.8vw,20px)] leading-snug font-black text-ink">「さっきの質問、なんだっけ」に、その場で答える。</p>
+        <p class="mt-3 text-[15.5px] leading-[1.9] text-ink-dim">設定の「AI エージェント連携」から、専用の skill と CLI をワンクリックで入れます。対応は Claude Code・Codex・Copilot・Gemini・Cursor。聞くときは、使うエージェントのサービスに記録が送られます(<a href="#local" class="underline underline-offset-4">くわしくは「この Mac の中で」</a>)。</p>
+      </article>
+      <article class="clay px-6 pt-[26px] pb-[30px] min-[901px]:col-span-2 min-[901px]:px-8 min-[901px]:pt-[30px] min-[901px]:pb-[34px]">
+        <h3 class="font-head text-lg leading-normal font-black">予定の名前が、そのままセッション名に</h3>
+        <p class="mt-2.5 text-base leading-snug font-black text-ink">名前を付け直さなくていい。</p>
+        <p class="mt-2.5 text-sm leading-[1.85] text-ink-dim">セッションには、開始した時刻の予定の名前が付きます。Google アカウントの予定も対象です。</p>
+      </article>
+      <article class="clay px-6 pt-[26px] pb-[30px] min-[901px]:col-span-2 min-[901px]:px-8 min-[901px]:pt-[30px] min-[901px]:pb-[34px]">
+        <h3 class="font-head text-lg leading-normal font-black">名前と本文で、横断検索</h3>
+        <p class="mt-2.5 text-base leading-snug font-black text-ink">あの一言に、すぐ戻れる。</p>
+        <p class="mt-2.5 text-sm leading-[1.85] text-ink-dim">セッション名・文字起こし・要約の本文まで、グループをまたいで探せます。</p>
+      </article>
+      <article class="clay px-6 pt-[26px] pb-[30px] min-[901px]:col-span-2 min-[901px]:px-8 min-[901px]:pt-[30px] min-[901px]:pb-[34px]">
+        <h3 class="font-head text-lg leading-normal font-black">どこからでも呼び出す</h3>
+        <p class="mt-2.5 text-base leading-snug font-black text-ink">他のアプリを使っていても、1 発で。</p>
+        <p class="mt-2.5 text-sm leading-[1.85] text-ink-dim">開始・停止・録音・履歴・設定にホットキーを割り当てられます。</p>
+      </article>
     </div>
   </div>
 </section>

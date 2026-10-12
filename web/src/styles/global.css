@@ -1,64 +1,101 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #FFFFFF;
-  --color-bg-soft: #F6F7F9;
-  --color-ink: #111318;
-  --color-ink-dim: #5C6270;
-  --color-line: #E6E8EC;
+  --color-ink: #3A2A20;
+  --color-ink-dim: #6B5444;
+  --color-cream: #FFF6EC;
+  --color-cream-1: #FFF9F2;
+  --color-cream-2: #FFEFDF;
+  --color-cream-3: #FDE9D6;
+  --color-peach: #F8DFC8;
+  --color-sand: #F8E6D2;
+  --color-sage: #557A47;
+  --color-sage-deep: #44663A;
 
-  /* 新ブランド配色: 霧の底 + シナモンの茶(ノルウェージャンフォレストキャットの
-     「窓際に、静かに座る森の妖精」から引いた)。
-     --color-navy 系はダークセクション(Hero など)の背景と一体感の要となる色。
-     --color-blue 系はアクセントカラー(kicker、CTA、リンク)として cinnamon に振り替え。 */
-  --color-navy: #1A1D1F;
-  --color-navy-2: #262A2D;
-  --color-blue: #C89060;
-  --color-blue-soft: #D4A574;
-
-  --font-head: "Zen Kaku Gothic New", sans-serif;
-  --font-sans: "Noto Sans JP", sans-serif;
+  --font-head: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", sans-serif;
+  --font-sans: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Noto Sans JP", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-clay: 28px;
+  --radius-clay-lg: 32px;
+
+  --shadow-clay: 0 22px 32px -10px rgba(140, 92, 56, .30), 0 8px 12px -4px rgba(140, 92, 56, .14),
+    inset 0 5px 7px rgba(255, 255, 255, .95), inset 0 -7px 12px rgba(196, 140, 98, .22);
+  --shadow-clay-sm: 0 10px 16px -6px rgba(140, 92, 56, .30), 0 3px 5px rgba(140, 92, 56, .12),
+    inset 0 3px 4px rgba(255, 255, 255, .95), inset 0 -4px 6px rgba(196, 140, 98, .25);
+  --shadow-clay-btn: 0 10px 16px -6px rgba(140, 92, 56, .30), 0 3px 5px rgba(140, 92, 56, .12),
+    inset 0 4px 5px rgba(255, 255, 255, .35), inset 0 -6px 8px rgba(40, 70, 30, .35);
+  --shadow-clay-dot: 0 10px 16px -6px rgba(140, 92, 56, .30), 0 3px 5px rgba(140, 92, 56, .12),
+    inset 0 2px 3px rgba(255, 255, 255, .9);
+  --shadow-clay-dot-on: 0 10px 16px -6px rgba(140, 92, 56, .30), 0 3px 5px rgba(140, 92, 56, .12),
+    inset 0 2px 3px rgba(255, 255, 255, .4), inset 0 -3px 4px rgba(30, 60, 20, .35);
+  --shadow-well: inset 0 3px 6px rgba(160, 110, 70, .22);
+  --shadow-well-sm: inset 0 2px 4px rgba(160, 110, 70, .2);
+}
+
+@custom-variant js (:where(.js) &);
+
+@utility clay {
+  background-image: linear-gradient(160deg, #FFFCF7, #FFF1E2);
+  border-radius: var(--radius-clay);
+  box-shadow: var(--shadow-clay);
+}
+
+@utility clay-sm {
+  background-image: linear-gradient(160deg, #FFFCF7, #FFF1E2);
+  border-radius: 20px;
+  box-shadow: var(--shadow-clay-sm);
+}
+
+@utility clay-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  padding: 0 36px;
+  border-radius: 999px;
+  background-image: linear-gradient(170deg, #5A7F4C, var(--color-sage) 60%, var(--color-sage-deep));
+  color: #fff;
+  font-family: var(--font-head);
+  font-weight: 900;
+  font-size: 18px;
+  text-decoration: none;
+  box-shadow: var(--shadow-clay-btn);
+  transition: transform .2s;
+  &:hover { transform: translateY(-2px); }
+  &:active { transform: translateY(1px); }
+}
+
+@utility section-h2 {
+  font-family: var(--font-head);
+  font-weight: 900;
+  font-size: clamp(26px, 4.4vw, 44px);
+  line-height: 1.4;
+  letter-spacing: .01em;
+  text-align: center;
 }
 
 @layer base {
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
+  html { scroll-behavior: smooth; scroll-padding-top: 72px; }
   body {
-    background: var(--color-bg);
+    background: var(--color-cream);
     color: var(--color-ink);
     font-family: var(--font-sans);
-    font-size: 15px;
-    line-height: 1.9;
+    font-weight: 500;
+    font-size: 16px;
+    line-height: 1.85;
+    font-feature-settings: "palt";
+    letter-spacing: 0;
+    line-break: strict;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
-  a { color: inherit; }
-  img, svg { display: block; max-width: 100%; }
-  :focus-visible { outline: 2px solid var(--color-blue); outline-offset: 2px; }
+  h1, h2, h3, dt { word-break: auto-phrase; text-wrap: balance; font-feature-settings: normal; }
+  p, dd { text-wrap: pretty; }
+  :focus-visible { outline: 3px solid var(--color-sage); outline-offset: 3px; }
 }
-
-@layer components {
-  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
-  .kicker { font-size: 13px; font-weight: 700; color: var(--color-blue); letter-spacing: .08em; }
-  .sec-h2 {
-    font-family: var(--font-head); font-weight: 900;
-    font-size: clamp(24px, 3.2vw, 34px); line-height: 1.6; margin-top: 10px;
-  }
-  .sec-lead { margin-top: 14px; color: var(--color-ink-dim); max-width: 58ch; }
-
-  .reveal {
-    opacity: 0; transform: translateY(26px);
-    transition: opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1);
-  }
-  .reveal.in { opacity: 1; transform: none; }
-}
-
-@keyframes up { to { opacity: 1; transform: none; } }
-@keyframes ring { 0% { transform: scale(.5); opacity: 0; } 30% { opacity: .9; } 100% { transform: scale(1.5); opacity: 0; } }
-@keyframes blink { 50% { opacity: .15; } }
-@keyframes eq { from { transform: scaleY(.25); } to { transform: scaleY(1); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .reveal { opacity: 1; transform: none; transition: none; }
+  html { scroll-behavior: auto; }
+  .clay-btn { transition: none; }
 }

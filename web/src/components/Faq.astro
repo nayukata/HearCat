@@ -1,0 +1,25 @@
+---
+export const faqs = [
+  { q: "HearCat とは何ですか?", lead: "会議の声をその場で文字にする、Mac のアプリです。", rest: "メニューバーに常駐して、自分の声と通話相手の声を、時刻つきで日本語の文字にします。会議のあとで AI に聞き返すこともできます。" },
+  { q: "どの会議ツールで使えますか?", lead: "Mac から音が出る会議なら使えます。", rest: "Zoom・Google Meet・Slack ハドル・Teams など。通話相手の声は、Mac のシステム音声として取得します。" },
+  { q: "会議にボットを招待する必要はありますか?", lead: "いいえ、要りません。", rest: "参加者の一覧にボットが増えることはなく、会社の承認を待たずに個人で始められます。" },
+  { q: "音声や文字起こしは外に送られますか?", lead: "録音と文字起こしは送りません。", rest: "文字起こしは macOS 内蔵の音声認識、要約は Apple Intelligence のオンデバイス処理です。AI に聞くときだけは例外で、Claude Code などのエージェントが記録を読み、そのサービスに内容が送られます。外部の AI での要約も、あなたが同意するまで何も送りません。" },
+  { q: "料金はいくらですか?", lead: "準備中です。", rest: "" },
+  { q: "動作環境を教えてください。", lead: "macOS 26 以降の Mac が必要です。", rest: "要約機能は、Apple Intelligence が有効な Apple Silicon 搭載 Mac で使えます。ビルドのために Xcode 26 も要ります。" },
+  { q: "どうやってインストールしますか?", lead: "ターミナルに 1 行貼るだけです。", rest: "システム音声の取得に安定した署名が要るため、各自の Mac でビルドと署名を行い、所要時間は数分です。手順はこのページの「ダウンロード」にあります。" },
+  { q: "AI にはどうやって聞きますか?", lead: "Claude Code などの AI エージェントから聞きます。", rest: "「設定 → AI エージェント連携」で、専用の skill と CLI をワンクリックで入れられます。対応は Claude Code・Codex・Copilot・Gemini・Cursor。「さっきの質問、なんだっけ」のように聞けて、そのとき記録はそのサービスに送られます。" },
+];
+---
+<section id="faq" class="bg-cream-1 py-16 md:py-[88px]">
+  <div class="mx-auto max-w-[1120px] px-6">
+    <h2 class="section-h2">よくある質問</h2>
+    <dl class="mx-auto mt-12 flex max-w-[820px] flex-col gap-[18px]">
+      {faqs.map((f) => (
+        <div class="clay-sm rounded-[26px] px-5 pt-5 pb-[22px] md:px-[30px] md:pt-6 md:pb-[26px]">
+          <dt class="font-head text-lg leading-relaxed font-black">{f.q}</dt>
+          <dd class="mt-2 text-[15px] text-ink-dim"><b class="font-black text-ink">{f.lead}</b>{f.rest && ` ${f.rest}`}</dd>
+        </div>
+      ))}
+    </dl>
+  </div>
+</section>
