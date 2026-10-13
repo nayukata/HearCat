@@ -1308,7 +1308,10 @@ final class AppModel {
     /// 停止直後の自動生成と詳細画面のボタンの共通経路。
     func generateSummary(for session: SessionInfo, transcript: String) async throws -> String {
         summarizingSessionID = session.id
-        defer { summarizingSessionID = nil }
+        defer {
+            summarizingSessionID = nil
+            flushPendingMove(sessionID: session.id)
+        }
         let result = try await TranscriptSummarizer.summarize(transcript: transcript)
         let url = session.directory.appendingPathComponent("summary.md")
         try result.write(to: url, atomically: true, encoding: .utf8)
@@ -1328,7 +1331,10 @@ final class AppModel {
     /// ここに実装すれば両方に効く。
     func generateAgentSummary(for session: SessionInfo, using cli: AgentCLI) async throws -> String {
         summarizingSessionID = session.id
-        defer { summarizingSessionID = nil }
+        defer {
+            summarizingSessionID = nil
+            flushPendingMove(sessionID: session.id)
+        }
         guard let sourceURL = session.cleanedURL ?? session.transcriptURL,
             let transcript = try? String(contentsOf: sourceURL, encoding: .utf8),
             !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -2413,7 +2419,12 @@ final class AppModel {
         guard let engine = settings.autoSummaryEngine else { return }
         pendingAutoSummarySessionIDs.insert(sessionID)
         Task {
-            defer { pendingAutoSummarySessionIDs.remove(sessionID) }
+            // 題名付けの rename で ID が変わるため、予約の実行はその後の ID で行う。
+            var currentID = sessionID
+            defer {
+                pendingAutoSummarySessionIDs.remove(sessionID)
+                flushPendingMove(sessionID: currentID)
+            }
             // 最後の発話の確定は、停止よりファイル書き込みがわずかに遅れることがある。
             try? await Task.sleep(for: .seconds(2))
             // 他セッションの要約が生成中なら空くまで待つ。ここで諦めると後発の自動要約が欠ける。
@@ -2449,11 +2460,10 @@ final class AppModel {
                 // 要約から題名を付ける。既に名前が付いていれば触らないため、要約の再生成では
                 // 前回付けた題名(手動改名も含む)がそのまま保持される。
                 if session.name.isEmpty, let title = deriveSessionTitle(fromSummary: summaryText),
-                    let renamedID = rename(session, to: title), lastEndedSessionID == session.id
+                    let renamedID = rename(session, to: title)
                 {
-                    // rename はディレクトリ名と紐づく id を変えるため、停止時に控えた
-                    // lastEndedSessionID も追従させないと recentlyEndedSession が引けなくなる。
-                    lastEndedSessionID = renamedID
+                    // rename は ID を変える。直前のセッションの追従は rename 側で済んでいる。
+                    currentID = renamedID
                 }
             } catch {
                 autoSummaryFailure = AutoSummaryFailure(
@@ -3106,6 +3116,12 @@ final class AppModel {
     /// セッション名を変更し、変更後の ID を返す(履歴の選択の維持に使う)。失敗時は nil。
     /// GUI の名前変更・自動題名付け(autoSummarize)の共通経路。
     func rename(_ session: SessionInfo, to name: String) -> String? {
+        let newID = renameWithoutNotice(session, to: name)
+        if let newID { noteSessionIDChange(from: session.id, to: newID) }
+        return newID
+    }
+
+    private func renameWithoutNotice(_ session: SessionInfo, to name: String) -> String? {
         mutateSession(session) { original in
             let renamed = try SessionStore.rename(original, to: name)
             // ディレクトリ名(=決定記録の参照キー)が実際に変わった場合だけ追従させる。
@@ -3127,9 +3143,53 @@ final class AppModel {
     }
 
     /// セッションをプロジェクトフォルダへ移動し、移動後の ID を返す。nil で未分類へ戻す。
+    /// 要約の作成中は実際には動かさず、行き先を予約して nil を返す(要約は移動前のパスへ
+    /// 書くため、動かすと要約が失われる)。予約は要約が終わった時に実行される。
     func move(_ session: SessionInfo, toFolder folder: String?) -> String? {
-        mutateSession(session) { try SessionStore.move($0, toFolder: folder) }
+        if isAwaitingSummary(session) {
+            reserveMove(session, toFolder: folder)
+            return nil
+        }
+        let newID = mutateSession(session) { try SessionStore.move($0, toFolder: folder) }
+        if let newID { noteSessionIDChange(from: session.id, to: newID) }
+        return newID
     }
+
+    /// 要約が終わったら実行する移動の予約。キーはセッション ID、値は行き先(nil は未分類)。
+    private(set) var pendingMoves: [String: PendingMove] = [:]
+
+    func pendingMove(for session: SessionInfo) -> PendingMove? {
+        pendingMoves[session.id]
+    }
+
+    private func reserveMove(_ session: SessionInfo, toFolder folder: String?) {
+        pendingMoves[session.id] = PendingMoveLogic.reservation(
+            requested: folder, actual: session.folder)
+    }
+
+    /// 要約が終わった(または途中で抜けた)セッションの予約を実行する。まだ要約中なら何もしない。
+    private func flushPendingMove(sessionID: String) {
+        guard let pending = pendingMoves[sessionID] else { return }
+        guard !(summarizingSessionID == sessionID || pendingAutoSummarySessionIDs.contains(sessionID))
+        else { return }
+        pendingMoves[sessionID] = nil
+        guard let session = SessionStore.list().first(where: { $0.id == sessionID }) else { return }
+        _ = move(session, toFolder: pending.folder)
+    }
+
+    /// セッション ID が変わったことを画面側へ流す。直前のセッションの追従と予約の付け替えもここで行う。
+    private func noteSessionIDChange(from oldID: String, to newID: String) {
+        guard oldID != newID else { return }
+        if lastEndedSessionID == oldID { lastEndedSessionID = newID }
+        if let pending = pendingMoves.removeValue(forKey: oldID) { pendingMoves[newID] = pending }
+        sessionIDChangeSerial += 1
+        lastSessionIDChange = SessionIDChange.next(
+            after: lastSessionIDChange, old: oldID, new: newID, serial: sessionIDChangeSerial)
+    }
+
+    /// 直近の ID 変化。MainWindow が選択を差し替えるために見る(serial で同じ変化の連続も検知する)。
+    private(set) var lastSessionIDChange: SessionIDChange?
+    @ObservationIgnored private var sessionIDChangeSerial = 0
 
     /// グループの並び順をユーザーの指定通りに固定する。サイドバーのドラッグ&ドロップ、
     /// 右クリックの「上へ移動」「下へ移動」から呼ぶ。

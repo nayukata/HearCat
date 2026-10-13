@@ -683,6 +683,12 @@ public enum SessionStore {
         removeFromFolderOrder(name)
     }
 
+    /// 新しいグループ名として使える形に整える。使えなければ理由つきで throw する。
+    /// 作成・改名と同じ検証を、移動と同時に新規作成する経路にも使うため公開している。
+    public static func validatedFolderName(_ rawName: String) throws -> String {
+        try validFolderName(rawName)
+    }
+
     private static func validFolderName(_ rawName: String) throws -> String {
         let name = sanitize(rawName)
         guard !name.isEmpty else { throw StoreError.emptyName }

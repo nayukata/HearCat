@@ -225,6 +225,11 @@ struct SessionDetailView: View {
                 Text(session.startDate.formatted(date: .complete, time: .shortened))
                     .font(HCFont.caption)
                     .foregroundStyle(.secondary)
+                SessionGroupMenu(
+                    model: model, session: session,
+                    anchorWindow: { model.mainWindow },
+                    onMoved: onMove)
+                    .font(HCFont.caption)
             }
             Spacer()
             summarizeButton

@@ -245,6 +245,7 @@ struct GroupDetailView: View {
         .contextMenu {
             sessionContextMenuItems(
                 for: session,
+                current: model.pendingMove(for: session).map(\.folder) ?? session.folder,
                 bulkTargets: nil,
                 folders: model.folders,
                 onRename: onRequestRename,

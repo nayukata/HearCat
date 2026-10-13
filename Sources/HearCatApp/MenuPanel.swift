@@ -174,6 +174,12 @@ struct MenuPanel: View {
                 .foregroundStyle(HCColor.textPrimary)
                 .lineLimit(1)
 
+            SessionGroupMenu(
+                model: model, session: session,
+                anchorWindow: { model.panelWindow },
+                onMoved: { _ in })
+                .font(HCFont.caption)
+
             if awaitingSummary {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

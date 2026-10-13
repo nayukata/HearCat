@@ -205,6 +205,11 @@ struct MainWindow: View {
             expandDateSection(forSessionID: request)
             model.mainWindowSelectionRequest = nil
         }
+        // 移動・改名でセッション ID が変わったとき、旧 ID を選んでいる場合だけ新 ID へ張り替える。
+        .onChange(of: model.lastSessionIDChange) {
+            guard let change = model.lastSessionIDChange else { return }
+            selection = PendingMoveLogic.remapSelection(selection, olds: change.olds, new: change.new)
+        }
         // ライブ画面を見ている最中に停止すると status.active が false になり、
         // そのままだと selection がライブの ID を指し続けてプレースホルダに落ちる。
         // 今終わったセッションの詳細へ自然に遷移させる。
@@ -645,6 +650,7 @@ struct MainWindow: View {
                     : nil
                 sessionContextMenuItems(
                     for: session,
+                    current: model.pendingMove(for: session).map(\.folder) ?? session.folder,
                     bulkTargets: bulkTargets,
                     folders: model.folders,
                     onRename: { renameText = $0.name; renameTarget = $0 },
@@ -856,6 +862,7 @@ struct MainWindow: View {
 @ViewBuilder
 func sessionContextMenuItems(
     for session: SessionInfo,
+    current: String?,
     bulkTargets: [SessionInfo]?,
     folders: [String],
     onRename: @escaping (SessionInfo) -> Void,
@@ -868,20 +875,9 @@ func sessionContextMenuItems(
     }
     .disabled(bulkTargets != nil)
     Menu("グループへ移動") {
-        ForEach(folders.filter { $0 != session.folder }, id: \.self) { folder in
-            Button(folder) {
-                onMove(session, folder)
-            }
-        }
-        if session.folder != nil {
-            Button("未分類へ戻す") {
-                onMove(session, nil)
-            }
-        }
-        Divider()
-        Button("新しいグループ…") {
-            onNewFolder(session)
-        }
+        sessionMoveMenuItems(
+            for: session, current: current, folders: folders, onMove: onMove,
+            onNewFolder: onNewFolder)
     }
     .disabled(bulkTargets != nil)
     Divider()
