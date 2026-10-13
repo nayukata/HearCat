@@ -9,7 +9,7 @@ import SwiftUI
 /// 「聞いたつもりで聞けていない」状態を作ってしまう)。
 ///
 /// 用途は2つ。どちらも「勝手にやらず、まず確かめる」ためのもの。
-/// - 会議が始まる前の、自動で録音を始めてよいかの予告
+/// - 会議が始まる前の、録音してよいかの確認
 /// - 無音が続いたときの、セッションを止めてよいかの確認
 struct NudgeAction: Identifiable {
     let id = UUID()
@@ -31,7 +31,7 @@ struct NudgeAction: Identifiable {
     }
 }
 
-/// 予告パネルの押しボタン(録音・文字起こし・録画)の状態。押すたびに onChange で保存へ流す。
+/// 確認パネルの押しボタン(録音・文字起こし・録画)の状態。押すたびに onChange で保存へ流す。
 @MainActor
 @Observable
 final class NudgeStartChoice {
@@ -58,10 +58,11 @@ struct NudgePrompt {
     let title: String
     let detail: String
     /// 残り時間を出す締め切り。nil なら出さない。
-    /// 「あと何秒で勝手に始まるのか」が見えないと、予告の意味がないため。
     var deadline: Date?
     /// 始める内容の押しボタン。nil ならボタンの行を出さない。
     var startChoice: NudgeStartChoice?
+    /// この時刻までは全ボタンを押せなくする。別の確認を置き換えた直後の誤操作を防ぐ。
+    var lockedUntil: Date?
     /// 押しボタンがすべてオフの間、detail の代わりに出す文面。
     var emptyChoiceDetail: String?
     var actions: [NudgeAction]
@@ -91,7 +92,7 @@ final class NudgeOverlayController {
     /// 始める内容の押しボタンの行(約 28pt)と、その上の余白 12pt。
     private static let choiceRowHeight: CGFloat = 40
 
-    /// 押しボタンの行がある予告だけ、その行の分だけ高くする。
+    /// 押しボタンの行がある確認だけ、その行の分だけ高くする。
     static func size(for prompt: NudgePrompt?) -> NSSize {
         NSSize(
             width: width,
@@ -150,7 +151,14 @@ private struct NudgeOverlayView: View {
     var body: some View {
         Group {
             if let prompt = state.prompt {
-                content(prompt)
+                if let until = prompt.lockedUntil {
+                    // 押しボタンの行も含め、全体を一定時間だけ押せなくする。
+                    TimelineView(.periodic(from: .now, by: 0.2)) { context in
+                        content(prompt).disabled(context.date < until)
+                    }
+                } else {
+                    content(prompt)
+                }
             } else {
                 Color.clear
             }

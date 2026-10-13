@@ -3,7 +3,7 @@ import Foundation
 
 /// カレンダー読み取りの入り口。許可の確認と要求をここ1箇所にまとめる。
 ///
-/// 予定名の自動命名(CalendarNamer)と会議の自動開始(CalendarMeetings)の両方が
+/// 予定名の自動命名(CalendarNamer)と会議前の録音確認(CalendarMeetings)の両方が
 /// 同じ許可を必要とする。判定が2箇所にあると、片方だけ許可の扱いを直したときに
 /// もう片方が静かに取り残される。
 enum CalendarAccess {

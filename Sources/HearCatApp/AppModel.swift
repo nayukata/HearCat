@@ -395,8 +395,12 @@ final class AppModel {
 
     /// カレンダーの会議に合わせて録音を始める見張り役。設定がオフの間は止めておく。
     @ObservationIgnored private var meetingAutoStartScheduler: MeetingAutoStartScheduler?
-    /// 予告を出したあと、開始時刻まで待っているタスク。「今回はやめる」で取り消す。
-    @ObservationIgnored private var pendingMeetingStart: Task<Void, Never>?
+    /// いま録音の確認を出している会議。「録音する」「録らない」のどちらかで空になる。
+    @ObservationIgnored private var pendingMeeting: CalendarMeeting?
+    /// 会議の確認に場所を譲った、更新のお知らせ。会議の確認が閉じたあとに出し直す。
+    @ObservationIgnored private var deferredUpdateLatest: String?
+    /// 直近に出した更新のお知らせの内容。会議の確認に上書きされたとき、これを控えに回す。
+    @ObservationIgnored private var shownUpdateLatest: String?
     /// いま浮遊パネルに出している確認の種類。別の用件の確認を、あとから来た
     /// 無関係な合図で消してしまわないために持つ。
     @ObservationIgnored private var activeNudge: NudgeKind?
@@ -415,7 +419,7 @@ final class AppModel {
     @ObservationIgnored private var updateCheckScheduler: UpdateCheckScheduler?
 
     private enum NudgeKind {
-        /// 会議が始まるので録音を開始する、という予告。
+        /// 会議がもうすぐ始まるので録音するか、という確認。
         case meetingStart
         /// 無音が続いたので止めるか、という確認。
         case silence
@@ -525,6 +529,11 @@ final class AppModel {
         meetingScheduler.onDue = { [weak self] meeting in
             self?.presentMeetingStartNudge(for: meeting)
         }
+        meetingScheduler.onInvalidated = { [weak self] meeting in
+            // 古い確認の後始末だけ。同じ ID の確認が既に別の会議に替わっていたら触らない。
+            guard self?.pendingMeeting?.id == meeting.id else { return }
+            self?.cancelPendingMeetingStart()
+        }
         meetingScheduler.exclusions = { [weak self] in
             guard let self else { return (ids: [], keywords: []) }
             return (
@@ -547,7 +556,10 @@ final class AppModel {
         settings.autoUpdateCheckChanged = { [weak self] in
             guard let self else { return }
             updateScheduler.setEnabled(settings.autoUpdateCheck)
-            if !settings.autoUpdateCheck { dismissNudge(.updateAvailable) }
+            if !settings.autoUpdateCheck {
+                deferredUpdateLatest = nil
+                dismissNudge(.updateAvailable)
+            }
         }
         settings.hotkeysChanged = { [weak self] in
             guard let self else { return }
@@ -776,8 +788,9 @@ final class AppModel {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        // 録音が始まる以上、会議の予告は役目を終える(手動で先に始めた場合も同じ)。
-        cancelPendingMeetingStart()
+        // 録音が始まる以上、会議の確認は役目を終える(手動で先に始めた場合も同じ)。
+        let hadPendingMeeting = pendingMeeting != nil
+        cancelPendingMeetingStart(resumeUpdate: false)
         // 過去の無関係なエラーを引きずって「開始失敗」と誤報告しないようにする。
         lastError = nil
         // 前のセッションの異常を持ち越さない。
@@ -806,6 +819,8 @@ final class AppModel {
             try await engine.start(
                 record: record, transcribe: transcribe,
                 name: calendarTitle ?? "", folder: resolvedFolder)
+            // 開始の途中で出た確認は、冒頭の取り消しでは閉じられない。
+            cancelPendingMeetingStart(resumeUpdate: false)
             // 録音と文字起こしは選択画面を待たずに先に始めてある。録画は選択画面が出たところで
             // 戻るので、ここで busy を握り続けない(選択中でも停止できる)。
             // 録画だけで始めた場合、最初の選択が取り消し・失敗で終わったらセッションごと破棄する。
@@ -821,6 +836,11 @@ final class AppModel {
             refreshSessions()
         } catch {
             lastError = error.localizedDescription
+            // 確認に場所を譲った更新のお知らせを戻す。busy の間は出せないため、
+            // この関数が抜けて busy が解けた後に回す。
+            if hadPendingMeeting && !status.active {
+                Task { [weak self] in self?.resumeDeferredUpdateNudge() }
+            }
         }
     }
 
@@ -965,16 +985,18 @@ final class AppModel {
         SessionStore.storedName(for: s).lowercased()
     }
 
-    // MARK: - 確認パネル(会議の予告 / 無音の確認)
+    // MARK: - 確認パネル(会議の録音確認 / 無音の確認)
 
-    /// 会議が始まるので録音を始める、という予告を出す。開始時刻になるまで待ってから
-    /// 始めるので、この間に「今回はやめる」を押せば録音は始まらない。
+    /// 会議がもうすぐ始まるので、録音するかを確かめる。押されたときだけ録音を始める。
+    /// 何も押されなければ録音せず、予定の終了(または予定の削除・時刻変更)で確認を消す。
     private func presentMeetingStartNudge(for meeting: CalendarMeeting) {
         // 既に録音中なら、その会議の分はもう録れている。何も言わない。
-        guard !status.active else { return }
-        // 予定の開始時刻ちょうどに始める。既に始まっている会議を拾った場合でも、
-        // 押す間もなく始まらないよう最低5秒は猶予を置く。
-        let deadline = max(meeting.startDate, Date().addingTimeInterval(5))
+        // 開始・停止の処理中も出さない(押された時点で始められず、確認だけが残るため)。
+        // 停止処理中にちょうど開始 30 秒前を迎えた会議は、確認が出ないまま処理済みになる。許容する。
+        guard !status.active, !busy else {
+            meetingAutoStartScheduler?.shown = nil
+            return
+        }
         // 押しボタンの操作は、そのまま次回以降の既定として保存する。
         let choice = NudgeStartChoice(initial: settings.lastStartSelection) { [weak self] selection in
             guard let self else { return }
@@ -982,55 +1004,80 @@ final class AppModel {
             settings.lastStartTranscribe = selection.transcribe
             settings.lastStartScreen = selection.screen
         }
-        pendingMeetingStart?.cancel()
-        pendingMeetingStart = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(deadline.timeIntervalSinceNow))
-            guard !Task.isCancelled, let self, !self.status.active else { return }
-            // 自分の待ち合わせは役目を終えた。ここで手放しておかないと、この先の
-            // startSession が「待機中の予告を取り消す」処理で自分自身を止めてしまう。
-            self.pendingMeetingStart = nil
-            // 開始時刻に何もオンでなければ始めない。予告は残し、押しボタンをオンにしてから
-            // 「今すぐ始める」で始められるようにする。
-            guard !choice.selection.isEmpty else { return }
-            await self.startSession(with: choice.selection)
-        }
+        pendingMeeting = meeting
+        // 更新のお知らせを押し出す場合は、あとで出し直せるよう控える。
+        if activeNudge == .updateAvailable { deferredUpdateLatest = shownUpdateLatest }
+        // 別の確認を置き換えた直後は、押そうとした対象が入れ替わる誤操作を避けて少し待たせる。
+        let replacing = activeNudge != nil
         let name = meeting.title.isEmpty ? "会議" : meeting.title
         presentNudge(
             .meetingStart,
             prompt: NudgePrompt(
                 icon: "calendar.badge.clock",
-                title: "まもなく「\(name)」が始まります",
-                detail: "この時間になったら、自動で始めます。",
-                deadline: deadline,
+                title: "「\(name)」を録音しますか",
+                detail: "「録音する」を押したときだけ始めます。予定が終わると、この確認は消えます。",
+                deadline: nil,
                 startChoice: choice,
-                emptyChoiceDetail: "録音・文字起こし・録画がすべてオフのため、自動では始めません。",
+                lockedUntil: replacing ? Date().addingTimeInterval(1) : nil,
+                emptyChoiceDetail: "録音・文字起こし・録画がすべてオフのため、始められません。",
                 actions: [
-                    // 毎回「今回はやめる」を押させないための逃げ道。繰り返しの予定は
-                    // ID が全回で共通なので、一度押せば以後この予定では予告も出ない。
+                    // 毎回「録らない」を押させないための逃げ道。繰り返しの予定は
+                    // ID が全回で共通なので、一度押せば以後この予定では確認も出ない。
                     NudgeAction(title: "今後録らない") { [weak self] in
                         guard let self else { return }
                         settings.excludedMeetings[meeting.seriesID] = name
                         cancelPendingMeetingStart()
                     },
-                    NudgeAction(title: "今回はやめる") { [weak self] in
+                    NudgeAction(title: "録らない") { [weak self] in
                         self?.cancelPendingMeetingStart()
                     },
-                    NudgeAction(title: "今すぐ始める", isPrimary: true, needsStartChoice: true) {
+                    NudgeAction(title: "録音する", isPrimary: true, needsStartChoice: true) {
                         [weak self] in
-                        guard let self, !choice.selection.isEmpty else { return }
-                        self.pendingMeetingStart?.cancel()
-                        self.pendingMeetingStart = nil
-                        self.dismissNudge(.meetingStart)
-                        Task { await self.startSession(with: choice.selection) }
+                        self?.confirmMeetingRecording(meeting, selection: choice.selection)
                     },
                 ]))
     }
 
-    /// 予告を取り消して、この会議では録音を始めない。
-    private func cancelPendingMeetingStart() {
-        pendingMeetingStart?.cancel()
-        pendingMeetingStart = nil
+    /// 「録音する」が押された。確認を閉じてから始める。
+    private func confirmMeetingRecording(_ meeting: CalendarMeeting, selection: SessionStartSelection) {
+        // 二度押し、または確認が置き換わった後に古いボタンが押された場合は何もしない。
+        guard pendingMeeting?.id == meeting.id, !selection.isEmpty else { return }
+        // 確認を出している間に、メニューやホットキーで先に始めていた場合。
+        if status.active {
+            cancelPendingMeetingStart(resumeUpdate: false)
+            return
+        }
+        // 停止処理中などは始められない。確認を残して、押し直せるようにする。
+        guard !busy else { return }
+        cancelPendingMeetingStart(resumeUpdate: false)
+        Task { [weak self] in
+            guard let self else { return }
+            await startSession(with: selection)
+            if status.active { return }
+            // 確認はもう消えている。マイクの権限なしなどで始められなかったときに、
+            // 押したのに何も起きないように見えないよう通知で知らせる。
+            if let message = lastError {
+                HealthNotifier.notify(title: "録音を始められませんでした", body: message)
+            }
+            resumeDeferredUpdateNudge()
+        }
+    }
+
+    /// 確認を閉じて、この会議では録音を始めない。
+    /// resumeUpdate: 確認に場所を譲った更新のお知らせを出し直すか。録音を始める場合は出さない
+    /// (録音中は割り込まない)。
+    private func cancelPendingMeetingStart(resumeUpdate: Bool = true) {
+        let wasShowing = pendingMeeting != nil
+        pendingMeeting = nil
+        meetingAutoStartScheduler?.shown = nil
         dismissNudge(.meetingStart)
+        if resumeUpdate && wasShowing { resumeDeferredUpdateNudge() }
+    }
+
+    private func resumeDeferredUpdateNudge() {
+        guard let latest = deferredUpdateLatest, activeNudge == nil else { return }
+        deferredUpdateLatest = nil
+        presentUpdateNudge(latest: latest)
     }
 
     /// 無音が続いたので止めるか確認する。返事があるまで録音は続く。
@@ -1093,6 +1140,17 @@ final class AppModel {
     private func presentUpdateNudge(latest: String) {
         // 録音中に割り込まない。更新には HearCat の終了が要るので、いま伝えても押せない。
         guard !status.active else { return }
+        // 開始・停止の処理中は出さず控える。停止の後と、開始の失敗の後に出し直す。
+        guard !busy else {
+            deferredUpdateLatest = latest
+            return
+        }
+        // 会議の録音確認のほうが急ぎ。閉じたあとに出し直す。
+        guard pendingMeeting == nil else {
+            deferredUpdateLatest = latest
+            return
+        }
+        shownUpdateLatest = latest
         presentNudge(
             .updateAvailable,
             prompt: NudgePrompt(
@@ -1142,6 +1200,10 @@ final class AppModel {
         refreshSessions()
         if let lastEndedSessionID {
             autoSummarize(sessionID: lastEndedSessionID)
+        }
+        // 録音中に控えた更新のお知らせを、busy が解けた後に出す。
+        if deferredUpdateLatest != nil {
+            Task { [weak self] in self?.resumeDeferredUpdateNudge() }
         }
     }
 

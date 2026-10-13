@@ -279,15 +279,15 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("会議の時間になったら自動で録音を開始", isOn: $settings.meetingAutoStart)
+                Toggle("会議の時間になったら録音するか確認", isOn: $settings.meetingAutoStart)
                     .pointingHandOnHover()
                 if settings.meetingAutoStart {
                     excludedMeetingRows
                 }
             } header: {
-                Text("自動開始")
+                Text("会議の録音")
             } footer: {
-                settingsFooter("会議サービスの URL が入っている予定だけが対象です。開始 30 秒前に画面右上へ予告が出るので、録りたくない回はそこで取り消せます。終日の予定と、辞退した予定は対象外です。")
+                settingsFooter("会議サービスの URL が入っている予定が対象です。開始 30 秒前に画面右上で「録音しますか」と尋ね、「録音する」を押したときだけ録音が始まります。何も押さなければ録音しません。終日の予定と、辞退した予定は対象外です。")
             }
 
             Section {
@@ -573,11 +573,10 @@ struct SettingsView: View {
         }
     }
 
-    /// 自動録音の対象から外す指定。
+    /// 録音の確認を出さない予定の指定。
     ///
-    /// 2つの入り口を並べる。予告パネルの「今後録らない」で外した予定と、予定名に
-    /// 含まれる言葉での除外。前者は正確だが予告を見ていないと押せないため、
-    /// 後者を後から止める手段として置く。
+    /// 2つの入り口を並べる。確認パネルの「今後録らない」や一覧から選んで外した予定と、
+    /// 予定名に含まれる言葉での除外。
     @ViewBuilder
     private var excludedMeetingRows: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -624,7 +623,7 @@ struct SettingsView: View {
                     .pointingHandOnHover(
                         disabled: newExcludedKeyword.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            // 予告を見逃した予定にも、あとから辿り着けるようにする。
+            // 確認が出る前の予定にも、先回りして辿り着けるようにする。
             Button {
                 loadUpcomingMeetings()
             } label: {
@@ -657,7 +656,7 @@ struct SettingsView: View {
         }
         if selectable.isEmpty {
             let item = NSMenuItem(
-                title: "これから2週間に、自動で録音される予定はありません", action: nil, keyEquivalent: "")
+                title: "これから2週間に、録音を確認する予定はありません", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         } else {
@@ -1516,7 +1515,7 @@ private struct HCKeyCapButtonStyle: ButtonStyle {
     }
 }
 
-/// 自動録音から外した1件。解除はタグの中の × で完結する。
+/// 録音の確認から外した1件。解除はタグの中の × で完結する。
 private struct ExcludedChip: View {
     let icon: String
     let label: String

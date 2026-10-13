@@ -176,7 +176,7 @@ struct WelcomeView: View {
                     icon: "calendar",
                     title: "カレンダー",
                     required: false,
-                    detail: "予定の名前をセッション名に付けたり、会議の時間に自動で記録を始めたりするために使います。",
+                    detail: "予定の名前をセッション名に付けたり、会議の時間に録音するかを確認したりするために使います。",
                     state: rowState(for: calendarStatus),
                     onRequest: requestCalendar,
                     onOpenSettings: { openSystemSettings(pane: "Privacy_Calendars") })
@@ -345,7 +345,7 @@ struct WelcomeView: View {
     }
 
     /// .writeOnly (書き込みはできるが予定を読めない) も denied と同じ扱いにする。
-    /// 予定名の自動付与・自動開始のどちらも予定の読み取りが要るため、
+    /// 予定名の自動付与・会議前の録音確認のどちらも予定の読み取りが要るため、
     /// CalendarAccess.authorizedStore が nil を返すのと基準を揃える。
     private func rowState(for status: EKAuthorizationStatus) -> RowState {
         switch status {

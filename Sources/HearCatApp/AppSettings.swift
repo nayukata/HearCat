@@ -3,7 +3,7 @@ import HearCatKit
 import HearCatSummarize
 import Observation
 
-/// セッションを始める時に何をオンにするか。開始前のスイッチ・予告パネル・ホットキーが共有する。
+/// セッションを始める時に何をオンにするか。開始前のスイッチ・録音の確認パネル・ホットキーが共有する。
 struct SessionStartSelection: Equatable {
     var record: Bool
     var transcribe: Bool
@@ -172,9 +172,9 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(hotkeyGroupPicker, forKey: Self.hotkeyGroupPickerKey) }
     }
 
-    /// 開始前のスイッチと予告パネルの押しボタンで最後に選んだ、録音・文字起こし・録画の組み合わせ。
+    /// 開始前のスイッチと録音の確認パネルの押しボタンで最後に選んだ、録音・文字起こし・録画の組み合わせ。
     /// 次に始めるセッションの既定になる。進行中のオン・オフはここへ書かない
-    /// (会議中に一時的に切っただけで、次の会議の自動開始が変わらないようにするため)。
+    /// (会議中に一時的に切っただけで、次の会議の確認パネルの初期値が変わらないようにするため)。
     var lastStartRecord: Bool {
         didSet { UserDefaults.standard.set(lastStartRecord, forKey: Self.lastStartRecordKey) }
     }
@@ -209,8 +209,9 @@ final class AppSettings {
         }
     }
 
-    /// カレンダーの会議が始まる時刻に、録音を自動で開始するか。
-    /// 既定はオフ。勝手に録音が始まる機能は、ユーザーが自分で入れる形にする。
+    /// カレンダーの会議が始まる前に、録音するかを確認するか。録音は確認で押されたときだけ始まる。
+    /// 既定はオフ。画面に確認が出る機能は、ユーザーが自分で入れる形にする。
+    /// 保存キー(meetingAutoStart)は、以前の「自動で開始」の設定を引き継ぐために変えない。
     var meetingAutoStart: Bool {
         didSet {
             UserDefaults.standard.set(meetingAutoStart, forKey: Self.meetingAutoStartKey)
@@ -218,7 +219,7 @@ final class AppSettings {
         }
     }
 
-    /// 自動録音の対象から外した予定。予定の ID をキー、表示用の予定名を値にする。
+    /// 録音の確認を出さない予定。予定の ID をキー、表示用の予定名を値にする。
     /// 繰り返しの予定は全回で同じ ID になるため、一度外せば以後ずっと効く。
     /// 名前を持つのは設定画面で「何を外したか」を読めるようにするためで、
     /// 判定には使わない。
@@ -230,8 +231,7 @@ final class AppSettings {
         }
     }
 
-    /// 予定名にこの言葉を含むものは自動録音の対象にしない。
-    /// 予定単位の除外は予告を見たときにしか押せないため、後から止める手段として持つ。
+    /// 予定名にこの言葉を含むものは録音の確認を出さない。
     var excludedMeetingKeywords: [String] {
         didSet {
             UserDefaults.standard.set(excludedMeetingKeywords, forKey: Self.excludedMeetingKeywordsKey)

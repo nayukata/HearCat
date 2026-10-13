@@ -13,7 +13,7 @@ public enum CurrentEventRule {
         public let title: String
         public let start: Date
         public let end: Date
-        /// 自動録音で「録らない」とした予定。選ばれることはないが、入れ物の判定には加える。
+        /// 録音の確認で「録らない」とした予定。選ばれることはないが、入れ物の判定には加える。
         public let excluded: Bool
 
         public init(title: String, start: Date, end: Date, excluded: Bool = false) {
