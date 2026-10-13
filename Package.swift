@@ -77,5 +77,14 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // プロンプト組み立てなど、アプリ側(HearCatApp)にしか無い純粋なロジックのテスト。
+        .testTarget(
+            name: "HearCatAppTests",
+            dependencies: ["HearCatApp"],
+            path: "Tests/HearCatAppTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
     ]
 )

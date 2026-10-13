@@ -79,6 +79,7 @@ enum AgentCodeImpactAnalyzer {
         priorConversation: String? = nil,
         decisionContext: String? = nil,
         meetingDate: String? = nil,
+        includesPriorMeetings: Bool = false,
         scope: TargetScope = .live
     ) async throws -> String {
         try await AgentSummarizer.execute(
@@ -88,7 +89,7 @@ enum AgentCodeImpactAnalyzer {
             prompt: buildPrompt(
                 question: question, priorConversation: priorConversation, continuity: .fresh,
                 hasReferenceFolder: referenceFolder != nil, decisionContext: decisionContext,
-                meetingDate: meetingDate, scope: scope),
+                meetingDate: meetingDate, includesPriorMeetings: includesPriorMeetings, scope: scope),
             outputPrefix: "code-impact",
             model: model,
             // 質問応答は要約と違い、応答が「## 」見出しから始まらなくても本文として表示したいため、
@@ -148,7 +149,7 @@ enum AgentCodeImpactAnalyzer {
     static func buildPrompt(
         question: String?, priorConversation: String?, continuity: TranscriptContinuity,
         hasReferenceFolder: Bool, decisionContext: String? = nil, meetingDate: String? = nil,
-        scope: TargetScope
+        includesPriorMeetings: Bool = false, scope: TargetScope
     ) -> String {
         let trimmedQuestion = question?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmedQuestion.isEmpty else {
@@ -181,7 +182,8 @@ enum AgentCodeImpactAnalyzer {
         parts.append(
             questionPrompt(
                 question: trimmedQuestion, hasReferenceFolder: hasReferenceFolder,
-                hasDecisionIndex: hasDecisionIndex, meetingDate: meetingDate, scope: scope))
+                hasDecisionIndex: hasDecisionIndex, meetingDate: meetingDate,
+                includesPriorMeetings: includesPriorMeetings, scope: scope))
         return parts.joined(separator: "\n\n")
     }
 
@@ -368,6 +370,35 @@ enum AgentCodeImpactAnalyzer {
         """
     }
 
+    /// questionPrompt 専用: グループ対象のときだけ、約束・宿題の進み具合を尋ねる質問に
+    /// ```promises フェンスで応じさせる案内(deadlinesParagraph の逆で、単一セッション対象には
+    /// 付けない。約束した会議と済んだ会議を比べる絵なので、会議が複数なければ成り立たない)。
+    /// 会議は材料の見出し先頭の識別子([M1] 等。AppModel.groupQuestionMaterial が振る)で指させ、
+    /// 日付はアプリが識別子から引く(AI に日付を計算させない)。出力仕様の内側に置く理由は
+    /// deadlinesParagraph と同じ。フェンスの言語名(promises)と JSON のキー(title / items /
+    /// label / who / made / madeAt / done / doneAt)は HearCatKit の PromiseTracker.parse と
+    /// そのまま対応しているので、変える場合は両方直すこと。
+    ///
+    /// focusOnLatestMeeting は、単一セッションの対象に前の会議を足した材料のとき。このとき質問の
+    /// 対象は番号が最大の会議で、前の会議は約束の出どころを辿る材料にすぎないと明示する
+    /// (明示しないと、回答本文が足した会議の要約になる)。
+    private static func promisesParagraph(focusOnLatestMeeting: Bool) -> String {
+        let focusLine =
+            focusOnLatestMeeting
+            ? "質問の対象は、見出しの識別子が一番大きい(一番新しい)会議です。回答の本文はその会議を中心に書き、前の会議の記録は、約束がいつされ、いつ済んだかを辿る材料としてだけ使う。「根拠と補足」と本文に書く時刻(HH:MM:SS)は、質問の対象の会議の発言だけにする。前の会議の発言は時刻を書かず、[M番号] で指す。\n"
+            : ""
+        let body = """
+        「約束したこと」「やると言ったこと」「宿題はどうなった」「前回言っていたあれは済んだか」のように、約束・宿題の進み具合を聞かれたときだけ、この回答の本文の直後(## \(nextStepSectionTitle) より前)に ```promises フェンスを1つだけ置く。1回まで。それ以外の質問では置かない。項目は1〜8件にする。
+        会議は材料の見出しの先頭にある識別子([M1] など)で指す。識別子は古い会議ほど番号が小さい(M1 が最も古い。見出しは新しい順に並んでいるので、並びの順とは逆になる)。見出しに無い識別子は使わず、日付は書かない(アプリが識別子から引く)。made は約束した会議、done は済んだと分かる会議の識別子にする。材料に済んだ根拠(完了の報告・結果の共有など)が見つからないものは、done を省略して未完了にする(推測で済み扱いにしない)。done は made より後の会議にする。
+        madeAt・doneAt は、その会議の文字起こしに実在する発言の時刻(HH:MM:SS)だけを使い、時刻を作らない。要約しか読めず時刻が分からないときは省略する。who は、自分の約束なら "me"、相手の約束なら "you"、どちらとも取れない・チーム全体などは省略する。label は14文字以内の名詞句にする(文にしない。「…」で切らない)。
+        ```promises
+        {"items": [{"label": "見積もりの再提出", "who": "me", "made": "M2", "madeAt": "14:03:12", "done": "M4", "doneAt": "10:21:40"}, {"label": "契約書の確認", "who": "you", "made": "M3", "madeAt": "15:12:05"}]}
+        ```
+        例: 「前回までに言っていた宿題はどうなった?」という質問への回答なら、判定の一文の後にこのフェンスを置く。
+        """
+        return focusLine + body
+    }
+
     /// questionPrompt 専用: 決定の経緯質問への ```decision-history フェンスの出力契約。
     /// 「決まったことの記録」の索引 (AppModel.codeImpactDecisionContext) が添付されている
     /// ときだけ questionPrompt に入る。ここ (出力仕様の内側) に置くのは、末尾の
@@ -446,14 +477,22 @@ enum AgentCodeImpactAnalyzer {
     ///
     /// meetingDate は対象セッションの開始日(yyyy-MM-dd)。非 nil のときだけ deadlinesParagraph
     /// を末尾に挟む(会議の日付が分からなければ、AI は due の相対表現を絶対日付へ直せない)。
-    private static func questionPrompt(
+    ///
+    /// includesPriorMeetings は、単一セッション対象の材料に同じグループの前の会議を足している
+    /// (AppModel.codeImpactContext が約束・宿題の質問のときだけ足す)ことを表す。材料の主語句を
+    /// 差し替え、promisesParagraph を挟む。グループ対象(scope == .group)では常に
+    /// promisesParagraph が入るため、この値は見ない。
+    static func questionPrompt(
         question: String, hasReferenceFolder: Bool, hasDecisionIndex: Bool, meetingDate: String?,
-        scope: TargetScope
+        includesPriorMeetings: Bool, scope: TargetScope
     ) -> String {
         // 文の前半 (材料の主語句) は scope だけで決まり、後半 (資料フォルダの有無) と独立に
         // 変わるため、全組み合わせを列挙せず前後で分けて組む。
         let materialSubject: String
+        let isPromiseTargetWithHistory = includesPriorMeetings && scope != .group
         switch scope {
+        case _ where isPromiseTargetWithHistory:
+            materialSubject = "、質問の対象の会議の文字起こし (一番新しい見出し) と、同じグループのこれより前の会議の記録 (新しい会議は文字起こし、古い会議は自動生成の要約)"
         case .group:
             materialSubject = "、このグループの各会議の記録 (新しい会議は文字起こし、古い会議は自動生成の要約)"
         case .pastSession:
@@ -477,13 +516,27 @@ enum AgentCodeImpactAnalyzer {
         let decisionHistorySection = hasDecisionIndex ? "\n\n\(decisionHistoryParagraph)" : ""
         // ```weights は単一セッションの時刻範囲が前提のため、グループ対象
         // (複数セッションにまたがる)には出さない。
-        let weightsSection: String = scope == .group ? "" : "\n\(weightsParagraph)"
+        // 前の会議を足した材料(includesPriorMeetings)でも出さない: ranges の時刻を測る対象が
+        // 別の会議の時刻になってしまう。
+        let weightsSection: String =
+            scope == .group || includesPriorMeetings ? "" : "\n\(weightsParagraph)"
         // ```deadlines は単一セッション前提(グループには出さない)に加え、会議の日付
         // (meetingDate)が引けている場合だけ出す(引けなければ AI は絶対日付を組み立てられない)。
         let deadlinesSection: String = {
             guard scope != .group, let meetingDate else { return "" }
-            return "\n\(deadlinesParagraph(meetingDate: meetingDate))"
+            // 暦の印を押すと対象の会議の文字起こしへ飛ぶため、前の会議の時刻を at に使わせない。
+            let priorMeetingsLine =
+                includesPriorMeetings
+                ? "\nat と due の基準は質問の対象の会議(識別子が一番大きい見出し)だけにする。前の会議でだけ出た期限は出さない。"
+                : ""
+            return "\n\(deadlinesParagraph(meetingDate: meetingDate))\(priorMeetingsLine)"
         }()
+        // ```promises は複数の会議を比べる絵のため、グループ対象か、前の会議を材料に足した
+        // 単一セッション対象(includesPriorMeetings)にだけ出す。
+        let promisesSection: String =
+            scope == .group
+            ? "\n\(promisesParagraph(focusOnLatestMeeting: false))"
+            : (includesPriorMeetings ? "\n\(promisesParagraph(focusOnLatestMeeting: true))" : "")
         let readerLine =
             scope == .live
             ? "- 読み手は会議中で、数秒しか読めない。簡潔さを最優先し、前置き・言い換え・繰り返しをしない"
@@ -511,9 +564,9 @@ enum AgentCodeImpactAnalyzer {
                 """
         // グループ対象は要約(自動生成の二次資料)と文字起こし(一次資料)が混在した材料になる
         // ため、優先順位と扱い方を明示する。過去 1 セッション・ライブは文字起こししか渡さない
-        // ので不要。
+        // ので不要(前の会議を足した場合は同じ混在になるので出す)。
         let materialHandlingSection: String =
-            scope == .group
+            scope == .group || includesPriorMeetings
             ? """
                 材料の扱い:
                 - 文字起こしが一次資料。要約は自動生成の二次資料で、誤りを含みうる。両者が矛盾したら文字起こしを優先する
@@ -573,7 +626,7 @@ enum AgentCodeImpactAnalyzer {
 
             \(analysisExampleSection)出力は次の Markdown だけにしてください。前置きや後書きは不要です。
             ## \(answerSectionTitle)
-            \(answerLengthLine)\(weightsSection)\(deadlinesSection)
+            \(answerLengthLine)\(weightsSection)\(deadlinesSection)\(promisesSection)
             ## \(nextStepSectionTitle)
             回答だけでは質問の目的を達成できず、質問者が次に取るべき具体的な一手 (誰に何を確認するか、どこを見れば確定するか) が文字起こしから特定できる場合だけこのセクションを出し、1〜2 行で書く。次のいずれかに当たる場合は出力しない: 回答で完結している / 「本人や関係者に聞けば分かる」のような当然の行動しか書けない / ```choices で確認する内容と同じ。迷ったら出力しない。「出力しない」とは見出しごと省略すること。「(なし)」と書いて見出しを残すのは誤り (それは根拠と補足だけのルール)。
             ## 根拠と補足

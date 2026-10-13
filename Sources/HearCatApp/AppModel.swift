@@ -66,6 +66,9 @@ struct CodeImpactTurn: Identifiable {
     let question: String?
     let result: String
     let cli: AgentCLI
+    /// 質問を送った時点の ```promises の識別子表。描画のたびに現在の sessions から引き直すと、
+    /// セッションの増減で識別子と会議の対応がずれ、過去ターンの絵が別の会議を指してしまう。
+    var groupMeetings: [String: PromiseMeeting] = [:]
 }
 
 /// 質問応答パネルの「根拠と補足」内のタイムスタンプから、履歴側の文字起こしの該当時刻へ
@@ -1894,14 +1897,18 @@ final class AppModel {
 
     /// question は引数に取らず、常に codeImpactQuestion(呼び出し側が事前に設定済み)を読む。
     private func startCodeImpactAnalysis(using cli: AgentCLI) {
-        let context: (transcript: String, referenceFolder: String?, decisionContext: String?)
+        let context: (
+            transcript: String, referenceFolder: String?, decisionContext: String?,
+            groupMeetings: [String: PromiseMeeting]
+        )
         do {
-            context = try codeImpactContext()
+            context = try codeImpactContext(question: codeImpactQuestion)
         } catch {
             failCodeImpactAnalysis(error.localizedDescription, using: cli)
             return
         }
         codeImpactActiveReferenceFolder = context.referenceFolder
+        codeImpactInFlightGroupMeetings = context.groupMeetings
 
         // 対象(会議、過去セッション、またはグループ)が変わっていたら、前の対象の claude/codex
         // セッションを引き継がない。同じ対象のあいだは維持し、--resume / exec resume で会話を続ける。
@@ -1947,8 +1954,12 @@ final class AppModel {
         // よう、実際に組み立てた材料の長さ以上を limit として渡す(固定値だけを渡すと、
         // 万一 groupCodeImpactContext 側の予算計算に将来ズレが生じたときに、行単位の
         // 末尾優先トリムが「新しい順」の材料の先頭=最新会議を誤って削ってしまう)。
+        // 単一セッション対象でも、約束・宿題の質問で前の会議を足した材料(codeImpactContext)は
+        // グループ材料と同じ組み立てなので、同じ扱いにする(行単位の切り詰め・差分送信をしない)。
+        let includesPriorMeetings = scope != .group && !context.groupMeetings.isEmpty
+        let isGroupShapedMaterial = scope == .group || includesPriorMeetings
         let transcriptCharacterLimit =
-            scope == .group
+            isGroupShapedMaterial
             ? max(context.transcript.count, AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters)
             : AgentCodeImpactAnalyzer.maximumTranscriptCharacters
         codeImpactAnalysisState = .analyzing(cli)
@@ -1976,7 +1987,7 @@ final class AppModel {
                 // 増減)ため、差分計算はせず常に全量を渡し直す(材料自体は
                 // groupCodeImpactContext が既に予算内に収めている)。
                 let incrementalTranscript: String? = {
-                    guard scope != .group, resumeSessionID != nil, let sentTranscriptLength,
+                    guard !isGroupShapedMaterial, resumeSessionID != nil, let sentTranscriptLength,
                         context.transcript.count >= sentTranscriptLength
                     else { return nil }
                     return AgentCodeImpactAnalyzer.incrementalTranscript(
@@ -2018,6 +2029,7 @@ final class AppModel {
                         priorConversation: priorConversation,
                         decisionContext: context.decisionContext,
                         meetingDate: meetingDate,
+                        includesPriorMeetings: includesPriorMeetings,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,
                         scope: scope,
@@ -2032,6 +2044,7 @@ final class AppModel {
                         priorConversation: priorConversation,
                         decisionContext: context.decisionContext,
                         meetingDate: meetingDate,
+                        includesPriorMeetings: includesPriorMeetings,
                         resumeSessionID: resumeSessionID,
                         transcriptCharacterLimit: transcriptCharacterLimit,
                         scope: scope,
@@ -2043,7 +2056,9 @@ final class AppModel {
                     self?.codeImpactSessionEngine = cli
                     // 継続が生きたまま成功したときだけ、今回読んだ transcript の文字数を
                     // 「送信済み位置」として前進させる。次回の追加質問はこの続きだけを送る。
-                    self?.codeImpactSentTranscriptLength = context.transcript.count
+                    // 前の会議を足した材料の長さは、次の(足さない)質問の差分位置として使えない。
+                    self?.codeImpactSentTranscriptLength =
+                        includesPriorMeetings ? nil : context.transcript.count
                 } else {
                     // 継続が切れて非ストリーミングへ落ちた(次回は新規会話になる)ので、
                     // 送信済み位置は意味を持たない。
@@ -2052,7 +2067,9 @@ final class AppModel {
                 guard !Task.isCancelled, self?.codeImpactRequestID == requestID else { return }
                 // 失敗・キャンセルでは積まない。ここに来た時点で成功が確定している。
                 self?.codeImpactTurns.append(
-                    CodeImpactTurn(question: question, result: result, cli: cli))
+                    CodeImpactTurn(
+                        question: question, result: result, cli: cli,
+                        groupMeetings: context.groupMeetings))
                 self?.codeImpactAnalysisState = .completed(cli)
             } catch {
                 guard !Task.isCancelled, let self, self.codeImpactRequestID == requestID else { return }
@@ -2065,8 +2082,11 @@ final class AppModel {
         }
     }
 
-    private func codeImpactContext() throws -> (
-        transcript: String, referenceFolder: String?, decisionContext: String?
+    /// question は、単一セッション対象のとき約束・宿題の質問かを見て材料を広げるかの判定にだけ使う
+    /// (対象の存在確認だけをする呼び出しは nil でよい)。広げた場合は groupMeetings が空でなくなる。
+    private func codeImpactContext(question: String? = nil) throws -> (
+        transcript: String, referenceFolder: String?, decisionContext: String?,
+        groupMeetings: [String: PromiseMeeting]
     ) {
         if let group = codeImpactTargetGroup {
             return try groupCodeImpactContext(folder: group)
@@ -2092,7 +2112,22 @@ final class AppModel {
         else {
             throw AgentSummarizeError.noTranscript
         }
-        return (transcript, referenceFolder, codeImpactDecisionContext(for: session))
+        // グループに入っている会議への約束・宿題の質問だけ、同じグループの前の会議を材料に足す。
+        // 識別子表は足した材料と同じ集合(対象 + 前の会議)から作る。後の会議は含めない:
+        // 質問の対象は会議の時点の宿題で、後の会議を入れると回答が対象から離れる。
+        if let folder = session.folder, !folder.isEmpty, PromiseQuestion.asksAboutPromises(question) {
+            let earlier = SessionStore.list()
+                .filter { $0.folder == folder && $0.startDate < session.startDate }
+            // 前の会議が無ければ足す材料が無く、識別子と promises の案内だけが増える。
+            let ordered = ([session] + earlier).sorted { $0.startDate > $1.startDate }
+            let material = earlier.isEmpty ? "" : Self.groupQuestionMaterial(from: ordered)
+            if !material.isEmpty {
+                return (
+                    material, referenceFolder, codeImpactDecisionContext(for: session),
+                    Self.groupMeetingTable(for: ordered, folder: folder))
+            }
+        }
+        return (transcript, referenceFolder, codeImpactDecisionContext(for: session), [:])
     }
 
     /// グループ対象の質問パネルが使う材料。所属セッションを新しい順に並べ、それぞれの
@@ -2100,7 +2135,8 @@ final class AppModel {
     /// 資料フォルダはセッション個別の codeImpactReferenceFolderOverride の対象外
     /// (グループには settings.referenceFolders[folder] という一次紐付けが既にあるため)。
     private func groupCodeImpactContext(folder: String) throws -> (
-        transcript: String, referenceFolder: String?, decisionContext: String?
+        transcript: String, referenceFolder: String?, decisionContext: String?,
+        groupMeetings: [String: PromiseMeeting]
     ) {
         let groupSessions = sessions
             .filter { $0.folder == folder }
@@ -2112,7 +2148,9 @@ final class AppModel {
         let referenceFolder = settings.referenceFolders[folder].flatMap { path in
             FileManager.default.fileExists(atPath: path) ? path : nil
         }
-        return (material, referenceFolder, codeImpactDecisionContext(forFolder: folder))
+        return (
+            material, referenceFolder, codeImpactDecisionContext(forFolder: folder),
+            Self.groupMeetingTable(for: groupSessions, folder: folder))
     }
 
     /// グループ材料 1 ブロックの種別。予算が尽きるたびに 1 段階ずつ格下げし、一度落ちたら
@@ -2145,12 +2183,14 @@ final class AppModel {
         var tier: GroupMaterialTier = .transcript
         var includedBlocks: [String] = []
         var omitted: [(name: String, date: String)] = []
+        let meetingIDs = groupMeetingIdentifiers(for: sessionsNewestFirst)
 
         for session in sessionsNewestFirst {
             let (name, date) = groupSessionLabel(for: session)
+            let marker = meetingIDs[session.id].map { "[\($0)] " } ?? ""
 
             func tryInclude(_ body: String) -> Bool {
-                let block = "## \(name) (\(date))\n\(body)"
+                let block = "## \(marker)\(name) (\(date))\n\(body)"
                 let cost = includedBlocks.isEmpty ? block.count : block.count + 2
                 guard cost <= remainingBudget else { return false }
                 includedBlocks.append(block)
@@ -2201,6 +2241,8 @@ final class AppModel {
         else { return "" }
 
         let (name, date) = groupSessionLabel(for: materials[chosenIndex].session)
+        let marker = groupMeetingIdentifiers(for: sessionsNewestFirst)[materials[chosenIndex].session.id]
+            .map { "[\($0)] " } ?? ""
         // 省略ノートは容量の都合で弾いたものだけを載せる。材料が元から無いセッション
         // (録音のみ等)を含めない条件は 3 段ループ本体と同じ。
         let omitted = materials.enumerated().compactMap { offset, item -> (name: String, date: String)? in
@@ -2209,13 +2251,19 @@ final class AppModel {
         }
 
         let note = noteText(for: omitted)
-        let headerLine = "## \(name) (\(date)) (長いため冒頭のみ)"
+        let headerLine = "## \(marker)\(name) (\(date)) (長いため冒頭のみ)"
         let limit = AgentCodeImpactAnalyzer.maximumGroupTranscriptCharacters
         let budgetForBody = max(limit - note.count - headerLine.count - 1, 0)
         return "\(headerLine)\n\(chosenBody.prefix(budgetForBody))" + note
     }
 
-    /// グループ材料の見出し(「## 名前 (日付)」)と省略ノートに使う、セッションの表示名と開始日。
+    /// グループ材料の見出しに付ける会議の識別子(セッション ID → "M3")。```promises フェンスの
+    /// 識別子を会議へ引き戻す側(groupMeetingTable)と同じ振り方を使う。
+    private static func groupMeetingIdentifiers(for sessions: [SessionInfo]) -> [String: String] {
+        PromiseMeetingID.assign(sessions.map { ($0.id, $0.startDate) })
+    }
+
+    /// グループ材料の見出し(「## [M3] 名前 (日付)」)と省略ノートに使う、セッションの表示名と開始日。
     private static func groupSessionLabel(for session: SessionInfo) -> (name: String, date: String) {
         let name = session.name.isEmpty ? SessionRow.untitledPlaceholder : session.name
         return (name, groupSessionDateFormatter.string(from: session.startDate))
@@ -2866,6 +2914,25 @@ final class AppModel {
         return status.active && liveTimeline.rows.contains { !$0.volatile }
     }
 
+    /// グループ対象の回答(```promises フェンス)から、約束・完了の場面があった会議の文字起こしへ
+    /// 飛ぶ入口。revealTranscript(atTime:) はグループ対象では飛ばない(根拠の時刻がどの会議のものか
+    /// 決められない)が、こちらは会議が識別子で確定しているため会議そのものを受け取る。
+    /// time が無い(AI が時刻を返さなかった)ときは、その会議の開始時刻 = 文字起こしの先頭へ飛ぶ。
+    /// ID で引けないときの引き直し先は meeting の folder と start。
+    @MainActor
+    func revealTranscript(meeting: PromiseMeeting, atTime time: String?) {
+        // 改名で ID が変わっていても、同じグループの同じ開始日時で引き直す。同時刻の会議が
+        // 複数あるとどれか決められないので、1件に定まるときだけ開く。
+        let sameMeeting = sessions.filter { $0.folder == meeting.folder && $0.startDate == meeting.start }
+        guard
+            let session = sessions.first(where: { $0.id == meeting.sessionID })
+                ?? (sameMeeting.count == 1 ? sameMeeting.first : nil)
+        else { return }
+        let target = time.map(Self.normalizedRevealTime) ?? TranscriptWriter.timeString(from: session.startDate)
+        showHistory(selecting: session.id)
+        transcriptRevealRequest = TranscriptRevealRequest(sessionID: session.id, time: target)
+    }
+
     /// 決定事項の変遷チップ(GroupDetailView.TopicRow / DecisionHistoryCardsView)から、由来
     /// セッションの文字起こしの該当位置へジャンプするための共通処理。folder と
     /// entry.sessionDirectoryName からセッションを解決し、entry.timeSeconds があれば
@@ -2938,6 +3005,23 @@ final class AppModel {
     var codeImpactTargetSessionStartDate: Date? {
         effectiveCodeImpactSessionDirectory.flatMap(sessionStartDate(forDirectory:))
     }
+
+    /// 材料の見出しの識別子("M3")から会議を引く表。材料を組んだ groupSessions と同じ集合から
+    /// 同じ振り方(PromiseMeetingID)で作り、質問の送信時に1回だけ作ってターンへ持たせる。
+    private static func groupMeetingTable(
+        for groupSessions: [SessionInfo], folder: String
+    ) -> [String: PromiseMeeting] {
+        let ids = groupMeetingIdentifiers(for: groupSessions)
+        var table: [String: PromiseMeeting] = [:]
+        for session in groupSessions {
+            guard let id = ids[session.id] else { continue }
+            table[id] = PromiseMeeting(sessionID: session.id, folder: folder, start: session.startDate)
+        }
+        return table
+    }
+
+    /// 回答中(まだターンに確定していない)の識別子表。ストリーミング中の絵が使う。
+    private(set) var codeImpactInFlightGroupMeetings: [String: PromiseMeeting] = [:]
 
     /// 経緯回答のタイムラインカード(DecisionHistoryCardsView)が decisions.json を読むための
     /// グループ(セッションフォルダ)。グループ対象はそのグループ名をそのまま返す。それ以外は

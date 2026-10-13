@@ -435,7 +435,8 @@ private struct CodeImpactOverlayView: View {
             let extraction = DecisionHistoryFence.extractFirst(from: turn.result)
             return CodeImpactSectionsCache.Parsed(
                 sections: CodeImpactResultView.parseSections(
-                    from: extraction.body, sessionStartDate: model.codeImpactTargetSessionStartDate),
+                    from: extraction.body, sessionStartDate: model.codeImpactTargetSessionStartDate,
+                    groupMeetings: turn.groupMeetings),
                 decisionHistoryPrompt: extraction.prompt)
         }
         for section in parsed.sections {
@@ -734,7 +735,8 @@ private struct CodeImpactOverlayView: View {
                             // (エンジン切り替え後に過去回答の表示が変わってしまわないように)。
                             turnView(
                                 turnIndex: index, turnID: turn.id, question: turn.question,
-                                result: turn.result, isLatest: isLatest, cli: turn.cli)
+                                result: turn.result, isLatest: isLatest, cli: turn.cli,
+                                groupMeetings: turn.groupMeetings)
                                 .opacity(isLatest ? 1 : 0.75)
                                 .modifier(
                                     CodeImpactSearchMatchHighlight(
@@ -749,7 +751,8 @@ private struct CodeImpactOverlayView: View {
                             turnView(
                                 turnIndex: model.codeImpactTurns.count, turnID: nil,
                                 question: model.codeImpactQuestion, result: model.codeImpactPartialText,
-                                isLatest: true, cli: cli)
+                                isLatest: true, cli: cli,
+                                groupMeetings: model.codeImpactInFlightGroupMeetings)
                                 .id(Self.streamingTurnAnchorID)
                         }
                         // 進行中のターンが失敗したとき、失敗した質問のバブルとエラーを
@@ -883,7 +886,7 @@ private struct CodeImpactOverlayView: View {
     /// 毎回パースし直す。
     private func turnView(
         turnIndex: Int, turnID: UUID?, question: String?, result: String, isLatest: Bool,
-        cli: AgentCLI
+        cli: AgentCLI, groupMeetings: [String: PromiseMeeting]
     ) -> some View {
         // spacing はステータス行 ⇄ 本文の間にも効くため、8 では本文がステータス行に
         // 張り付いて見える。ブロックの切れ目をブロック内の行間より広く取るため 12 にする。
@@ -891,7 +894,9 @@ private struct CodeImpactOverlayView: View {
             questionBubble(for: question)
             if let turnID {
                 statusBadgeRow(cli: cli, hasQuestion: !(question ?? "").isEmpty, result: result)
-                resultView(turnIndex: turnIndex, turnID: turnID, result: result, isLatest: isLatest)
+                resultView(
+                    turnIndex: turnIndex, turnID: turnID, result: result, isLatest: isLatest,
+                    groupMeetings: groupMeetings)
                     .textSelection(.enabled)
             } else {
                 // 進行中ターン: バッジ・コピーは出さない。本文は文字単位で流しつつ、
@@ -902,7 +907,8 @@ private struct CodeImpactOverlayView: View {
                 if !result.isEmpty {
                     resultView(
                         turnIndex: turnIndex, turnID: nil,
-                        result: Self.optimisticStreamingText(result), isLatest: isLatest)
+                        result: Self.optimisticStreamingText(result), isLatest: isLatest,
+                        groupMeetings: groupMeetings)
                         .textSelection(.enabled)
                 }
             }
@@ -919,7 +925,8 @@ private struct CodeImpactOverlayView: View {
 
     @ViewBuilder
     private func resultView(
-        turnIndex: Int, turnID: UUID?, result: String, isLatest: Bool
+        turnIndex: Int, turnID: UUID?, result: String, isLatest: Bool,
+        groupMeetings: [String: PromiseMeeting]
     ) -> some View {
         let isInteractive = isChoicesInteractive(turnID: turnID, isLatest: isLatest)
         if let turnID {
@@ -932,7 +939,8 @@ private struct CodeImpactOverlayView: View {
                 let extraction = DecisionHistoryFence.extractFirst(from: result)
                 return CodeImpactSectionsCache.Parsed(
                     sections: CodeImpactResultView.parseSections(
-                        from: extraction.body, sessionStartDate: model.codeImpactTargetSessionStartDate),
+                        from: extraction.body, sessionStartDate: model.codeImpactTargetSessionStartDate,
+                        groupMeetings: groupMeetings),
                     decisionHistoryPrompt: extraction.prompt)
             }
             CodeImpactResultView(
@@ -941,7 +949,7 @@ private struct CodeImpactOverlayView: View {
         } else {
             CodeImpactResultView(
                 result: result, model: model, turnIndex: turnIndex,
-                isInteractive: isInteractive)
+                isInteractive: isInteractive, groupMeetings: groupMeetings)
         }
     }
 
@@ -1557,14 +1565,18 @@ private struct CodeImpactResultView: View {
     /// 確定ターン(sections: init)はこの状態を経由しないため常に false。
     private let isDecisionHistoryPending: Bool
 
-    init(result: String, model: AppModel, turnIndex: Int, isInteractive: Bool) {
+    init(
+        result: String, model: AppModel, turnIndex: Int, isInteractive: Bool,
+        groupMeetings: [String: PromiseMeeting]
+    ) {
         self.model = model
         self.turnIndex = turnIndex
         self.isInteractive = isInteractive
         self.sessionStartDate = model.codeImpactTargetSessionStartDate
         let extraction = DecisionHistoryFence.extractFirst(from: result)
         self.sections = Self.parseSections(
-            from: extraction.body, sessionStartDate: sessionStartDate)
+            from: extraction.body, sessionStartDate: sessionStartDate,
+            groupMeetings: groupMeetings)
         self.decisionHistoryPrompt = extraction.prompt
         self.isDecisionHistoryPending = extraction.isPending
     }
@@ -1603,6 +1615,9 @@ private struct CodeImpactResultView: View {
         /// ```回答 の直後に置く契約で、セクション内の元の位置にそのまま描かれる
         /// (choices のようにターンの一番下へ引き上げはしない)。
         case deadlines(DeadlineCalendar)
+        /// ```promises フェンス(約束の追跡)。グループ対象だけで、deadlines と同じく
+        /// セクション内の元の位置に描かれる。
+        case promises(PromiseTracker)
         /// ストリーミング途中の書きかけ ```choices / ```weights / ```deadlines フェンス。
         /// 生 JSON は見せず、「準備中」の合図(中央スピナー)だけを出すための場所取り。
         /// choices と同じくターンの一番下へ引き上げて表示する(hasPendingChoices /
@@ -1663,7 +1678,9 @@ private struct CodeImpactResultView: View {
     /// (TopicWeights.parse の offset クロージャの元)。取得できない(グループ対象など)場合は
     /// ```weights は .code へフォールバックするか、JSON 自体は壊れていなければ何も描画しない
     /// (下の分岐参照)。
-    private static func segments(from lines: [Substring], sessionStartDate: Date?) -> [Segment] {
+    private static func segments(
+        from lines: [Substring], sessionStartDate: Date?, groupMeetings: [String: PromiseMeeting]
+    ) -> [Segment] {
         var result: [Segment] = []
         var textBuffer: [Substring] = []
 
@@ -1744,11 +1761,27 @@ private struct CodeImpactResultView: View {
                     } else {
                         result.append(.code(joined))
                     }
+                } else if language == "promises" {
+                    if !groupMeetings.isEmpty {
+                        if let tracker = PromiseTracker.parse(joined, meeting: { groupMeetings[$0] }) {
+                            result.append(.promises(tracker))
+                        } else if !PromiseTracker.isWellFormed(joined) {
+                            // JSON として読めるのに項目が全部落ちた場合は、生 JSON を見せず何も描かない。
+                            result.append(.code(joined))
+                        }
+                    } else if PromiseTracker.isWellFormed(joined) {
+                        // グループ対象でない(識別子の表が空)。AI が単一セッションで出してしまっても
+                        // 生 JSON は見せず、何も描画しない。
+                    } else {
+                        result.append(.code(joined))
+                    }
                 } else {
                     result.append(.code(joined))
                 }
                 index = cursor + 1
-            } else if language == "choices" || language == "weights" || language == "deadlines" {
+            } else if language == "choices" || language == "weights" || language == "deadlines"
+                || language == "promises"
+            {
                 // ストリーミング途中の書きかけフェンス。生 JSON を見せず、中央スピナー
                 // (choicesPending)で場所だけ知らせる。フェンスが閉じてパースできた時に
                 // それぞれの表示へ置き換わる。
@@ -1763,7 +1796,9 @@ private struct CodeImpactResultView: View {
         return result
     }
 
-    fileprivate static func parseSections(from result: String, sessionStartDate: Date?) -> [Section] {
+    fileprivate static func parseSections(
+        from result: String, sessionStartDate: Date?, groupMeetings: [String: PromiseMeeting] = [:]
+    ) -> [Section] {
         var sections: [Section] = []
         var title: String?
         var lines: [Substring] = []
@@ -1774,7 +1809,8 @@ private struct CodeImpactResultView: View {
             sections.append(
                 Section(
                     title: title,
-                    segments: Self.segments(from: lines, sessionStartDate: sessionStartDate)))
+                    segments: Self.segments(
+                        from: lines, sessionStartDate: sessionStartDate, groupMeetings: groupMeetings)))
         }
 
         for line in result.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -1801,7 +1837,7 @@ private struct CodeImpactResultView: View {
             case .text(let lines): return lines.joined(separator: "\n")
             case .code(let code): return code
             case .mermaid(let code): return code
-            case .choices, .weights, .deadlines, .choicesPending: return ""
+            case .choices, .weights, .deadlines, .promises, .choicesPending: return ""
             }
         }.joined(separator: "\n")
     }
@@ -1924,7 +1960,7 @@ private struct CodeImpactResultView: View {
             switch segment {
             case .text(let lines):
                 combinedText += lines.joined(separator: "\n")
-            case .code, .mermaid, .choices, .weights, .deadlines, .choicesPending:
+            case .code, .mermaid, .choices, .weights, .deadlines, .promises, .choicesPending:
                 return false
             }
         }
@@ -2057,6 +2093,9 @@ private struct CodeImpactResultView: View {
                 DeadlineCalendarView(calendar: calendar, sessionStartDate: sessionStartDate, model: model)
                     .padding(.top, 4)
             }
+        case .promises(let tracker):
+            PromiseTrackerView(tracker: tracker, model: model)
+                .padding(.top, 4)
         case .choicesPending:
             // body 側でターンの一番下へ引き上げて中央スピナーとして描くため、
             // セクション内では何も出さない(sectionsWithoutChoices で除外済みのはずだが網羅用)。

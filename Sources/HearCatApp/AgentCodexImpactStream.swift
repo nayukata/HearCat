@@ -53,6 +53,7 @@ enum AgentCodexImpactStream {
         priorConversation: String?,
         decisionContext: String?,
         meetingDate: String? = nil,
+        includesPriorMeetings: Bool = false,
         resumeSessionID: String?,
         transcriptCharacterLimit: Int = AgentCodeImpactAnalyzer.maximumTranscriptCharacters,
         scope: AgentCodeImpactAnalyzer.TargetScope = .live,
@@ -116,7 +117,7 @@ enum AgentCodexImpactStream {
             let prompt = AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, priorConversation: priorConversation, continuity: continuity,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                meetingDate: meetingDate, scope: scope)
+                meetingDate: meetingDate, includesPriorMeetings: includesPriorMeetings, scope: scope)
 
             let arguments = arguments(
                 prompt: prompt, model: model, resumeSessionID: resumeSessionIDForAttempt,
@@ -178,7 +179,7 @@ enum AgentCodexImpactStream {
             prompt: AgentCodeImpactAnalyzer.buildPrompt(
                 question: question, priorConversation: priorConversation, continuity: .fresh,
                 hasReferenceFolder: hasReferenceFolder, decisionContext: decisionContext,
-                meetingDate: meetingDate, scope: scope),
+                meetingDate: meetingDate, includesPriorMeetings: includesPriorMeetings, scope: scope),
             outputPrefix: "code-impact-stream-fallback",
             model: model,
             extraction: AgentSummarizer.extractCodeImpactMarkdown)
