@@ -18,8 +18,9 @@ struct DeadlineCalendarView: View {
     private static let horizontalPadding: CGFloat = 40
     private static let diamondSize: CGFloat = 16
     private static let circleDiameter: CGFloat = 10
-    /// 印から名前・日付までの基本距離。stackIndex 分だけこれの倍数(stackStep)を足す。
-    private static let labelGap: CGFloat = 20
+    /// 線から名前・日付の近い側の辺までの距離。ひし形の半対角線(約11pt)より大きくする。
+    /// stackIndex 分だけこれに stackStep の倍数を足す。
+    private static let labelGap: CGFloat = 14
     private static let stackStep: CGFloat = 14
     /// 端揃え(leading/trailing)のラベルに与える固定幅。実測はせず、この用途のラベル
     /// (14文字以内の名詞句 + 「自分」「相手」の2行、または M/d の日付)が確実に収まる
@@ -27,6 +28,9 @@ struct DeadlineCalendarView: View {
     /// alignment を効かせて、フレームの中心ではなく端を基準点に固定する形で決める。
     /// DeadlineCalendarLayout.labelAnchor へ渡す halfLabelWidth はこの半分。
     private static let anchoredLabelWidth: CGFloat = 180
+    /// 縦方向も同じく、中心ではなく線に近い側の辺を基準点にするための固定の高さ。
+    /// 中心基準だと「自分」+名前の2行が線側へ伸び、印に被った(実機で確認)。
+    private static let anchoredLabelHeight: CGFloat = 60
 
     private var axis: DeadlineAxis {
         DeadlineAxis(sessionDay: sessionStartDate, today: Date(), items: calendar.items)
@@ -95,25 +99,31 @@ struct DeadlineCalendarView: View {
     /// 応じて、x をラベルの中心ではなく外側の辺として使う。実測はせず、十分に余裕のある
     /// 固定幅(anchoredLabelWidth)のフレームへ alignment を効かせることで実現する
     /// (この用途のラベルは短い1〜2行の文字列のみなので、実測コストを払う必要はない)。
+    /// y は線に近い側の辺の位置。above なら下辺、below なら上辺をそこに合わせる。
     private func anchoredPosition<V: View>(
-        _ content: V, x: CGFloat, y: CGFloat, anchor: DeadlineCalendarLayout.Anchor
+        _ content: V, x: CGFloat, y: CGFloat, side: DeadlineCalendarLayout.Side,
+        anchor: DeadlineCalendarLayout.Anchor
     ) -> some View {
-        let alignment: Alignment
+        let horizontal: HorizontalAlignment
         let centerX: CGFloat
         switch anchor {
         case .leading:
-            alignment = .leading
+            horizontal = .leading
             centerX = x + Self.anchoredLabelWidth / 2
         case .center:
-            alignment = .center
+            horizontal = .center
             centerX = x
         case .trailing:
-            alignment = .trailing
+            horizontal = .trailing
             centerX = x - Self.anchoredLabelWidth / 2
         }
+        let vertical: VerticalAlignment = side == .above ? .bottom : .top
+        let centerY = side == .above ? y - Self.anchoredLabelHeight / 2 : y + Self.anchoredLabelHeight / 2
         return content
-            .frame(width: Self.anchoredLabelWidth, alignment: alignment)
-            .position(x: centerX, y: y)
+            .frame(
+                width: Self.anchoredLabelWidth, height: Self.anchoredLabelHeight,
+                alignment: Alignment(horizontal: horizontal, vertical: vertical))
+            .position(x: centerX, y: centerY)
     }
 
     // MARK: - 始点(会議の日)・今日の点
@@ -144,7 +154,7 @@ struct DeadlineCalendarView: View {
                     .font(HCFont.monospacedDigit(.subheadline))
                     .foregroundStyle(HCColor.textDim)
                     .fixedSize(),
-                x: x, y: lineY + Self.labelGap, anchor: anchor)
+                x: x, y: lineY + Self.labelGap, side: .below, anchor: anchor)
         }
     }
 
@@ -206,7 +216,7 @@ struct DeadlineCalendarView: View {
                 .contentShape(Rectangle())
                 .onTapGesture(perform: jump)
                 .pointingHandOnHover(),
-                x: x, y: nameY, anchor: anchor)
+                x: x, y: nameY, side: placement.side, anchor: anchor)
 
             if !suppressesOwnDateLabel(for: item) {
                 anchoredPosition(
@@ -214,7 +224,7 @@ struct DeadlineCalendarView: View {
                         .font(HCFont.monospacedDigit(.subheadline))
                         .foregroundStyle(HCColor.textDim)
                         .fixedSize(),
-                    x: x, y: dateY, anchor: anchor)
+                    x: x, y: dateY, side: placement.side == .above ? .below : .above, anchor: anchor)
             }
         }
     }
