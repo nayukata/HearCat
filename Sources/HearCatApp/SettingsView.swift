@@ -188,6 +188,7 @@ struct SettingsView: View {
     @State private var deleteOldRecordingsMenuActionHandler = MenuActionHandler()
     /// 確認ダイアログに出す「対象日数」と「対象件数・サイズ」。両方揃っている間だけダイアログを出す。
     @State private var pendingDeleteOldRecordingsDays: Int?
+    @State private var pendingDeleteOldRecordingsTarget: SessionStore.MediaDeletionTarget = .audioAndVideo
     @State private var pendingDeleteOldRecordingsSummary: SessionStore.OldRecordingsSummary?
     @State private var deleteOldRecordingsMessage: String?
 
@@ -531,7 +532,7 @@ struct SettingsView: View {
         Task { releaseNotes = await ReleaseNotes.load() }
     }
 
-    /// 録音・文字起こしなどの合計使用量と、古い録音の削除。
+    /// 録音・録画・文字起こしなどの合計使用量と、古い録音・録画の削除。
     /// 自動削除はしない方針で、常にユーザーが日数を選んでから確認画面を挟む。
     private var storageSection: some View {
         Section {
@@ -540,7 +541,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 8) {
-                Button("古い録音を削除…") {
+                Button("古い録音・録画を削除…") {
                     showDeleteOldRecordingsMenu()
                 }
                 .controlSize(.small)
@@ -555,7 +556,7 @@ struct SettingsView: View {
         } header: {
             Text("ストレージ")
         } footer: {
-            settingsFooter("選んだ日数より前のセッションから、録音ファイルだけを削除します。文字起こしと要約は残ります。")
+            settingsFooter("選んだ日数より前のセッションから、音声や録画のファイルだけを削除します。文字起こしと要約は残ります。")
         }
         .confirmationDialog(
             deleteOldRecordingsTitle,
@@ -716,7 +717,8 @@ struct SettingsView: View {
         guard let storageUsage else { return "計算中…" }
         guard storageUsage.totalBytes > 0 else { return "録音・記録はまだありません" }
         return "合計 \(formattedBytes(storageUsage.totalBytes))"
-            + " (録音 \(formattedBytes(storageUsage.audioBytes))"
+            + " (音声 \(formattedBytes(storageUsage.audioBytes))"
+            + "・録画 \(formattedBytes(storageUsage.videoBytes))"
             + "・その他 \(formattedBytes(storageUsage.otherBytes)))"
     }
 
@@ -724,15 +726,21 @@ struct SettingsView: View {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
-    /// 「古い録音を削除…」で出す日数の選択肢。ボタン直下に NSMenu を出す
+    /// 「古い録音・録画を削除…」で出す、消す対象と日数の選択肢。ボタン直下に NSMenu を出す
     /// (この環境は Tab キーがボタンに止まらない設定のため、自前の一覧ではなく NSMenu を使う)。
     private func showDeleteOldRecordingsMenu() {
         guard let anchor = deleteOldRecordingsMenuAnchor else { return }
         let menu = makeHCMenu()
-        for days in [30, 90, 180] {
-            let item = deleteOldRecordingsMenuActionHandler.makeItem("\(days) 日より前") {
-                confirmDeleteOldRecordings(olderThanDays: days)
+        for target in SessionStore.MediaDeletionTarget.allCases {
+            let submenu = makeHCMenu()
+            for days in [30, 90, 180] {
+                let item = deleteOldRecordingsMenuActionHandler.makeItem("\(days) 日より前") {
+                    confirmDeleteOldRecordings(olderThanDays: days, target: target)
+                }
+                submenu.addItem(item)
             }
+            let item = NSMenuItem(title: target.menuTitle, action: nil, keyEquivalent: "")
+            item.submenu = submenu
             menu.addItem(item)
         }
         popUpMenu(menu, below: anchor)
@@ -740,17 +748,20 @@ struct SettingsView: View {
 
     /// 選んだ日数の対象を数え、0件ならその場で結果だけ伝えて確認ダイアログを出さない
     /// (削除しようがないものの確認を挟むと、押すだけ無駄な手順になる)。
-    private func confirmDeleteOldRecordings(olderThanDays days: Int) {
+    private func confirmDeleteOldRecordings(
+        olderThanDays days: Int, target: SessionStore.MediaDeletionTarget
+    ) {
         deleteOldRecordingsMessage = nil
         Task {
             let summary = await Task.detached(priority: .userInitiated) {
-                SessionStore.oldRecordingsSummary(olderThanDays: days)
+                SessionStore.oldRecordingsSummary(olderThanDays: days, target: target)
             }.value
             guard summary.sessionCount > 0 else {
-                deleteOldRecordingsMessage = "\(days) 日より前の録音はありませんでした"
+                deleteOldRecordingsMessage = "\(days) 日より前の\(target.noun)はありませんでした"
                 return
             }
             pendingDeleteOldRecordingsDays = days
+            pendingDeleteOldRecordingsTarget = target
             pendingDeleteOldRecordingsSummary = summary
         }
     }
@@ -762,23 +773,24 @@ struct SettingsView: View {
 
     private var deleteOldRecordingsTitle: String {
         guard let days = pendingDeleteOldRecordingsDays else { return "" }
-        return "\(days) 日より前の録音を削除しますか？"
+        return "\(days) 日より前の\(pendingDeleteOldRecordingsTarget.noun)を削除しますか？"
     }
 
     private func deleteOldRecordingsDialogMessage(for summary: SessionStore.OldRecordingsSummary?) -> String {
         guard let summary else { return "" }
-        return "\(summary.sessionCount) 件、\(formattedBytes(summary.bytes)) の録音を削除します。"
+        return "\(summary.sessionCount) 件、\(formattedBytes(summary.bytes)) の\(pendingDeleteOldRecordingsTarget.noun)を削除します。"
             + "文字起こしと要約は残ります。この操作は取り消せません。"
     }
 
     private func performDeleteOldRecordings() {
         guard let days = pendingDeleteOldRecordingsDays else { return }
+        let target = pendingDeleteOldRecordingsTarget
         clearPendingDeleteOldRecordings()
         // 削除は保存先を全部走査して数十 MB のファイルを消す。メインスレッドで回すと
         // その間ずっと設定ウィンドウが固まるため、対象件数の集計と同じく裏へ逃がす。
         Task {
             let freed = await Task.detached(priority: .userInitiated) {
-                SessionStore.deleteOldRecordings(olderThanDays: days)
+                SessionStore.deleteOldRecordings(olderThanDays: days, target: target)
             }.value
             deleteOldRecordingsMessage = "\(formattedBytes(freed)) の空き容量を確保しました"
             refreshStorageUsage()
@@ -1590,3 +1602,21 @@ private struct FlowLayout: Layout {
     }
 }
 
+private extension SessionStore.MediaDeletionTarget {
+    var menuTitle: String {
+        switch self {
+        case .audioAndVideo: return "音声と録画"
+        case .audioOnly: return "音声だけ"
+        case .videoOnly: return "録画だけ"
+        }
+    }
+
+    /// 確認ダイアログと結果表示の文中で使う呼び名。
+    var noun: String {
+        switch self {
+        case .audioAndVideo: return "音声と録画"
+        case .audioOnly: return "音声"
+        case .videoOnly: return "録画"
+        }
+    }
+}

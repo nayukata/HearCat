@@ -87,7 +87,7 @@ extension SessionPackageTests {
                 startDate: Date().addingTimeInterval(-10 * storageTestDay), name: "最近の会議",
                 audioBytes: 3000)
 
-            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90)
+            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90, target: .audioAndVideo)
 
             #expect(summary.sessionCount == 1)
             #expect(summary.bytes == 5000)
@@ -100,7 +100,7 @@ extension SessionPackageTests {
                 startDate: Date().addingTimeInterval(-100 * storageTestDay), name: "録音なし",
                 audioBytes: 0)
 
-            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90)
+            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90, target: .audioAndVideo)
 
             #expect(summary.sessionCount == 0)
             #expect(summary.bytes == 0)
@@ -116,7 +116,7 @@ extension SessionPackageTests {
                 startDate: Date().addingTimeInterval(-10 * storageTestDay), name: "最近の会議",
                 audioBytes: 3000, transcriptBytes: 40)
 
-            let freed = SessionStore.deleteOldRecordings(olderThanDays: 90)
+            let freed = SessionStore.deleteOldRecordings(olderThanDays: 90, target: .audioAndVideo)
 
             #expect(freed == 5000)
             // 古いセッション: 録音は消え、文字起こしは残る。

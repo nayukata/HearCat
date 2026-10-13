@@ -44,12 +44,14 @@ extension SessionPackageTests {
         #expect(SessionInfo.Artifact.allCases.filter(\.isVideo) == [.video])
     }
 
-    @Test func 容量集計は録音側に画面録画を含める() throws {
+    @Test func 容量集計は音声と画面録画を分けて数える() throws {
         try withVideoTemporaryStore { _ in
             try makeSessionWithVideo(startDate: Date(), name: "会議", videoBytes: 5000)
             let usage = SessionStore.storageUsage()
-            #expect(usage.audioBytes == 5100)
+            #expect(usage.audioBytes == 100)
+            #expect(usage.videoBytes == 5000)
             #expect(usage.otherBytes == 10)
+            #expect(usage.totalBytes == 5110)
         }
     }
 
@@ -60,11 +62,11 @@ extension SessionPackageTests {
             let recent = try makeSessionWithVideo(
                 startDate: Date().addingTimeInterval(-10 * 86_400), name: "最近の会議", videoBytes: 7000)
 
-            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90)
+            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90, target: .audioAndVideo)
             #expect(summary.sessionCount == 1)
             #expect(summary.bytes == 5100)
 
-            let freed = SessionStore.deleteOldRecordings(olderThanDays: 90)
+            let freed = SessionStore.deleteOldRecordings(olderThanDays: 90, target: .audioAndVideo)
             #expect(freed == 5100)
             #expect(old.videoURL == nil)
             #expect(old.audioURL == nil)
@@ -81,9 +83,60 @@ extension SessionPackageTests {
             try Data(repeating: 3, count: 4000)
                 .write(to: dir.appendingPathComponent("\(dir.lastPathComponent).mov"))
 
-            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90)
+            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90, target: .audioAndVideo)
             #expect(summary.sessionCount == 1)
             #expect(summary.bytes == 4000)
+        }
+    }
+
+    @Test func 音声だけの削除は画面録画と文字起こしを残す() throws {
+        try withVideoTemporaryStore { _ in
+            let old = try makeSessionWithVideo(
+                startDate: Date().addingTimeInterval(-100 * 86_400), name: "古い会議", videoBytes: 5000)
+
+            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90, target: .audioOnly)
+            #expect(summary.sessionCount == 1)
+            #expect(summary.bytes == 100)
+
+            try Data(repeating: 4, count: 30).write(to: old.directory.appendingPathComponent(
+                "\(old.directory.lastPathComponent)-相手.m4a"))
+
+            let freed = SessionStore.deleteOldRecordings(olderThanDays: 90, target: .audioOnly)
+            #expect(freed == 130)
+            #expect(old.audioURL == nil)
+            #expect(old.audioOtherURL == nil)
+            #expect(old.videoURL != nil)
+            #expect(old.transcriptURL != nil)
+        }
+    }
+
+    @Test func 録画だけの削除は音声と文字起こしを残す() throws {
+        try withVideoTemporaryStore { _ in
+            let old = try makeSessionWithVideo(
+                startDate: Date().addingTimeInterval(-100 * 86_400), name: "古い会議", videoBytes: 5000)
+
+            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90, target: .videoOnly)
+            #expect(summary.sessionCount == 1)
+            #expect(summary.bytes == 5000)
+
+            let freed = SessionStore.deleteOldRecordings(olderThanDays: 90, target: .videoOnly)
+            #expect(freed == 5000)
+            #expect(old.videoURL == nil)
+            #expect(old.audioURL != nil)
+            #expect(old.transcriptURL != nil)
+        }
+    }
+
+    @Test func 録画の無い古いセッションは録画だけの削除で数えない() throws {
+        try withVideoTemporaryStore { _ in
+            let dir = try SessionStore.createSessionDirectory(
+                startDate: Date().addingTimeInterval(-100 * 86_400), name: "音声のみ")
+            try Data(repeating: 2, count: 100)
+                .write(to: dir.appendingPathComponent("\(dir.lastPathComponent).m4a"))
+
+            let summary = SessionStore.oldRecordingsSummary(olderThanDays: 90, target: .videoOnly)
+            #expect(summary.sessionCount == 0)
+            #expect(summary.bytes == 0)
         }
     }
 

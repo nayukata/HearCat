@@ -713,7 +713,7 @@ struct MainWindow: View {
         var text = ""
         if pastSessions.contains(where: { $0.folder == folder }) {
             text = "「グループだけ削除」なら、中のセッションは消えず未分類へ戻ります。"
-                + "「セッションも削除」を選ぶと、文字起こしと録音も一緒に消えます。元に戻せません。"
+                + "「セッションも削除」を選ぶと、文字起こし・録音・録画も一緒に消えます。元に戻せません。"
         } else if !recording {
             text = "このグループにセッションは入っていません。"
         }
@@ -914,10 +914,10 @@ enum SessionDeletionCopy {
     }
 
     static func confirmButton(count: Int) -> String {
-        count == 1 ? "文字起こしと録音を削除" : "\(count) 件を削除"
+        count == 1 ? "文字起こし・録音・録画を削除" : "\(count) 件を削除"
     }
 
-    static let message = "元に戻せません。文字起こしと録音も一緒に消えます。"
+    static let message = "元に戻せません。文字起こし・録音・録画も一緒に消えます。"
 
     /// 録音・録画だけを消す選択肢。古いセッションで「記録は残してディスクだけ空けたい」
     /// 場面向けに、セッションごと消す操作と同じダイアログに並べる(入口を増やさず、

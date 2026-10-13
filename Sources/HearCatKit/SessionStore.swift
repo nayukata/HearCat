@@ -51,10 +51,6 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
         /// 画面録画か。巨大になるため、受け渡しパッケージには含めない(SessionPackage が除く)。
         public var isVideo: Bool { self == .video }
 
-        /// 容量管理(集計・古いものの削除)で「録音」として一括りにするもの。
-        /// 音声だけ消えて動画だけ残る、またはその逆にならないよう、同じ扱いにする。
-        var isMedia: Bool { isAudio || isVideo }
-
         /// ディレクトリ名に依存しない固定名。旧形式(transcript.md / audio.m4a)の
         /// セッションを読むときの別名であり、受け渡しパッケージ(SessionPackage)の
         /// 中でもこの名前を使う(箱の中の名前がセッション名で揺れないように)。
@@ -381,43 +377,63 @@ public enum SessionStore {
 
     // MARK: - 容量管理
 
-    /// sessions ディレクトリの合計使用量。録音ファイル(.m4a)と画面録画(.mov)をまとめた
-    /// 録音側と、それ以外(文字起こし・要約など)に分けて返す。
+    /// sessions ディレクトリの合計使用量。録音(.m4a)・画面録画(.mov)・それ以外
+    /// (文字起こし・要約など)に分けて返す。
     /// ファイル種別ではなく拡張子で判定するので、SessionInfo.Artifact に無い未知のファイルが
     /// 混じっていてもディスク使用量の実態から漏れない。
     public struct StorageUsage: Sendable, Equatable {
         public let audioBytes: Int64
+        public let videoBytes: Int64
         public let otherBytes: Int64
-        public var totalBytes: Int64 { audioBytes + otherBytes }
+        public var totalBytes: Int64 { audioBytes + videoBytes + otherBytes }
     }
 
     public static func storageUsage() -> StorageUsage {
         var audioBytes: Int64 = 0
+        var videoBytes: Int64 = 0
         var otherBytes: Int64 = 0
         for url in regularFiles(under: sessionsDirectory) {
             let size = fileSize(at: url)
-            if url.pathExtension == "m4a" || url.pathExtension == "mov" {
-                audioBytes += size
-            } else {
-                otherBytes += size
+            switch url.pathExtension {
+            case "m4a": audioBytes += size
+            case "mov": videoBytes += size
+            default: otherBytes += size
             }
         }
-        return StorageUsage(audioBytes: audioBytes, otherBytes: otherBytes)
+        return StorageUsage(audioBytes: audioBytes, videoBytes: videoBytes, otherBytes: otherBytes)
     }
 
-    /// 指定日数より古いセッションのうち、録音ファイル(画面録画を含む)を持つものの件数と合計サイズ。
+    /// 古いものの削除で消す対象。録音だけ消して画面録画を残す(またはその逆の)
+    /// 使い分けがあるため、ユーザーが選ぶ。
+    public enum MediaDeletionTarget: Sendable, CaseIterable {
+        case audioAndVideo
+        case audioOnly
+        case videoOnly
+
+        func includes(_ artifact: SessionInfo.Artifact) -> Bool {
+            switch self {
+            case .audioAndVideo: return artifact.isAudio || artifact.isVideo
+            case .audioOnly: return artifact.isAudio
+            case .videoOnly: return artifact.isVideo
+            }
+        }
+    }
+
+    /// 指定日数より古いセッションのうち、対象のファイルを持つものの件数と合計サイズ。
     /// 実際に削除する前に、確認画面へ見せる用途。
     public struct OldRecordingsSummary: Sendable, Equatable {
         public let sessionCount: Int
         public let bytes: Int64
     }
 
-    public static func oldRecordingsSummary(olderThanDays days: Int) -> OldRecordingsSummary {
+    public static func oldRecordingsSummary(
+        olderThanDays days: Int, target: MediaDeletionTarget
+    ) -> OldRecordingsSummary {
         let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
         var count = 0
         var bytes: Int64 = 0
         for session in list() where session.startDate < cutoff {
-            let sessionBytes = recordingsBytes(of: session)
+            let sessionBytes = mediaBytes(of: session, target: target)
             guard sessionBytes > 0 else { continue }
             count += 1
             bytes += sessionBytes
@@ -425,15 +441,17 @@ public enum SessionStore {
         return OldRecordingsSummary(sessionCount: count, bytes: bytes)
     }
 
-    /// 指定日数より古いセッションの録音ファイル(画面録画を含む)だけを削除する。文字起こし・要約は残す
+    /// 指定日数より古いセッションから、対象のファイルだけを削除する。文字起こし・要約は残す
     /// (容量管理の目的は「聞き直しはもう要らないが記録は残したい」ため)。
     /// 個々のファイル削除が失敗しても他のセッションの削除は続け、実際に空いたバイト数を返す。
     @discardableResult
-    public static func deleteOldRecordings(olderThanDays days: Int) -> Int64 {
+    public static func deleteOldRecordings(
+        olderThanDays days: Int, target: MediaDeletionTarget
+    ) -> Int64 {
         let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
         return list()
             .filter { $0.startDate < cutoff }
-            .reduce(0) { $0 + deleteRecordings(of: $1) }
+            .reduce(0) { $0 + deleteMedia(of: $1, target: target) }
     }
 
     /// 1セッションの録音ファイル(画面録画を含む)だけを削除し、文字起こし・要約は残す。
@@ -441,8 +459,17 @@ public enum SessionStore {
     /// 個々のファイル削除が失敗しても残りは続け、実際に空いたバイト数を返す。
     @discardableResult
     public static func deleteRecordings(of session: SessionInfo) -> Int64 {
+        deleteMedia(of: session, target: .audioAndVideo)
+    }
+
+    /// 1セッションの録音ファイル(画面録画を含む)の合計サイズ。無ければ 0。
+    public static func recordingsBytes(of session: SessionInfo) -> Int64 {
+        mediaBytes(of: session, target: .audioAndVideo)
+    }
+
+    private static func deleteMedia(of session: SessionInfo, target: MediaDeletionTarget) -> Int64 {
         var freed: Int64 = 0
-        for artifact in SessionInfo.Artifact.allCases where artifact.isMedia {
+        for artifact in SessionInfo.Artifact.allCases where target.includes(artifact) {
             guard let url = session.url(of: artifact) else { continue }
             let size = fileSize(at: url)
             guard (try? FileManager.default.removeItem(at: url)) != nil else { continue }
@@ -451,10 +478,9 @@ public enum SessionStore {
         return freed
     }
 
-    /// 1セッションの録音ファイル(画面録画を含む)の合計サイズ。無ければ 0。
-    public static func recordingsBytes(of session: SessionInfo) -> Int64 {
+    private static func mediaBytes(of session: SessionInfo, target: MediaDeletionTarget) -> Int64 {
         SessionInfo.Artifact.allCases
-            .filter(\.isMedia)
+            .filter(target.includes)
             .compactMap(session.url(of:))
             .reduce(0) { $0 + fileSize(at: $1) }
     }
