@@ -20,8 +20,10 @@ final class CodeImpactOverlayController {
     private let panel: NSPanel
     private let motion = FloatingPanelMotion()
     private var positioned = false
+    private let model: AppModel
 
     init(model: AppModel) {
+        self.model = model
         // 閉じるボタンを持たないのは FloatingPanel の方針どおり。このパネルでは特に、
         // Cmd+W や × が NSPanel の close() を直接呼ぶと SwiftUI 側の onExitCommand →
         // dismissCodeImpactOverlay を経由せず、codeImpactTask(claude/codex サブプロセス)が
@@ -29,13 +31,14 @@ final class CodeImpactOverlayController {
         // onExitCommand(Esc)、フッターの ⌘W 相当のショートカットに集約する。
         panel = FloatingPanel.make(
             size: NSSize(width: 600, height: 720),
-            title: "会話について質問",
+            title: "HearCat",
             content: CodeImpactOverlayView(model: model, motion: motion),
             resizable: true)
         motion.attach(to: panel)
     }
 
     func show() {
+        model.codeImpactPanelVisible = true
         var repositioned = false
         if !positioned || !isPanelOnVisibleScreen() {
             positionNearTopRight()
@@ -58,7 +61,8 @@ final class CodeImpactOverlayController {
     }
 
     func close() {
-        motion.close {}
+        // 閉じ終わるまでは出ているものとして扱う(消えるアニメーション中に中身が先に消えないように)。
+        motion.close { [model] in model.codeImpactPanelVisible = false }
     }
 
     /// 現在のパネル位置が、マウスカーソルのある画面(なければメイン画面)の
@@ -124,6 +128,9 @@ private struct CodeImpactOverlayView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 12)
             Rectangle().fill(HCColor.divider).frame(height: 1)
+            CodeImpactTabBar(model: model)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 10)
             searchBar
             // 左右の余白は content 側に一括で付けない。turnsScrollView(ScrollView)を
             // 通る内容はスクロールバーがパネルの右端に付くよう ScrollView 自体を幅いっぱいに
@@ -131,10 +138,23 @@ private struct CodeImpactOverlayView: View {
             // (idle / requiresConsent / failed)と turnsScrollView 内の資料フォルダ導線は、
             // ここで外した分をそれぞれの側で付け直している(macOS の慣習でスクロールバーは
             // ウィンドウ端に付き、余白はスクロール内容側に持たせるのが正しいため)。
-            content
-                .padding(.top, 14)
-                .padding(.bottom, 8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // 3 つのタブは常に組み立てておき、選ばれていないものは隠す。切り替えのたびに作り直すと
+            // 質問タブのスクロール位置や進行中の表示が失われ、時刻チップから文字起こしタブへ
+            // 飛ぶ前にその行が存在しない状態にもなるため。
+            ZStack {
+                PanelTranscriptTab(
+                    model: model,
+                    active: model.codeImpactPanelVisible && model.codeImpactPanelTab == .transcript)
+                    .tabVisibility(model.codeImpactPanelTab == .transcript)
+                content
+                    .padding(.top, 4)
+                    .tabVisibility(model.codeImpactPanelTab == .ask)
+                PanelDecisionsTab(model: model)
+                    .tabVisibility(model.codeImpactPanelTab == .decisions)
+            }
+            .padding(.top, 4)
+            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             Rectangle().fill(HCColor.divider).frame(height: 1)
             VStack(alignment: .leading, spacing: 6) {
                 inputField
@@ -185,11 +205,13 @@ private struct CodeImpactOverlayView: View {
                     .foregroundStyle(HCColor.accentText)
             }
             HStack(spacing: 6) {
-                Text("会話について質問")
+                Text("HearCat")
                     .font(HCFont.style(.subheadline, weight: .semibold))
                     .foregroundStyle(HCColor.textPrimary)
                 targetLabel
             }
+            CodeImpactLiveIndicator(model: model)
+                .padding(.leading, 4)
             Spacer()
             Button {
                 model.showHistory(selecting: historySelectionTarget)
@@ -463,7 +485,15 @@ private struct CodeImpactOverlayView: View {
         guard let ownWindow = panelWindow, eventWindowID == ObjectIdentifier(ownWindow) else {
             return false
         }
+        if flags == .command, let characters = lowercasedCharacters,
+            let number = Int(characters), (1...3).contains(number)
+        {
+            model.codeImpactPanelTab = CodeImpactPanelTab.allCases[number - 1]
+            return true
+        }
         if flags == .command, lowercasedCharacters == "f" {
+            // 検索の対象は質問と回答なので、他のタブにいるときは質問タブへ移ってから開く。
+            model.codeImpactPanelTab = .ask
             openSearch()
             return true
         }
@@ -537,16 +567,19 @@ private struct CodeImpactOverlayView: View {
         if case .completed = model.codeImpactAnalysisState, trimmed.isEmpty,
             let pending = model.codeImpactPendingChoiceAnswer
         {
+            model.codeImpactPanelTab = .ask
             model.requestFollowUpCodeImpact(question: pending)
             return
         }
         switch model.codeImpactAnalysisState {
         case .completed where !trimmed.isEmpty:
+            model.codeImpactPanelTab = .ask
             model.requestFollowUpCodeImpact(question: trimmed)
             input = ""
         case .analyzing:
             break
         default:
+            model.codeImpactPanelTab = .ask
             // 初回調査。空文字と nil は消費側(requestCodeImpactAnalysis)で同じ扱いなので、
             // 空なら nil を渡してデフォルトの調査プロンプトで走らせる。
             model.requestCodeImpactAnalysis(question: trimmed.isEmpty ? nil : trimmed)
@@ -1059,6 +1092,11 @@ private struct CodeImpactOverlayView: View {
             Text("送信")
                 .font(HCFont.caption)
                 .foregroundStyle(HCColor.textDim)
+                .padding(.trailing, 10)
+            keyCap("⌘1〜3")
+            Text("タブ")
+                .font(HCFont.caption)
+                .foregroundStyle(HCColor.textDim)
             Spacer(minLength: 10)
             engineSwitchMenu
         }
@@ -1165,6 +1203,15 @@ private struct CodeImpactOverlayView: View {
         .background(
             HCRadius.shape(HCRadius.keycap)
                 .fill(HCColor.keyCap))
+    }
+}
+
+private extension View {
+    /// 選ばれていないタブを隠す。組み立ては残すので、スクロール位置と進行中の表示が保たれる。
+    func tabVisibility(_ visible: Bool) -> some View {
+        opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
     }
 }
 
@@ -1362,7 +1409,7 @@ private struct MultilineInputField: NSViewRepresentable {
 /// progressRow が使う「調査中」表示。チャットでおなじみの、3 つの点が位相をずらして
 /// 順に明滅するアニメーション(iMessage / ChatGPT の入力中表示のイメージ)。
 /// スピナーより主張が弱く、質問応答パネルのチャット的な見た目に馴染むため採用した。
-/// StreamingText(LiveSessionView.swift)と同じく `.task` ループで自前に時間を進める
+/// StreamingText(TranscriptRowView.swift)と同じく `.task` ループで自前に時間を進める
 /// (SwiftUI 標準の async/await のみで完結させ、外部依存は足さない)。
 private struct ThinkingDots: View {
     /// タイマーで litIndex を切り替える階段駆動(300ms ごとに1つだけ点灯を移す)は、実機で

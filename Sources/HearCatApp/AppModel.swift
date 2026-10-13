@@ -32,6 +32,33 @@ enum CodeImpactAnalysisState {
     case failed(String)
 }
 
+/// 質問パネルのタブ。最後に開いたものを次回も開く(codeImpactPanelTab)。
+enum CodeImpactPanelTab: String, CaseIterable {
+    case transcript
+    case ask
+    case decisions
+}
+
+/// パネル内の「文字起こし」タブへの一方向のジャンプ要求。token は同じ時刻への連続要求も別の要求にする。
+struct CodeImpactPanelReveal: Equatable {
+    let time: String
+    let token = UUID()
+}
+
+/// 「ここまでをまとめる」の状態。ライブ対象でだけ使う。
+enum MeetingBriefState {
+    case idle
+    case needsConsent(AgentCLI)
+    case running(AgentCLI)
+    case failed(String)
+    /// trimmed が非 nil なら、長すぎて前半を落としたうえでまとめたもの(minutes は残した範囲の長さ。不明なら nil)。
+    case done(MeetingBrief, trimmed: MeetingBriefTrim?)
+}
+
+struct MeetingBriefTrim {
+    let minutes: Int?
+}
+
 /// 「関連資料との照合」オーバーレイの Q&A 1 往復分。同じ会議のあいだの履歴として積み上げる
 /// (codeImpactTurns 参照)。question が nil なのは、質問なしのダイジェスト調査。
 struct CodeImpactTurn: Identifiable {
@@ -279,6 +306,36 @@ final class AppModel {
     /// (ChoicesView 参照)。通常オプションを選べば label、「その他」なら入力テキストの
     /// trim、未選択・空・ChoicesView が isInteractive でない間は nil。
     var codeImpactPendingChoiceAnswer: String?
+
+    private static let codeImpactPanelTabKey = "codeImpactPanelTab"
+    /// パネルで開いているタブ。次に開いたときも同じタブから始める。初回は文字起こし。
+    var codeImpactPanelTab: CodeImpactPanelTab = CodeImpactPanelTab(
+        rawValue: UserDefaults.standard.string(forKey: AppModel.codeImpactPanelTabKey) ?? "")
+        ?? .transcript
+    {
+        didSet {
+            UserDefaults.standard.set(
+                codeImpactPanelTab.rawValue, forKey: Self.codeImpactPanelTabKey)
+        }
+    }
+    /// 時刻チップから「文字起こし」タブへのジャンプ要求。タブ側が受け取ったら nil に戻す。
+    var codeImpactPanelReveal: CodeImpactPanelReveal?
+    /// 「決まったこと」タブの「ここまでをまとめる」の状態。ボタンを押したときだけ動かす。
+    private(set) var meetingBriefState: MeetingBriefState = .idle
+    @ObservationIgnored private var meetingBriefTask: Task<Void, Never>?
+    @ObservationIgnored private var meetingBriefRequestID: UUID?
+    /// 結果を作った会議のディレクトリ。別の会議でパネルを開いたとき、前の会議の結果を捨てる判定に使う。
+    @ObservationIgnored private var meetingBriefSessionDirectory: String?
+    /// 「もう一度まとめる」の実行前にあった結果。実行中に中止したらこれに戻す。
+    @ObservationIgnored private var meetingBriefPrevious: MeetingBriefState?
+    /// パネルが画面に出ているか。閉じている間は、見えないタブの描画更新を止めるために使う。
+    var codeImpactPanelVisible = false
+
+    /// 手元のまとめが、いま進行中の会議のものか。会議が終わった後や別の会議では false。
+    var meetingBriefMatchesLiveSession: Bool {
+        status.active && meetingBriefSessionDirectory != nil
+            && meetingBriefSessionDirectory == status.sessionDirectory
+    }
 
     /// 入力レベル(RMS)。メニューバーのパネルにメーターとして出す。
     private(set) var micLevel: Float = 0
@@ -1191,6 +1248,8 @@ final class AppModel {
         // 止めた以上、止めるかどうかの確認は用済み。
         dismissNudge(.silence)
         dismissNudge(.closing)
+        // 止めた会議のまとめは、もうライブのものではない。
+        cancelMeetingBrief(discardResult: true)
         // 停止完了後は status.sessionID が消えるため、遷移先として使えるよう先に控える。
         lastEndedSessionID = status.sessionID
         await engine.stop()
@@ -1493,6 +1552,8 @@ final class AppModel {
         }
         guard effectiveCodeImpactTargetKey != previousKey else { return }
         cancelCodeImpactAnalysis()
+        cancelMeetingBrief(discardResult: true)
+        codeImpactPanelReveal = nil
         codeImpactTurns = []
         codeImpactQuestion = nil
         codeImpactSessionID = nil
@@ -1508,6 +1569,9 @@ final class AppModel {
     /// 対象切り替え直後、いま使える状態かどうかをパネルへ反映する共通処理。
     /// openCodeImpactPanel() と openCodeImpactPanel(for:) の両方から呼ぶ。
     private func presentCodeImpactPanelAfterTargetSwitch() {
+        if meetingBriefSessionDirectory != status.sessionDirectory {
+            cancelMeetingBrief(discardResult: true)
+        }
         // メニューパネルはオーバーレイ(.floating)より上の階層に出るため、開いたままだと
         // 質問パネルに被って「開いたのに前面に出ない」ように見える。showHistory と同じく
         // 先に閉じる(ホットキー経由などで閉じている場合は何もしないので害はない)。
@@ -1637,8 +1701,89 @@ final class AppModel {
         }
     }
 
+    /// パネルを閉じる。裏で走っている質問と「ここまでをまとめる」はここで止める
+    /// (閉じても claude/codex のサブプロセスが走り続けないように)。
     func dismissCodeImpactOverlay() {
+        cancelCodeImpactAnalysis()
+        cancelMeetingBrief()
         codeImpactOverlayController?.close()
+    }
+
+    /// 進行中の会議のここまでを、決まったこと・まだ決まっていないことに分けて AI に抜き出させる。
+    /// ボタンを押したときだけ呼ぶ(定期実行しない)。押し直すと作り直す。
+    func requestMeetingBrief() {
+        guard codeImpactTargetGroup == nil, codeImpactTargetDirectory == nil else { return }
+        if case .running = meetingBriefState { return }
+        let cli = selectedCodeImpactAgent
+        guard settings.codeImpactConsented else {
+            meetingBriefState = .needsConsent(cli)
+            return
+        }
+        startMeetingBrief(using: cli)
+    }
+
+    func confirmMeetingBrief(using cli: AgentCLI) {
+        settings.codeImpactConsented = true
+        startMeetingBrief(using: cli)
+    }
+
+    /// 実行中の抜き出しを止める。できあがった結果は残す(パネルを閉じて開き直しても見られるように)。
+    /// 対象が変わったときだけ discardResult: true で結果ごと捨てる(前の会議の結果を見せないため)。
+    func cancelMeetingBrief(discardResult: Bool = false) {
+        meetingBriefTask?.cancel()
+        meetingBriefTask = nil
+        meetingBriefRequestID = nil
+        if discardResult {
+            meetingBriefState = .idle
+        } else if case .running = meetingBriefState {
+            meetingBriefState = meetingBriefPrevious ?? .idle
+        }
+        meetingBriefPrevious = nil
+    }
+
+    private func startMeetingBrief(using cli: AgentCLI) {
+        let transcript: String
+        do {
+            transcript = try codeImpactContext().transcript
+        } catch {
+            meetingBriefState = .failed(error.localizedDescription)
+            return
+        }
+        let input = MeetingBriefPrompt.trimmedTranscript(
+            transcript, maxCharacters: AgentCodeImpactAnalyzer.maximumTranscriptCharacters)
+        let modelName = settings.codeImpactAgentModel(for: cli)
+        meetingBriefTask?.cancel()
+        let requestID = UUID()
+        meetingBriefRequestID = requestID
+        let keepPrevious = meetingBriefMatchesLiveSession
+        meetingBriefSessionDirectory = status.sessionDirectory
+        if keepPrevious, case .done = meetingBriefState { meetingBriefPrevious = meetingBriefState }
+        meetingBriefState = .running(cli)
+        let wasTrimmed = input.count < transcript.count
+        let trim = wasTrimmed
+            ? MeetingBriefTrim(minutes: MeetingBriefPrompt.coveredMinutes(of: input)) : nil
+        meetingBriefTask = Task { [weak self] in
+            let outcome: MeetingBriefState
+            do {
+                let raw = try await AgentSummarizer.execute(
+                    using: cli, input: input, referenceFolder: nil,
+                    prompt: MeetingBriefPrompt.build(), outputPrefix: "brief",
+                    model: modelName, extraction: AgentSummarizer.extractCodeImpactMarkdown)
+                if let brief = MeetingBriefParser.parse(raw) {
+                    outcome = .done(brief, trimmed: trim)
+                } else {
+                    outcome = .failed("AI の返答を読み取れませんでした。もう一度お試しください")
+                }
+            } catch {
+                outcome = .failed(error.localizedDescription)
+            }
+            // キャンセル後や、押し直しで別の要求に替わった後の結果は捨てる。
+            guard let self, !Task.isCancelled, self.meetingBriefRequestID == requestID else { return }
+            self.meetingBriefState = outcome
+            self.meetingBriefPrevious = nil
+            self.meetingBriefTask = nil
+            self.meetingBriefRequestID = nil
+        }
     }
 
     /// 資料フォルダ未紐付けのまま調べた結果(完了表示の下の導線、または過去の失敗表示)から、
@@ -2689,6 +2834,12 @@ final class AppModel {
     func revealTranscript(atTime time: String) {
         guard codeImpactTargetGroup == nil else { return }
         let normalizedTime = Self.normalizedRevealTime(time)
+        // パネルの「文字起こし」タブに対象の文字起こしがあれば、メインの窓は開かずパネル内で見せる。
+        if codeImpactPanelCanShowTranscript {
+            codeImpactPanelTab = .transcript
+            codeImpactPanelReveal = CodeImpactPanelReveal(time: normalizedTime)
+            return
+        }
         if let targetDirectory = codeImpactTargetDirectory {
             guard let session = sessions.first(where: { $0.directory.path == targetDirectory })
             else { return }
@@ -2702,6 +2853,17 @@ final class AppModel {
             showHistory(selecting: MainWindow.liveID)
             transcriptRevealRequest = TranscriptRevealRequest(sessionID: MainWindow.liveID, time: normalizedTime)
         }
+    }
+
+    /// パネルの「文字起こし」タブが表示できる文字起こしを持っているか。
+    /// ライブは確定した行が 1 つでもあるとき、保存済みセッションは文字起こしファイルがあるとき。
+    /// グループ対象は単一の文字起こしが無いので常に false。
+    var codeImpactPanelCanShowTranscript: Bool {
+        guard codeImpactTargetGroup == nil else { return false }
+        if let targetDirectory = codeImpactTargetDirectory {
+            return sessions.first(where: { $0.directory.path == targetDirectory })?.transcriptURL != nil
+        }
+        return status.active && liveTimeline.rows.contains { !$0.volatile }
     }
 
     /// 決定事項の変遷チップ(GroupDetailView.TopicRow / DecisionHistoryCardsView)から、由来
