@@ -32,7 +32,7 @@ enum CodeImpactAnalysisState {
     case failed(String)
 }
 
-/// 質問パネルのタブ。最後に開いたものを次回も開く(codeImpactPanelTab)。
+/// 質問パネルのタブ。
 enum CodeImpactPanelTab: String, CaseIterable {
     case transcript
     case ask
@@ -310,17 +310,8 @@ final class AppModel {
     /// trim、未選択・空・ChoicesView が isInteractive でない間は nil。
     var codeImpactPendingChoiceAnswer: String?
 
-    private static let codeImpactPanelTabKey = "codeImpactPanelTab"
-    /// パネルで開いているタブ。次に開いたときも同じタブから始める。初回は文字起こし。
-    var codeImpactPanelTab: CodeImpactPanelTab = CodeImpactPanelTab(
-        rawValue: UserDefaults.standard.string(forKey: AppModel.codeImpactPanelTabKey) ?? "")
-        ?? .transcript
-    {
-        didSet {
-            UserDefaults.standard.set(
-                codeImpactPanelTab.rawValue, forKey: Self.codeImpactPanelTabKey)
-        }
-    }
+    /// パネルで開いているタブ。開くたびに質問タブへ戻す(presentCodeImpactPanelAfterTargetSwitch)。
+    var codeImpactPanelTab: CodeImpactPanelTab = .ask
     /// 時刻チップから「文字起こし」タブへのジャンプ要求。タブ側が受け取ったら nil に戻す。
     var codeImpactPanelReveal: CodeImpactPanelReveal?
     /// 「決まったこと」タブの「ここまでをまとめる」の状態。ボタンを押したときだけ動かす。
@@ -1585,6 +1576,8 @@ final class AppModel {
         // 質問パネルに被って「開いたのに前面に出ない」ように見える。showHistory と同じく
         // 先に閉じる(ホットキー経由などで閉じている場合は何もしないので害はない)。
         dismissPanel()
+        // 入口はどれも「質問」と名乗るため、前回どのタブを見ていても質問タブで開く。
+        codeImpactPanelTab = .ask
         showCodeImpactOverlay()
         switch codeImpactAnalysisState {
         case .idle, .failed:
