@@ -97,7 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ここでは取り込まず、中身を確認する画面まで持っていく(他人の会話の録音が入り得るため、
     /// 何が入っているかを見せずに保存先へ書き込むことはしない)。
     func application(_ application: NSApplication, open urls: [URL]) {
-        AppModel.shared.requestImport(of: urls)
+        // Google のログインから戻ってきた URL(アプリ専用のスキーム)は、取り込みではなくログインへ渡す。
+        let (login, others) = (
+            urls.filter { $0.scheme?.lowercased() == GoogleOAuthConfig.redirectScheme },
+            urls.filter { $0.scheme?.lowercased() != GoogleOAuthConfig.redirectScheme }
+        )
+        login.forEach { GoogleLoginRedirectCenter.shared.deliver($0) }
+        if !others.isEmpty { AppModel.shared.requestImport(of: others) }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

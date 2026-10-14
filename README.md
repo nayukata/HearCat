@@ -138,24 +138,16 @@ hearcat write-cleaned [<session>]  # 標準入力の清書を cleaned.md に書�
 
 ## Google Drive への書き出し
 
-要約・文字起こし・録音を、自分の Google Drive へ書き出せる（設定 → Google Drive）。要約と文字起こしは Google ドキュメントに変換され、置き場所はマイドライブの `HearCat/<グループ名>/<セッション名>`。HearCat が作ったファイルにしかアクセスしない（`drive.file` スコープ）。
+要約・文字起こし・録音を、自分の Google Drive へ書き出せる（設定 → Google Drive）。要約と文字起こしは Google ドキュメントに変換され、置き場所はマイドライブの `HearCat（議事録）/<グループ名>/<セッション名>`。HearCat が作ったファイルにしかアクセスしない（`drive.file` スコープ）。
 
-資格情報はリポジトリに入れず、自分の Google Cloud プロジェクトのものを使う。
+利用者は鍵を用意しなくてよい。設定 → Google Drive で「Google にログイン」を押して使う。ただし同意画面を本番に公開するまでは、ログインできるのは開発者がテストユーザーに追加したアカウントだけ。ログインは iOS 用の OAuth クライアント（シークレットなし、PKCE）で行い、ブラウザからはアプリ専用の URL スキーム（`Info.plist` の `CFBundleURLTypes`）で戻る。クライアント ID は公開してよい値なので `GoogleOAuth.swift` に書いてある。
 
-1. Google Cloud コンソールでプロジェクトを作る
-2. 「API とサービス」→「ライブラリ」で Google Drive API を有効にする
-3. 「OAuth 同意画面」を設定する（外部、テストユーザーに自分のアカウントを追加）
-4. 「認証情報」→「OAuth クライアント ID」を、アプリケーションの種類「デスクトップ アプリ」で作る
-5. リポジトリ直下に `.google-oauth.env` を作り、クライアント ID とシークレットを書く（git 管理外）
+開発者が Google Cloud 側で行う設定:
 
-   ```sh
-   GOOGLE_OAUTH_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
-   GOOGLE_OAUTH_CLIENT_SECRET=xxxxxxxx
-   ```
-
-6. `make app`（または `./install.sh`）で組み立て直す。ファイルが無いビルドでは、設定画面に「このバージョンの HearCat では、Google Drive への書き出しを使えません。」と出て機能が無効になる
-
-テストユーザーのままだとリフレッシュトークンは 7 日で失効する。長く使うなら同意画面を「本番」に公開する。
+1. プロジェクトで Google Drive API を有効にする
+2. 「OAuth 同意画面」を設定する。公開前はテストユーザーに使う人のアカウントを追加する（テストのままだとリフレッシュトークンは 7 日で失効する）。誰でも使えるようにするには「本番」に公開する
+3. 「認証情報」で OAuth クライアント ID を、アプリケーションの種類「iOS」、バンドル ID `dev.nayukata.hearcat` で作る
+4. 作ったクライアント ID を `GoogleOAuthConfig.clientID` に、それを逆順にした `com.googleusercontent.apps.<ID の数字部分>` を `GoogleOAuthConfig.redirectScheme` と `Info.plist` の URL スキームに入れる
 
 ## AI で質疑応答する
 

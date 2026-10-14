@@ -26,8 +26,6 @@ app: check-identity build
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp $(BUILD_DIR)/HearCatApp $(APP)/Contents/MacOS/HearCat
 	cp Sources/HearCatApp/Info.plist $(APP)/Contents/Info.plist
-	# Google Drive 連携の資格情報(git 管理外の .google-oauth.env)。無ければ注入せず、アプリ側で連携を無効にする。
-	sh scripts/inject-google-oauth.sh $(APP)/Contents/Info.plist
 	# 設定画面の「agent skill を導入」ボタンが、これらを ~/.agents/skills/ と ~/.local/bin/ へ配置する。
 	# skill は複数あるので Resources 配下にディレクトリごと持つ(バンドルの階層を維持したまま複製する)。
 	mkdir -p $(APP)/Contents/Resources/skills

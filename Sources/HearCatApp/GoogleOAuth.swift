@@ -1,23 +1,15 @@
 import AppKit
 import CryptoKit
 import Foundation
-import Network
 
-/// Google OAuth のクライアント資格情報。ビルド時に Info.plist へ注入される
-/// (Makefile の app ターゲット。値はリポジトリに入れない)。
-struct GoogleOAuthConfig: Equatable, Sendable {
-    let clientID: String
-    let clientSecret: String
-
-    /// 注入されていないビルドでは nil。連携そのものを無効にする判断に使う。
-    static func fromBundle(_ bundle: Bundle = .main) -> GoogleOAuthConfig? {
-        let id = (bundle.object(forInfoDictionaryKey: "HearCatGoogleClientID") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let secret = (bundle.object(forInfoDictionaryKey: "HearCatGoogleClientSecret") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !id.isEmpty, !secret.isEmpty else { return nil }
-        return GoogleOAuthConfig(clientID: id, clientSecret: secret)
-    }
+/// Google OAuth のクライアント設定。iOS 用のクライアントで、シークレットを持たない(PKCE のみ)。
+/// クライアント ID は公開してよい値なので、ソースに置く。
+enum GoogleOAuthConfig {
+    static let clientID = "752021658685-3run7ia49ch7q24vhnmu6p64tppj9kmv.apps.googleusercontent.com"
+    /// ブラウザから戻るときの URL スキームは、クライアント ID を逆順にしたもの(Info.plist の
+    /// CFBundleURLTypes と一致させる)。
+    static let redirectScheme = "com.googleusercontent.apps.752021658685-3run7ia49ch7q24vhnmu6p64tppj9kmv"
+    static let redirectURI = "\(redirectScheme):/oauth2redirect"
 }
 
 /// PKCE(RFC 7636)の組。verifier は 43〜128 文字の unreserved 文字、challenge はその SHA-256 の base64url。
@@ -47,19 +39,20 @@ struct PKCEPair: Equatable, Sendable {
     }
 }
 
-/// ブラウザからループバックへ戻ってきたリダイレクトの読み取り。
+/// ブラウザから戻ってきたリダイレクトの読み取り。
 enum GoogleOAuthRedirect: Equatable {
     case code(String)
     /// ユーザーが同意を拒んだ、などでブラウザ側から返ってきた理由。
     case denied(String)
-    /// 認可コードも error も無い、または state が合わない。別物のリクエストとして無視する。
+    /// 認可コードも error も無い、state が合わない、別の URL。ログインとは無関係なものとして無視する。
     case invalid
 
-    /// HTTP リクエスト行のターゲット("/?code=...&state=...")を読む。
-    static func parse(requestTarget: String, expectedState: String) -> GoogleOAuthRedirect {
-        guard let components = URLComponents(string: "http://127.0.0.1" + requestTarget) else {
-            return .invalid
-        }
+    /// ブラウザから戻ってきた URL を読む。スキームとパスが違う URL、state が合わない URL は .invalid。
+    static func parse(url: URL, expectedState: String) -> GoogleOAuthRedirect {
+        guard url.scheme?.lowercased() == GoogleOAuthConfig.redirectScheme,
+            url.path == "/oauth2redirect",
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return .invalid }
         let items = Dictionary(
             (components.queryItems ?? []).compactMap { item in
                 item.value.map { (item.name, $0) }
@@ -70,15 +63,6 @@ enum GoogleOAuthRedirect: Equatable {
         if let code = items["code"], !code.isEmpty { return .code(code) }
         return .invalid
     }
-
-    /// 生の HTTP リクエスト("GET /path HTTP/1.1\r\n...")から、リクエストターゲットを取り出す。
-    static func requestTarget(fromHTTPRequest text: String) -> String? {
-        guard let line = text.split(separator: "\r\n", maxSplits: 1, omittingEmptySubsequences: false).first
-        else { return nil }
-        let parts = line.split(separator: " ")
-        guard parts.count >= 2, parts[0] == "GET" else { return nil }
-        return String(parts[1])
-    }
 }
 
 enum GoogleOAuthError: LocalizedError {
@@ -86,7 +70,6 @@ enum GoogleOAuthError: LocalizedError {
     case cancelled
     case denied(String)
     case timedOut
-    case listenerFailed(String)
     case tokenExchangeFailed(String)
     /// リフレッシュトークンが取り消された・期限切れ。ログインし直しが必要。
     case reloginRequired
@@ -98,7 +81,6 @@ enum GoogleOAuthError: LocalizedError {
         case .cancelled: "ログインをやめました"
         case .denied(let reason): "Google でログインが許可されませんでした (\(reason))"
         case .timedOut: "ログインが時間内に終わりませんでした。もう一度ログインしてください"
-        case .listenerFailed(let detail): "ログインの準備ができませんでした: \(detail)"
         case .tokenExchangeFailed(let detail): "ログインできませんでした: \(detail)"
         case .reloginRequired: "Google Drive にログインし直してください"
         case .network(let detail): "Google に接続できませんでした: \(detail)"
@@ -127,7 +109,7 @@ struct GoogleTokenResponse: Equatable, Sendable {
 }
 
 struct GoogleURLSessionTokenEndpoint: GoogleTokenEndpoint {
-    let config: GoogleOAuthConfig
+    let clientID: String
     static let tokenURL = URL(string: "https://oauth2.googleapis.com/token")!
     static let revokeURL = URL(string: "https://oauth2.googleapis.com/revoke")!
 
@@ -152,9 +134,7 @@ struct GoogleURLSessionTokenEndpoint: GoogleTokenEndpoint {
     }
 
     private func post(_ fields: [String: String]) async throws -> GoogleTokenResponse {
-        var fields = fields
-        fields["client_id"] = config.clientID
-        fields["client_secret"] = config.clientSecret
+        let fields = Self.requestFields(fields, clientID: clientID)
         var request = URLRequest(url: Self.tokenURL)
         request.httpMethod = "POST"
         request.timeoutInterval = 30
@@ -181,6 +161,13 @@ struct GoogleURLSessionTokenEndpoint: GoogleTokenEndpoint {
             accessToken: access,
             expiresIn: (json?["expires_in"] as? Double) ?? 3600,
             refreshToken: json?["refresh_token"] as? String)
+    }
+
+    /// トークン要求の項目。iOS 用のクライアントはシークレットを持たず、PKCE の verifier だけで本人確認する。
+    static func requestFields(_ base: [String: String], clientID: String) -> [String: String] {
+        var fields = base
+        fields["client_id"] = clientID
+        return fields
     }
 
     static func formBody(_ fields: [String: String]) -> Data {
@@ -254,132 +241,57 @@ actor GoogleAuthSession: GoogleAccessTokenProvider {
         if let token { await endpoint.revoke(token: token) }
     }
 }
+/// ブラウザからアプリ専用の URL スキームで戻ってきた URL を、ログイン中の待ち手へ渡す窓口。
+/// URL は AppDelegate が受け取ってここへ流す。ログイン中でないときに届いた URL は捨てる。
+final class GoogleLoginRedirectCenter: @unchecked Sendable {
+    static let shared = GoogleLoginRedirectCenter()
 
-/// ループバックで認可コードを 1 回だけ受け取る小さな HTTP サーバー。
-final class GoogleLoopbackReceiver: @unchecked Sendable {
-    private let listener: NWListener
-    private let queue = DispatchQueue(label: "dev.nayukata.hearcat.oauth-loopback")
-    private let state: String
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<GoogleOAuthRedirect, Error>?
-    private var finished = false
-    private(set) var port: UInt16 = 0
+    private var waiting: (state: String, continuation: CheckedContinuation<GoogleOAuthRedirect, Error>)?
 
-    init(state: String) throws {
-        self.state = state
-        // 空きポートを OS に選ばせる。127.0.0.1 のみで待つので、同じネットワークの他機器からは届かない。
-        let parameters = NWParameters.tcp
-        parameters.requiredInterfaceType = .loopback
-        listener = try NWListener(using: parameters, on: .any)
-    }
-
-    /// 待ち受けを始め、割り当てられたポートを返す。
-    func start() async throws -> UInt16 {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
-            let resumed = ResumeOnce()
-            listener.stateUpdateHandler = { [weak self] newState in
-                guard let self else { return }
-                switch newState {
-                case .ready:
-                    if let port = self.listener.port?.rawValue, resumed.take() {
-                        self.port = port
-                        cont.resume(returning: port)
-                    }
-                case .failed(let error):
-                    if resumed.take() {
-                        cont.resume(throwing: GoogleOAuthError.listenerFailed(error.localizedDescription))
-                    }
-                default: break
-                }
-            }
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.handle(connection)
-            }
-            listener.start(queue: queue)
-        }
-    }
-
-    /// リダイレクトが来るまで待つ。timeout 秒で諦める。キャンセルにも応じる。
-    func waitForRedirect(timeout: TimeInterval) async throws -> GoogleOAuthRedirect {
+    /// 戻りの URL を受け取るのを待つ。timeout 秒で諦め、Task のキャンセルにも応じる。
+    func wait(state: String, timeout: TimeInterval) async throws -> GoogleOAuthRedirect {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 lock.lock()
-                if finished {
-                    lock.unlock()
-                    cont.resume(throwing: GoogleOAuthError.cancelled)
-                    return
-                }
-                continuation = cont
+                // 前のログインが残っていれば取りやめにして、新しい方を待つ。
+                let previous = waiting
+                waiting = (state, cont)
                 lock.unlock()
-                queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
-                    self?.finish(.failure(GoogleOAuthError.timedOut))
+                previous?.continuation.resume(throwing: GoogleOAuthError.cancelled)
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(timeout))
+                    self?.finish(state: state, with: .failure(GoogleOAuthError.timedOut))
                 }
             }
         } onCancel: {
-            self.finish(.failure(GoogleOAuthError.cancelled))
+            self.finish(state: state, with: .failure(GoogleOAuthError.cancelled))
         }
     }
 
-    func stop() {
-        finish(.failure(GoogleOAuthError.cancelled))
-    }
-
-    private func finish(_ result: Result<GoogleOAuthRedirect, Error>) {
+    /// AppDelegate から届いた URL を渡す。受け付けたら true。
+    /// 待っていないとき、別のスキームのとき、state が合わないときは無視する。
+    @discardableResult
+    func deliver(_ url: URL) -> Bool {
         lock.lock()
-        let cont = continuation
-        continuation = nil
-        let alreadyFinished = finished
-        finished = true
+        let current = waiting
         lock.unlock()
-        listener.cancel()
-        guard !alreadyFinished, let cont else { return }
-        cont.resume(with: result)
+        guard let current else { return false }
+        let redirect = GoogleOAuthRedirect.parse(url: url, expectedState: current.state)
+        guard redirect != .invalid else { return false }
+        return finish(state: current.state, with: .success(redirect))
     }
 
-    private func handle(_ connection: NWConnection) {
-        connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
-            guard let self, let data, let text = String(data: data, encoding: .utf8),
-                let target = GoogleOAuthRedirect.requestTarget(fromHTTPRequest: text)
-            else {
-                connection.cancel()
-                return
-            }
-            let redirect = GoogleOAuthRedirect.parse(requestTarget: target, expectedState: self.state)
-            // favicon など、認可と無関係なリクエストは無視して待ち続ける。
-            guard redirect != .invalid else {
-                Self.respond(connection, body: "このページは閉じて構いません。")
-                return
-            }
-            let body: String
-            if case .code = redirect {
-                body = "HearCat にログインしました。このタブを閉じて、HearCat に戻ってください。"
-            } else {
-                body = "ログインできませんでした。HearCat に戻って、もう一度ログインしてください。"
-            }
-            Self.respond(connection, body: body) { self.finish(.success(redirect)) }
-        }
-    }
-
-    private static func respond(_ connection: NWConnection, body: String, then: (@Sendable () -> Void)? = nil) {
-        let html = "<!doctype html><meta charset=\"utf-8\"><title>HearCat</title><p style=\"font:16px -apple-system;margin:3em\">\(body)</p>"
-        let payload = Data(html.utf8)
-        let header = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n"
-        connection.send(content: Data(header.utf8) + payload, completion: .contentProcessed { _ in
-            connection.cancel()
-            then?()
-        })
-    }
-}
-
-private final class ResumeOnce: @unchecked Sendable {
-    private let lock = NSLock()
-    private var taken = false
-    func take() -> Bool {
+    @discardableResult
+    private func finish(state: String, with result: Result<GoogleOAuthRedirect, Error>) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        if taken { return false }
-        taken = true
+        guard let current = waiting, current.state == state else {
+            lock.unlock()
+            return false
+        }
+        waiting = nil
+        lock.unlock()
+        current.continuation.resume(with: result)
         return true
     }
 }
@@ -389,19 +301,17 @@ struct GoogleLoginFlow {
     static let scope = "https://www.googleapis.com/auth/drive.file"
     static let authURL = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
 
-    let config: GoogleOAuthConfig
     let endpoint: GoogleTokenEndpoint
+    var center: GoogleLoginRedirectCenter = .shared
     var openBrowser: @Sendable (URL) -> Void = { url in
         Task { @MainActor in NSWorkspace.shared.open(url) }
     }
 
-    static func authorizationURL(
-        config: GoogleOAuthConfig, redirectURI: String, state: String, challenge: String
-    ) -> URL {
+    static func authorizationURL(state: String, challenge: String) -> URL {
         var components = URLComponents(url: authURL, resolvingAgainstBaseURL: false)!
         components.queryItems = [
-            URLQueryItem(name: "client_id", value: config.clientID),
-            URLQueryItem(name: "redirect_uri", value: redirectURI),
+            URLQueryItem(name: "client_id", value: GoogleOAuthConfig.clientID),
+            URLQueryItem(name: "redirect_uri", value: GoogleOAuthConfig.redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "scope", value: scope),
             URLQueryItem(name: "state", value: state),
@@ -417,17 +327,13 @@ struct GoogleLoginFlow {
     func run() async throws -> GoogleTokenResponse {
         let pkce = PKCEPair.generate()
         let state = PKCEPair.generate().verifier
-        let receiver = try GoogleLoopbackReceiver(state: state)
-        defer { receiver.stop() }
-        let port = try await receiver.start()
-        let redirectURI = "http://127.0.0.1:\(port)"
-        openBrowser(
-            Self.authorizationURL(
-                config: config, redirectURI: redirectURI, state: state, challenge: pkce.challenge))
-        switch try await receiver.waitForRedirect(timeout: 300) {
+        // 戻りの URL を先に待ち始めてからブラウザを開く(開いた直後に戻っても取りこぼさない)。
+        async let redirect = center.wait(state: state, timeout: 300)
+        openBrowser(Self.authorizationURL(state: state, challenge: pkce.challenge))
+        switch try await redirect {
         case .code(let code):
             let response = try await endpoint.exchange(
-                code: code, verifier: pkce.verifier, redirectURI: redirectURI)
+                code: code, verifier: pkce.verifier, redirectURI: GoogleOAuthConfig.redirectURI)
             guard response.refreshToken != nil else {
                 throw GoogleOAuthError.tokenExchangeFailed("Google からログインの情報を受け取れませんでした")
             }

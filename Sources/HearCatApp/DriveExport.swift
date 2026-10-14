@@ -82,7 +82,7 @@ struct DriveAutoExportTarget: Codable, Equatable, Sendable {
 
 /// Drive 上の置き場所。マイドライブ直下の HearCat/<グループ名>/<セッションのディレクトリ名>。
 enum DrivePaths {
-    static let rootName = "HearCat"
+    static let rootName = "HearCat（議事録）"
     static let unclassifiedName = "未分類"
 
     static func folderPath(group: String?, sessionDirectoryName: String) -> [String] {

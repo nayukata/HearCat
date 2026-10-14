@@ -405,6 +405,8 @@ struct SettingsView: View {
                 }
             }
 
+            // 使えないビルドでは、選んでも効かない欄を並べない。
+            if account.isAvailable {
             Section {
                 Toggle("要約", isOn: $settings.driveContent.summary)
                     .pointingHandOnHover()
@@ -416,10 +418,9 @@ struct SettingsView: View {
                 Text("書き出すもの")
             } footer: {
                 settingsFooter(
-                    "書き出したファイルは、マイドライブの「HearCat」フォルダに、グループごと、会議ごとに分けて置きます。要約と文字起こしは Google ドキュメントとして、録音は音声ファイルのまま置きます。",
+                    "書き出したファイルは、マイドライブの「HearCat（議事録）」フォルダに、グループごと、会議ごとに分けて置きます。要約と文字起こしは Google ドキュメントとして、録音は音声ファイルのまま置きます。",
                     "同じ会議をもう一度書き出すと、Google Drive のファイルは HearCat の内容に置き換わります。Google Drive で書き直した部分は消えます。")
             }
-            .disabled(!account.isAvailable)
 
             Section {
                 Toggle("録音を止めたら自動で書き出す", isOn: $settings.driveAutoExport)
@@ -444,7 +445,8 @@ struct SettingsView: View {
                     "自動で書き出した会議を、ここで選んでいないグループへ移すと、Google Drive のファイルはごみ箱に移ります。",
                     "ここで選んでいないグループの会議も、履歴の画面の「共有」から書き出せます。")
             }
-            .disabled(!account.isAvailable || !account.isSignedIn)
+            .disabled(!account.isSignedIn)
+            }
         }
         .formStyle(.grouped)
     }

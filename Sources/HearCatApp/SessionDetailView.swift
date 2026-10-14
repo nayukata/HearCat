@@ -249,6 +249,9 @@ struct SessionDetailView: View {
                 .controlSize(.small)
             }
             shareButton
+            if model.driveAccount.isSignedIn {
+                driveButton
+            }
             // 埋め込み再生はせず、標準のプレイヤーで開く。動画が無いセッションには出さない。
             if let videoURL {
                 Button {
@@ -1153,7 +1156,25 @@ struct SessionDetailView: View {
         model.settings.driveContent.isEmpty || (summary == nil && transcript == nil && !hasAudio)
     }
 
-    /// 共有メニューの「Google Drive へ書き出す」を押せない状態か。
+    /// ログイン中だけ見出しの並びに出す書き出しボタン。押した場所で進み具合が分かるよう、
+    /// 書き出している間はボタンの中で回す。
+    private var driveButton: some View {
+        Button {
+            exportToDrive()
+        } label: {
+            if driveIsRunning {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("書き出し中")
+                }
+            } else {
+                Label("Google Drive へ書き出す", systemImage: "icloud.and.arrow.up")
+            }
+        }
+        .disabled(driveExportDisabled)
+    }
+
+    /// 「Google Drive へ書き出す」を押せない状態か。
     private var driveExportDisabled: Bool {
         driveIsRunning || driveHasNothingToExport || session.id == model.status.sessionID
     }
@@ -1271,15 +1292,21 @@ struct SessionDetailView: View {
         textOnly.isEnabled = transcript != nil
         menu.addItem(textOnly)
 
-        menu.addItem(.separator())
-
-        // 未ログインでも押せるようにして、押したら設定の Google Drive 欄へ案内する。
-        let drive = summarizeMenuActionHandler.makeItem("Google Drive へ書き出す") {
-            exportToDrive()
+        // 下に続く項目が無いときに、区切り線だけが残らないようにする。
+        if !model.driveAccount.isSignedIn || driveFolderID != nil {
+            menu.addItem(.separator())
         }
-        drive.subtitle = "設定で選んだものを、自分の Google Drive に置く"
-        drive.isEnabled = !driveExportDisabled
-        menu.addItem(drive)
+
+        // ログイン中は見出しの並びにボタンがあるので、ここには未ログインのときだけ出す。
+        // 押したら設定の Google Drive 欄へ案内する。
+        if !model.driveAccount.isSignedIn {
+            let drive = summarizeMenuActionHandler.makeItem("Google Drive へ書き出す") {
+                exportToDrive()
+            }
+            drive.subtitle = "設定で選んだものを、自分の Google Drive に置く"
+            drive.isEnabled = !driveExportDisabled
+            menu.addItem(drive)
+        }
         if let driveFolderID {
             let open = summarizeMenuActionHandler.makeItem("Google Drive で開く") {
                 NSWorkspace.shared.open(DrivePaths.folderURL(id: driveFolderID))

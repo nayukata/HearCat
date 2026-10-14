@@ -61,6 +61,19 @@
             </dict>
         </dict>
     </array>
+    <!-- Google ログインからの戻り先。クライアント ID を逆順にしたスキーム
+         (GoogleOAuthConfig.redirectScheme と一致させる)。 -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>dev.nayukata.hearcat.google-oauth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>com.googleusercontent.apps.752021658685-3run7ia49ch7q24vhnmu6p64tppj9kmv</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

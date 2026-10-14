@@ -185,10 +185,10 @@ struct DriveExportTests {
     @Test func Drive上のパスを組み立てる() {
         #expect(
             DrivePaths.folderPath(group: "案件A", sessionDirectoryName: "2026-01-01_090000 定例")
-                == ["HearCat", "案件A", "2026-01-01_090000 定例"])
+                == ["HearCat（議事録）", "案件A", "2026-01-01_090000 定例"])
         #expect(
             DrivePaths.folderPath(group: nil, sessionDirectoryName: "2026-01-01_090000")
-                == ["HearCat", "未分類", "2026-01-01_090000"])
+                == ["HearCat（議事録）", "未分類", "2026-01-01_090000"])
     }
 
     @Test func 書き出す中身の選択から種類を導く() {
@@ -232,29 +232,81 @@ struct DriveExportTests {
         #expect(PKCEPair.generate().verifier != pair.verifier)
     }
 
-    @Test func リダイレクトURLを読む() {
-        #expect(GoogleOAuthRedirect.parse(requestTarget: "/?state=s1&code=4%2Fabc", expectedState: "s1") == .code("4/abc"))
-        #expect(GoogleOAuthRedirect.parse(requestTarget: "/?state=s1&error=access_denied", expectedState: "s1") == .denied("access_denied"))
-        // state が違えば、別物のリクエストとして無視する。
-        #expect(GoogleOAuthRedirect.parse(requestTarget: "/?state=zzz&code=abc", expectedState: "s1") == .invalid)
-        #expect(GoogleOAuthRedirect.parse(requestTarget: "/favicon.ico", expectedState: "s1") == .invalid)
-        #expect(GoogleOAuthRedirect.parse(requestTarget: "/?state=s1", expectedState: "s1") == .invalid)
-        #expect(GoogleOAuthRedirect.requestTarget(fromHTTPRequest: "GET /?code=x&state=y HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n") == "/?code=x&state=y")
-        #expect(GoogleOAuthRedirect.requestTarget(fromHTTPRequest: "POST / HTTP/1.1\r\n") == nil)
+    private func redirect(_ query: String) -> URL {
+        URL(string: "\(GoogleOAuthConfig.redirectScheme):/oauth2redirect\(query)")!
     }
 
-    @Test func 認可URLはPKCEと最小スコープを含む() {
-        let url = GoogleLoginFlow.authorizationURL(
-            config: GoogleOAuthConfig(clientID: "cid", clientSecret: "sec"),
-            redirectURI: "http://127.0.0.1:5555", state: "st", challenge: "ch")
+    @Test func カスタムスキームのリダイレクトURLを読む() {
+        #expect(GoogleOAuthRedirect.parse(url: redirect("?state=s1&code=4%2Fabc"), expectedState: "s1") == .code("4/abc"))
+        #expect(GoogleOAuthRedirect.parse(url: redirect("?state=s1&error=access_denied"), expectedState: "s1") == .denied("access_denied"))
+        #expect(GoogleOAuthRedirect.parse(url: redirect("?state=s1"), expectedState: "s1") == .invalid)
+    }
+
+    @Test func stateが合わないか別のURLなら無視する() {
+        #expect(GoogleOAuthRedirect.parse(url: redirect("?state=zzz&code=abc"), expectedState: "s1") == .invalid)
+        #expect(GoogleOAuthRedirect.parse(url: redirect("?code=abc"), expectedState: "s1") == .invalid)
+        // 別のスキーム・別のパスは、ログインの戻りとして扱わない。
+        #expect(GoogleOAuthRedirect.parse(url: URL(string: "https://example.com/oauth2redirect?state=s1&code=abc")!, expectedState: "s1") == .invalid)
+        #expect(GoogleOAuthRedirect.parse(url: URL(string: "\(GoogleOAuthConfig.redirectScheme):/other?state=s1&code=abc")!, expectedState: "s1") == .invalid)
+    }
+
+    @Test func リダイレクト窓口はログイン中だけ受け付ける() async throws {
+        let center = GoogleLoginRedirectCenter()
+        // 待っていないときに届いた URL は捨てる。
+        #expect(!center.deliver(redirect("?state=s1&code=abc")))
+
+        let waiting = Task { try await center.wait(state: "s1", timeout: 5) }
+        for _ in 0..<20 { await Task.yield() }
+        // state が違う URL は受け付けず、待ち続ける。
+        #expect(!center.deliver(redirect("?state=other&code=bad")))
+        #expect(center.deliver(redirect("?state=s1&code=good")))
+        #expect(try await waiting.value == .code("good"))
+        // 受け取った後に同じ URL が重ねて届いても無視する。
+        #expect(!center.deliver(redirect("?state=s1&code=good")))
+    }
+
+    @Test func リダイレクト待ちは時間切れとキャンセルで終わる() async throws {
+        let center = GoogleLoginRedirectCenter()
+        await #expect(throws: GoogleOAuthError.self) {
+            _ = try await center.wait(state: "s1", timeout: 0.05)
+        }
+        let waiting = Task { try await center.wait(state: "s2", timeout: 5) }
+        for _ in 0..<20 { await Task.yield() }
+        waiting.cancel()
+        await #expect(throws: GoogleOAuthError.self) { _ = try await waiting.value }
+        #expect(!center.deliver(redirect("?state=s2&code=late")))
+    }
+
+    @Test func 認可URLはPKCEと最小スコープを含みシークレットを含まない() {
+        let url = GoogleLoginFlow.authorizationURL(state: "st", challenge: "ch")
         let items = Dictionary(
             uniqueKeysWithValues: URLComponents(url: url, resolvingAgainstBaseURL: false)!
                 .queryItems!.map { ($0.name, $0.value ?? "") })
         #expect(items["scope"] == "https://www.googleapis.com/auth/drive.file")
         #expect(items["code_challenge"] == "ch")
         #expect(items["code_challenge_method"] == "S256")
-        #expect(items["redirect_uri"] == "http://127.0.0.1:5555")
+        #expect(items["redirect_uri"] == GoogleOAuthConfig.redirectURI)
+        #expect(items["client_id"] == GoogleOAuthConfig.clientID)
         #expect(items["client_secret"] == nil)
+        #expect(GoogleOAuthConfig.redirectScheme == "com.googleusercontent.apps." + GoogleOAuthConfig.clientID.replacingOccurrences(of: ".apps.googleusercontent.com", with: ""))
+    }
+
+    @Test func トークン要求にクライアントシークレットを含めない() {
+        let fields = GoogleURLSessionTokenEndpoint.requestFields(
+            ["grant_type": "refresh_token", "refresh_token": "r"], clientID: "id")
+        #expect(fields["client_id"] == "id")
+        #expect(fields["client_secret"] == nil)
+        #expect(fields.count == 3)
+    }
+
+    @Test func InfoPlistにURLスキームが登録されている() throws {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<3 { url.deleteLastPathComponent() }
+        let plist = try Data(contentsOf: url.appendingPathComponent("Sources/HearCatApp/Info.plist"))
+        let dict = try #require(try PropertyListSerialization.propertyList(from: plist, format: nil) as? [String: Any])
+        let types = try #require(dict["CFBundleURLTypes"] as? [[String: Any]])
+        let schemes = types.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
+        #expect(schemes.contains(GoogleOAuthConfig.redirectScheme))
     }
 
     @Test func 受け渡しパッケージに書き出し記録は含めない() {
@@ -289,7 +341,7 @@ struct DriveExportTests {
         let api = FakeDriveAPI()
         _ = try await DriveExporter(api: api).export(session: session, kinds: [.summary])
         #expect(api.folders.count == 3)
-        #expect(api.folders["root/HearCat"] != nil)
+        #expect(api.folders["root/\(DrivePaths.rootName)"] != nil)
 
         // 記録を消して別セッションとして出しても、HearCat と グループのフォルダは作り直さない。
         try? FileManager.default.removeItem(at: DriveRecordStore.url(in: session.directory))

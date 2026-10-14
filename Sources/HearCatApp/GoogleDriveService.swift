@@ -6,8 +6,8 @@ import Observation
 @MainActor
 @Observable
 final class GoogleDriveAccount {
-    /// このビルドに資格情報が注入されているか。無ければ連携そのものを無効にする。
-    let config: GoogleOAuthConfig?
+    /// クライアント ID が空のビルドでは連携そのものを無効にする(通常は起きない)。
+    let clientID: String
     private(set) var isSignedIn: Bool
     private(set) var email: String?
     private(set) var isSigningIn = false
@@ -20,20 +20,20 @@ final class GoogleDriveAccount {
 
     private static let emailKey = "googleDriveAccountEmail"
 
-    var isAvailable: Bool { config != nil }
+    var isAvailable: Bool { !clientID.isEmpty }
 
-    init(config: GoogleOAuthConfig? = GoogleOAuthConfig.fromBundle(), store: GoogleTokenStore = GoogleKeychainStore()) {
-        self.config = config
+    init(clientID: String = GoogleOAuthConfig.clientID, store: GoogleTokenStore = GoogleKeychainStore()) {
+        self.clientID = clientID
         self.store = store
-        if let config {
-            let endpoint = GoogleURLSessionTokenEndpoint(config: config)
+        if !clientID.isEmpty {
+            let endpoint = GoogleURLSessionTokenEndpoint(clientID: clientID)
             self.endpoint = endpoint
             auth = GoogleAuthSession(endpoint: endpoint, store: store)
         } else {
             endpoint = nil
             auth = nil
         }
-        isSignedIn = config != nil && store.loadRefreshToken() != nil
+        isSignedIn = !clientID.isEmpty && store.loadRefreshToken() != nil
         email = isSignedIn ? UserDefaults.standard.string(forKey: Self.emailKey) : nil
     }
 
@@ -44,7 +44,7 @@ final class GoogleDriveAccount {
     }
 
     func signIn() {
-        guard let config, let endpoint, let auth, !isSigningIn else { return }
+        guard let endpoint, let auth, !isSigningIn else { return }
         isSigningIn = true
         message = nil
         loginTask = Task {
@@ -53,7 +53,7 @@ final class GoogleDriveAccount {
                 loginTask = nil
             }
             do {
-                let response = try await GoogleLoginFlow(config: config, endpoint: endpoint).run()
+                let response = try await GoogleLoginFlow(endpoint: endpoint).run()
                 try await auth.adopt(response)
                 isSignedIn = true
                 email = (try? await GoogleDriveAPI(tokens: auth).accountEmail()).flatMap {
