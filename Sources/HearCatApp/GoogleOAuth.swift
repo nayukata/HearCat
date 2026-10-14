@@ -94,12 +94,12 @@ enum GoogleOAuthError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "このビルドでは Google Drive 連携が使えません"
-        case .cancelled: "ログインを取りやめました"
-        case .denied(let reason): "Google 側でログインが許可されませんでした (\(reason))"
-        case .timedOut: "ログインの完了を待っている間に時間切れになりました。もう一度お試しください"
+        case .notConfigured: "このバージョンの HearCat では、Google Drive への書き出しを使えません。"
+        case .cancelled: "ログインをやめました"
+        case .denied(let reason): "Google でログインが許可されませんでした (\(reason))"
+        case .timedOut: "ログインが時間内に終わりませんでした。もう一度ログインしてください"
         case .listenerFailed(let detail): "ログインの準備ができませんでした: \(detail)"
-        case .tokenExchangeFailed(let detail): "ログインを完了できませんでした: \(detail)"
+        case .tokenExchangeFailed(let detail): "ログインできませんでした: \(detail)"
         case .reloginRequired: "Google Drive にログインし直してください"
         case .network(let detail): "Google に接続できませんでした: \(detail)"
         }
@@ -353,9 +353,9 @@ final class GoogleLoopbackReceiver: @unchecked Sendable {
             }
             let body: String
             if case .code = redirect {
-                body = "HearCat のログインが完了しました。このタブは閉じて構いません。"
+                body = "HearCat にログインしました。このタブを閉じて、HearCat に戻ってください。"
             } else {
-                body = "ログインは完了しませんでした。HearCat に戻ってください。"
+                body = "ログインできませんでした。HearCat に戻って、もう一度ログインしてください。"
             }
             Self.respond(connection, body: body) { self.finish(.success(redirect)) }
         }
@@ -429,13 +429,13 @@ struct GoogleLoginFlow {
             let response = try await endpoint.exchange(
                 code: code, verifier: pkce.verifier, redirectURI: redirectURI)
             guard response.refreshToken != nil else {
-                throw GoogleOAuthError.tokenExchangeFailed("リフレッシュトークンが返りませんでした")
+                throw GoogleOAuthError.tokenExchangeFailed("Google からログインの情報を受け取れませんでした")
             }
             return response
         case .denied(let reason):
             throw GoogleOAuthError.denied(reason)
         case .invalid:
-            throw GoogleOAuthError.tokenExchangeFailed("不正なリダイレクトです")
+            throw GoogleOAuthError.tokenExchangeFailed("Google からの応答が正しくありません")
         }
     }
 }

@@ -226,7 +226,7 @@ final class DriveExportCoordinator {
             return nil
         }
         let slot = Slot(session.id, automatic: automatic)
-        states[slot.id] = .running("順番を待っています")
+        states[slot.id] = .running("ほかの会議の書き出しが終わるのを待っています")
         let previous = tail
         let report: @Sendable (String) -> Void = { [weak self] message in
             Task { @MainActor in
@@ -289,7 +289,7 @@ final class DriveExportCoordinator {
         inFlight[slot.id] = nil
         runningSessions[slot.id] = nil
         if let drive = error as? DriveError, drive == .notSignedIn { onSignedOut?() }
-        states[slot.id] = .failed(error is CancellationError ? "書き出しを中断しました" : error.localizedDescription)
+        states[slot.id] = .failed(error is CancellationError ? "書き出しをやめました" : error.localizedDescription)
         onTransferFinished?(slot.id, kinds, false, slot.automatic)
     }
 }

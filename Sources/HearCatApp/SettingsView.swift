@@ -362,7 +362,7 @@ struct SettingsView: View {
         return Form {
             Section {
                 if !account.isAvailable {
-                    Text("このビルドでは Google Drive 連携が使えません")
+                    Text("このバージョンの HearCat では、Google Drive への書き出しを使えません。")
                         .foregroundStyle(.secondary)
                 } else if account.isSignedIn {
                     LabeledContent("ログイン中") {
@@ -401,9 +401,7 @@ struct SettingsView: View {
                 Text("アカウント")
             } footer: {
                 if account.isAvailable {
-                    settingsFooter("HearCat が作ったファイルとフォルダにだけアクセスします。Drive の他のファイルは読めません。")
-                } else {
-                    settingsFooter("Google の資格情報を入れずにビルドしたため、連携を無効にしています。有効にする手順は README の「Google Drive への書き出し」を参照してください。")
+                    settingsFooter("Google Drive の中で HearCat から見えるのは、HearCat が書き出したファイルだけです。")
                 }
             }
 
@@ -415,12 +413,11 @@ struct SettingsView: View {
                 Toggle("録音", isOn: $settings.driveContent.audio)
                     .pointingHandOnHover()
             } header: {
-                Text("書き出す中身")
+                Text("書き出すもの")
             } footer: {
                 settingsFooter(
-                    "要約と文字起こしは Google ドキュメントに変換して置きます。録音はそのまま置きます (相手側の録音があれば一緒に)。置き場所は、マイドライブの HearCat / グループ名 / セッション名 です。",
-                    "録音と文字起こしを Google のサーバーへ送ります。",
-                    "書き出し直すと、Drive 上で手直ししたドキュメントは HearCat の内容で上書きされます。")
+                    "書き出したファイルは、マイドライブの「HearCat」フォルダに、グループごと、会議ごとに分けて置きます。要約と文字起こしは Google ドキュメントとして、録音は音声ファイルのまま置きます。",
+                    "同じ会議をもう一度書き出すと、Google Drive のファイルは HearCat の内容に置き換わります。Google Drive で書き直した部分は消えます。")
             }
             .disabled(!account.isAvailable)
 
@@ -443,8 +440,9 @@ struct SettingsView: View {
                 Text("自動書き出し")
             } footer: {
                 settingsFooter(
-                    "録音を止めて自動要約が終わってから、上で選んだ中身を書き出します。自動要約をしない録音は、止めてすぐ書き出します。対象外のグループへ移した会議は、自動で書き出したファイルを Drive のごみ箱へ移します。",
-                    "前に書き出した会議で要約を後から作ったときは、要約も書き出します。手動の書き出しは、履歴の画面の「Google Drive へ書き出す」から、グループに関係なく行えます。")
+                    "録音を止めて要約ができたら、書き出します。要約を作らない設定のときと 5 分未満の録音は、止めたらすぐ書き出します。",
+                    "自動で書き出した会議を、ここで選んでいないグループへ移すと、Google Drive のファイルはごみ箱に移ります。",
+                    "ここで選んでいないグループの会議も、履歴の画面の「共有」から書き出せます。")
             }
             .disabled(!account.isAvailable || !account.isSignedIn)
         }

@@ -22,12 +22,12 @@ enum DriveError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .notSignedIn: "Google Drive にログインし直してください"
-        case .notFound: "Drive 上のファイルが見つかりません"
-        case .rateLimited(let detail): "Google Drive の利用制限に達しました: \(detail)"
-        case .http(let status, let message): "Google Drive がエラーを返しました (\(status)): \(message)"
-        case .forbidden(_, let message): "Google Drive がエラーを返しました (403): \(message)"
+        case .notFound: "Google Drive にファイルが見つかりません"
+        case .rateLimited(let detail): "Google Drive の利用回数の上限に達しました。しばらくしてから書き出し直してください (\(detail))"
+        case .http(let status, let message): "Google Drive でエラーが起きました (\(status)): \(message)"
+        case .forbidden(_, let message): "Google Drive でエラーが起きました (403): \(message)"
         case .network(let detail): "Google Drive に接続できませんでした: \(detail)"
-        case .localFile(let detail): "書き出すファイルを読めませんでした: \(detail)"
+        case .localFile(let detail): "書き出すファイルを開けませんでした: \(detail)"
         }
     }
 
@@ -285,7 +285,7 @@ struct GoogleDriveAPI: DriveAPI {
                     extraHeaders: ["X-Upload-Content-Type": mime], retryOnNetworkError: true)
                 guard let location = headers["Location"] ?? headers["location"],
                     let sessionURL = URL(string: location)
-                else { throw DriveError.http(status: 0, message: "アップロード先が返りませんでした") }
+                else { throw DriveError.http(status: 0, message: "Google Drive から送り先を受け取れませんでした") }
                 do {
                     let data = try await uploadFile(upload.fileURL, to: sessionURL, mime: mime)
                     return try Self.fileRef(from: data)
@@ -297,7 +297,7 @@ struct GoogleDriveAPI: DriveAPI {
                         return DriveFileRef(id: found, trashed: false)
                     }
                     restarts += 1
-                    if restarts > 2 { throw DriveError.network("アップロードのセッションが続けて失効しました") }
+                    if restarts > 2 { throw DriveError.network("録音を送れませんでした。もう一度書き出してください") }
                 }
             }
         }
@@ -334,7 +334,7 @@ struct GoogleDriveAPI: DriveAPI {
                     guard next < total else {
                         // 全部届いたのに完了と返らない。照会し直す。
                         stalls += 1
-                        if stalls > 3 { throw DriveError.network("アップロードが完了しませんでした") }
+                        if stalls > 3 { throw DriveError.network("録音を最後まで送れませんでした") }
                         offset = nil
                         continue
                     }
@@ -343,7 +343,7 @@ struct GoogleDriveAPI: DriveAPI {
                         attempt = 0
                     } else {
                         stalls += 1
-                        if stalls > 3 { throw DriveError.network("アップロードが進みません") }
+                        if stalls > 3 { throw DriveError.network("録音の送信が先へ進みません") }
                         try await Task.sleep(for: .seconds(Double(stalls) * 2))
                     }
                     offset = next
@@ -535,7 +535,7 @@ struct GoogleDriveAPI: DriveAPI {
     static func fileRef(from data: Data) throws -> DriveFileRef {
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         guard let id = json?["id"] as? String else {
-            throw DriveError.http(status: 0, message: "応答にファイル ID がありません")
+            throw DriveError.http(status: 0, message: "Google Drive からの応答が正しくありません")
         }
         return DriveFileRef(id: id, trashed: json?["trashed"] as? Bool ?? false)
     }

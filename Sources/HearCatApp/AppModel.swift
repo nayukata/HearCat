@@ -3128,7 +3128,7 @@ final class AppModel {
     }
 
     /// Drive へ書き出し中のセッションは、元のファイルを読んでいる最中なので動かさない。
-    private static let driveBusyMessage = "Google Drive へ書き出し中のため変更できません。終わってからやり直してください"
+    private static let driveBusyMessage = "Google Drive に書き出している間は変更できません。書き出しが終わってからやり直してください"
 
     func delete(_ session: SessionInfo) {
         if driveExports.isRunning(session) {
@@ -3279,7 +3279,7 @@ final class AppModel {
                 if !autoKinds.isEmpty,
                     let message = await driveExports.removeRecorded(session: session, kinds: autoKinds)
                 {
-                    lastError = "Google Drive 上のファイルをごみ箱へ移せませんでした: \(message)"
+                    lastError = "Google Drive のファイルをごみ箱へ移せませんでした: \(message)"
                 }
                 all = recorded.filter { !record.isAutomatic($0) }
                 if all.isEmpty { return }
@@ -3309,7 +3309,7 @@ final class AppModel {
             guard let session = SessionStore.list().first(where: { $0.id == currentID }) else {
                 // 利用者が消したセッションは、見つからなくて当然なので知らせない。
                 if deletedSessionKeys.contains(currentID) { return }
-                lastError = "Google Drive への書き出しを見送りました: 書き出し待ちのセッションが見つかりません"
+                lastError = "Google Drive に書き出せませんでした: 会議が見つかりません"
                 return
             }
             await runDriveAutoExport(session, kinds: settings.driveContent.kinds)
@@ -3331,7 +3331,7 @@ final class AppModel {
                 $0.directory.lastPathComponent == directoryName
             }) else {
                 if deletedSessionKeys.contains(directoryName) { return }
-                lastError = "Google Drive への書き出しを見送りました: 要約を作ったセッションが見つかりません"
+                lastError = "Google Drive に要約を書き出せませんでした: 会議が見つかりません"
                 return
             }
             await runDriveAutoExport(current, kinds: [.summary])
@@ -3356,7 +3356,7 @@ final class AppModel {
     func exportToDrive(_ session: SessionInfo) async {
         // 録音中のセッションは書き込み途中のファイルを抱えているため、止めてから書き出す。
         guard session.id != status.sessionID else {
-            lastError = "録音中のセッションは Google Drive へ書き出せません。止めてからやり直してください"
+            lastError = "録音中の会議は Google Drive に書き出せません。録音を止めてからやり直してください"
             return
         }
         await driveExports.export(session: session, kinds: settings.driveContent.kinds)

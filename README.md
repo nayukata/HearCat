@@ -153,7 +153,7 @@ hearcat write-cleaned [<session>]  # 標準入力の清書を cleaned.md に書�
    GOOGLE_OAUTH_CLIENT_SECRET=xxxxxxxx
    ```
 
-6. `make app`（または `./install.sh`）で組み立て直す。ファイルが無いビルドでは、設定画面に「このビルドでは Google Drive 連携が使えません」と出て機能が無効になる
+6. `make app`（または `./install.sh`）で組み立て直す。ファイルが無いビルドでは、設定画面に「このバージョンの HearCat では、Google Drive への書き出しを使えません。」と出て機能が無効になる
 
 テストユーザーのままだとリフレッシュトークンは 7 日で失効する。長く使うなら同意画面を「本番」に公開する。
 

@@ -24,7 +24,7 @@ enum DriveContentKind: String, Codable, CaseIterable, Sendable {
         case .summary: "要約"
         case .transcript: "文字起こし"
         case .audio: "録音"
-        case .audioOther: "録音(相手側)"
+        case .audioOther: "録音 (相手の声)"
         }
     }
 

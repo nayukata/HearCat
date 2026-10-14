@@ -15,7 +15,7 @@ enum GoogleKeychainError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .saveFailed(let status):
-            "Keychain に保存できませんでした (OSStatus \(status))"
+            "ログインの情報をキーチェーンに保存できませんでした (エラー \(status))"
         }
     }
 }

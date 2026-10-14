@@ -605,7 +605,7 @@ struct SessionDetailView: View {
     private var scrollBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                driveRow
+                driveStatusRow
                 if let message = summaryError ?? autoSummaryFailureMessage {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
@@ -1153,16 +1153,22 @@ struct SessionDetailView: View {
         model.settings.driveContent.isEmpty || (summary == nil && transcript == nil && !hasAudio)
     }
 
-    /// Drive への書き出しの操作と結果。未ログインのときは設定の Google Drive 欄へ誘導する。
-    private var driveRow: some View {
+    /// 共有メニューの「Google Drive へ書き出す」を押せない状態か。
+    private var driveExportDisabled: Bool {
+        driveIsRunning || driveHasNothingToExport || session.id == model.status.sessionID
+    }
+
+    /// Drive への書き出しの進行と結果。操作の入り口は共有メニューにあるため、
+    /// ここは書き出しを始めてから出す。
+    @ViewBuilder
+    private var driveStatusRow: some View {
+        if driveState != nil {
+            driveStatusContent
+        }
+    }
+
+    private var driveStatusContent: some View {
         HStack(spacing: 10) {
-            Button {
-                exportToDrive()
-            } label: {
-                Label("Google Drive へ書き出す", systemImage: "icloud.and.arrow.up")
-            }
-            .buttonStyle(.hcSecondary)
-            .disabled(driveIsRunning || driveHasNothingToExport || session.id == model.status.sessionID)
             switch driveState {
             case .running(let message):
                 ProgressView().controlSize(.small)
@@ -1175,12 +1181,10 @@ struct SessionDetailView: View {
                     .font(HCFont.caption).foregroundStyle(.orange)
                     .textSelection(.enabled)
             case nil:
-                if driveFolderID != nil {
-                    Text("書き出し済み").font(HCFont.caption).foregroundStyle(.secondary)
-                }
+                EmptyView()
             }
             if let driveFolderID, !driveIsRunning {
-                Button("Drive で開く") {
+                Button("Google Drive で開く") {
                     NSWorkspace.shared.open(DrivePaths.folderURL(id: driveFolderID))
                 }
                 .controlSize(.small)
@@ -1192,12 +1196,12 @@ struct SessionDetailView: View {
 
     private func driveSummaryText(_ outcome: DriveExportOutcome) -> String {
         var parts: [String] = []
-        if !outcome.created.isEmpty { parts.append("新規 \(outcome.created.count) 件") }
+        if !outcome.created.isEmpty { parts.append("新しく \(outcome.created.count) 件") }
         if !outcome.updated.isEmpty { parts.append("更新 \(outcome.updated.count) 件") }
         if !outcome.missing.isEmpty {
-            parts.append("\(outcome.missing.map(\.label).joined(separator: "・"))は無いため見送り")
+            parts.append("\(outcome.missing.map(\.label).joined(separator: "・"))は無いので書き出していません")
         }
-        return parts.isEmpty ? "書き出すものがありませんでした" : "Drive に書き出しました (\(parts.joined(separator: "、")))"
+        return parts.isEmpty ? "書き出すものがありませんでした" : "Google Drive に書き出しました (\(parts.joined(separator: "、")))"
     }
 
     private func exportToDrive() {
@@ -1266,6 +1270,23 @@ struct SessionDetailView: View {
         textOnly.subtitle = "録音を含めないぶん軽い。メールにも添付しやすい"
         textOnly.isEnabled = transcript != nil
         menu.addItem(textOnly)
+
+        menu.addItem(.separator())
+
+        // 未ログインでも押せるようにして、押したら設定の Google Drive 欄へ案内する。
+        let drive = summarizeMenuActionHandler.makeItem("Google Drive へ書き出す") {
+            exportToDrive()
+        }
+        drive.subtitle = "設定で選んだものを、自分の Google Drive に置く"
+        drive.isEnabled = !driveExportDisabled
+        menu.addItem(drive)
+        if let driveFolderID {
+            let open = summarizeMenuActionHandler.makeItem("Google Drive で開く") {
+                NSWorkspace.shared.open(DrivePaths.folderURL(id: driveFolderID))
+            }
+            open.isEnabled = !driveIsRunning
+            menu.addItem(open)
+        }
 
         popUpMenu(menu, below: anchor)
     }
