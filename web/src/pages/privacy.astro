@@ -1,0 +1,72 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Footer from "../components/Footer.astro";
+
+const sections = [
+  {
+    h: "Mac の中に残るもの",
+    body: [
+      "HearCat は、録音、文字起こし、要約、決まったことの記録を、使っている Mac の中にだけ保存します。開発者のサーバーには送りません。開発者がこれらを受け取ることはありません。",
+      "文字起こしには、macOS に入っている音声認識を使います。HearCat はカレンダーの予定を Mac の中で読み、会議の名前を付けたり、録音を始めるかを尋ねたりするのに使います。",
+    ],
+  },
+  {
+    h: "外へ送るもの",
+    body: [
+      "HearCat がデータを外へ送るのは、次の場合だけです。送り先は、利用者が選んだ相手です。",
+    ],
+    list: [
+      "要約や質問に Claude Code か Codex を選んだとき: 文字起こしを、利用者自身のアカウントで Anthropic か OpenAI に送ります。Apple Intelligence を選んだときは Mac の中で処理します。",
+      "Google Drive に書き出したとき: 選んだ要約・文字起こし・録音を、利用者自身の Google Drive に置きます。",
+      "アップデートを確認するとき: 新しいバージョンがあるかを GitHub に問い合わせます。このとき会議のデータは送りません。",
+    ],
+  },
+  {
+    h: "Google のデータの扱い",
+    body: [
+      "Google Drive への書き出しでは、HearCat が作ったファイルとフォルダだけを扱える権限 (drive.file) を求めます。Drive にあるほかのファイルは読みません。",
+      "HearCat は、ログインの情報を Mac のキーチェーンに保存します。Google アカウントのメールアドレスは、設定画面にログイン中のアカウントを表示するためだけに使います。ログアウトすると、HearCat はキーチェーンからログインの情報を消し、Google にもログインの許可の取り消しを依頼します。",
+      "HearCat が Google API から受け取った情報の利用と移転は、Google API サービスのユーザーデータに関するポリシー (Google API Services User Data Policy) に従い、限定使用 (Limited Use) の要件を守ります。",
+    ],
+  },
+  {
+    h: "消すとき",
+    body: [
+      "利用者は、Mac の中の記録を HearCat の履歴からいつでも削除できます。Google Drive に書き出したファイルは、Google Drive で削除してください。",
+    ],
+  },
+  {
+    h: "問い合わせ",
+    body: [
+      "このポリシーへの質問は、GitHub の Issues で受け付けます。",
+    ],
+    link: { href: "https://github.com/nayukata/HearCat/issues", label: "github.com/nayukata/HearCat/issues" },
+  },
+];
+---
+<Layout
+  title="プライバシーポリシー｜HearCat"
+  description="HearCat が会議の記録と Google のデータをどこに保存し、何を外へ送るかの説明です。"
+>
+  <main class="bg-cream py-14 md:py-20">
+    <div class="mx-auto max-w-[760px] px-6">
+      <a href="/" class="text-sm text-ink-dim underline underline-offset-4">HearCat のトップへ</a>
+      <h1 class="mt-6 font-head text-[clamp(28px,4.4vw,40px)] leading-[1.4] font-black">プライバシーポリシー</h1>
+      <p class="mt-3 text-sm text-ink-dim">2026 年 10 月 15 日 制定</p>
+      <p class="mt-6 text-[15.5px] leading-relaxed text-pretty">HearCat は、会議の声を文字にして残す Mac 用のアプリです。ここでは、HearCat が扱うデータをどこに置き、何をどこへ送るかを説明します。</p>
+      {sections.map((s) => (
+        <section class="mt-10">
+          <h2 class="font-head text-xl leading-normal font-black">{s.h}</h2>
+          {s.body.map((p) => <p class="mt-3 text-[15.5px] leading-relaxed text-pretty">{p}</p>)}
+          {s.list && (
+            <ul class="mt-3 flex list-disc flex-col gap-2 pl-6 text-[15.5px] leading-relaxed">
+              {s.list.map((t) => <li class="text-pretty">{t}</li>)}
+            </ul>
+          )}
+          {s.link && <p class="mt-3 text-[15.5px]"><a href={s.link.href} class="underline underline-offset-4">{s.link.label}</a></p>}
+        </section>
+      ))}
+    </div>
+  </main>
+  <Footer />
+</Layout>
