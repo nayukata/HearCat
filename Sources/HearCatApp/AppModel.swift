@@ -1246,12 +1246,13 @@ final class AppModel {
         cancelMeetingBrief(discardResult: true)
         // 停止完了後は status.sessionID が消えるため、遷移先として使えるよう先に控える。
         lastEndedSessionID = status.sessionID
+        let startedAt = status.startedAt
         await engine.stop()
         liveTimeline.clearVolatiles()
         micLevel = 0
         systemLevel = 0
         refreshSessions()
-        if let lastEndedSessionID {
+        if let lastEndedSessionID, Self.shouldAutoSummarize(startedAt: startedAt, endedAt: Date()) {
             autoSummarize(sessionID: lastEndedSessionID)
         }
         // 録音中に控えた更新のお知らせを、busy が解けた後に出す。
@@ -2401,6 +2402,16 @@ final class AppModel {
             codeImpactOverlayController = CodeImpactOverlayController(model: self)
         }
         codeImpactOverlayController?.show()
+    }
+
+    /// 自動要約を走らせる録音の最短の長さ。これより短い録音は試し録りや押し間違いが多く、
+    /// 要約しても中身が無いうえ、外部の AI を選んでいれば送信が無駄に増える。
+    nonisolated static let autoSummaryMinimumDuration: TimeInterval = 5 * 60
+
+    /// 録音の長さが分からないときは、従来どおり要約する(黙って要約が消えるほうが困る)。
+    nonisolated static func shouldAutoSummarize(startedAt: Date?, endedAt: Date) -> Bool {
+        guard let startedAt else { return true }
+        return endedAt.timeIntervalSince(startedAt) >= autoSummaryMinimumDuration
     }
 
     /// 停止直後の自動要約。要約済みのセッションには手を出さない。

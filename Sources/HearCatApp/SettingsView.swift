@@ -850,7 +850,7 @@ struct SettingsView: View {
             } header: {
                 Text("自動要約")
             } footer: {
-                settingsFooter("セッション停止直後に自動で走る要約に使います。Apple Intelligence はオンデバイスで完結します。Claude / Codex は文字起こしを外部の AI サービスへ送信するため、初回だけ確認します。空欄なら各 CLI の設定を使います。")
+                settingsFooter("セッション停止直後に自動で走る要約に使います。5 分未満の録音は自動では要約しません。要約が要るときは、履歴の画面で「要約を生成」を押してください。", "Apple Intelligence はオンデバイスで完結します。Claude / Codex は文字起こしを外部の AI サービスへ送信するため、初回だけ確認します。空欄なら各 CLI の設定を使います。")
             }
 
             Section {
