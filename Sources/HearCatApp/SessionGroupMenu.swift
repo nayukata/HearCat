@@ -53,9 +53,12 @@ enum SessionGroupMenuLogic {
     }
 
     /// 予約があるときは行き先を出し、要約のあとに移すことを添える。
-    static func label(for folder: String?, pending: PendingMove? = nil) -> String {
+    static func label(for folder: String?, pending: PendingMove? = nil, waitingForDrive: Bool = false)
+        -> String
+    {
         guard let pending else { return "グループ: \(folder ?? "未分類")" }
-        return "グループ: \(pending.folder ?? "未分類") (要約のあとに移します)"
+        let reason = waitingForDrive ? "書き出し" : "要約"
+        return "グループ: \(pending.folder ?? "未分類") (\(reason)のあとに移します)"
     }
 
     /// 新しいグループ名として使える文字列。空・空白だけは nil(何もしない)。
@@ -127,7 +130,11 @@ struct SessionGroupMenu: View {
                 })
         } label: {
             HStack(spacing: 2) {
-                Text(SessionGroupMenuLogic.label(for: session.folder, pending: pending))
+                Text(
+                    SessionGroupMenuLogic.label(
+                        for: session.folder, pending: pending,
+                        waitingForDrive: !model.isAwaitingSummary(session)
+                            && model.driveExports.isRunning(session)))
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Image(systemName: "chevron.down")

@@ -247,6 +247,30 @@ final class AppSettings {
         }
     }
 
+    /// Google Drive へ書き出す中身(手動・自動の両方)。
+    var driveContent: DriveContentSelection {
+        didSet {
+            if let data = try? JSONEncoder().encode(driveContent) {
+                UserDefaults.standard.set(data, forKey: Self.driveContentKey)
+            }
+        }
+    }
+
+    /// 録音停止後の後処理が終わったら、自動で Drive へ書き出すか。既定はオフ
+    /// (録音と文字起こしが外部へ出るため、ユーザーが自分で入れる形にする)。
+    var driveAutoExport: Bool {
+        didSet { UserDefaults.standard.set(driveAutoExport, forKey: Self.driveAutoExportKey) }
+    }
+
+    /// 自動書き出しの対象グループ。
+    var driveAutoTarget: DriveAutoExportTarget {
+        didSet {
+            if let data = try? JSONEncoder().encode(driveAutoTarget) {
+                UserDefaults.standard.set(data, forKey: Self.driveAutoTargetKey)
+            }
+        }
+    }
+
     @ObservationIgnored var gainsChanged: (() -> Void)?
     @ObservationIgnored var hotkeysChanged: (() -> Void)?
     @ObservationIgnored var micGateChanged: (() -> Void)?
@@ -289,6 +313,9 @@ final class AppSettings {
     private static let excludedMeetingsKey = "excludedMeetings"
     private static let excludedMeetingKeywordsKey = "excludedMeetingKeywords"
     private static let autoUpdateCheckKey = "autoUpdateCheck"
+    private static let driveContentKey = "driveContent"
+    private static let driveAutoExportKey = "driveAutoExport"
+    private static let driveAutoTargetKey = "driveAutoTarget"
 
     private init() {
         let defaults = UserDefaults.standard
@@ -369,6 +396,13 @@ final class AppSettings {
         confirmStopOnClosing = defaults.object(forKey: Self.confirmStopOnClosingKey) as? Bool ?? true
         meetingAutoStart = defaults.object(forKey: Self.meetingAutoStartKey) as? Bool ?? false
         autoUpdateCheck = defaults.object(forKey: Self.autoUpdateCheckKey) as? Bool ?? true
+        driveContent = defaults.data(forKey: Self.driveContentKey)
+            .flatMap { try? JSONDecoder().decode(DriveContentSelection.self, from: $0) }
+            ?? DriveContentSelection()
+        driveAutoExport = defaults.object(forKey: Self.driveAutoExportKey) as? Bool ?? false
+        driveAutoTarget = defaults.data(forKey: Self.driveAutoTargetKey)
+            .flatMap { try? JSONDecoder().decode(DriveAutoExportTarget.self, from: $0) }
+            ?? DriveAutoExportTarget()
         excludedMeetingKeywords = defaults.stringArray(forKey: Self.excludedMeetingKeywordsKey) ?? []
         if let data = defaults.data(forKey: Self.excludedMeetingsKey),
             let decoded = try? JSONDecoder().decode([String: String].self, from: data)

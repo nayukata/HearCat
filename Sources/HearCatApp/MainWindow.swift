@@ -556,6 +556,7 @@ struct MainWindow: View {
                 folderRenameText = folder
                 folderRenameTarget = folder
             }
+            .disabled(model.driveExports.isRunning(inFolder: folder))
             Button("上へ移動") { swapFolderOrder(folder, offset: -1) }
                 .disabled(model.folders.first == folder)
             Button("下へ移動") { swapFolderOrder(folder, offset: 1) }
@@ -581,6 +582,7 @@ struct MainWindow: View {
             Button("グループを削除…", role: .destructive) {
                 folderDeleteTarget = folder
             }
+            .disabled(model.driveExports.isRunning(inFolder: folder))
         }
         .dropDestination(for: String.self) { ids, _ in
             debugLog("dnd " + "drop on=\(folder) ids=\(ids)")
@@ -870,10 +872,13 @@ func sessionContextMenuItems(
     onNewFolder: @escaping (SessionInfo) -> Void,
     onDelete: @escaping ([SessionInfo]) -> Void
 ) -> some View {
+    // 書き出し中のセッションは元のファイルを読んでいる最中なので、改名と削除はできない
+    // (移動は終わってから実行される)。
+    let driveExports = AppModel.shared.driveExports
     Button("名前を変更…") {
         onRename(session)
     }
-    .disabled(bulkTargets != nil)
+    .disabled(bulkTargets != nil || driveExports.isRunning(session))
     Menu("グループへ移動") {
         sessionMoveMenuItems(
             for: session, current: current, folders: folders, onMove: onMove,
@@ -885,10 +890,12 @@ func sessionContextMenuItems(
         Button("\(bulkTargets.count) 件を削除…", role: .destructive) {
             onDelete(bulkTargets)
         }
+        .disabled(bulkTargets.contains { driveExports.isRunning($0) })
     } else {
         Button("削除…", role: .destructive) {
             onDelete([session])
         }
+        .disabled(driveExports.isRunning(session))
     }
 }
 

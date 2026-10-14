@@ -107,6 +107,28 @@ extension SessionPackageTests {
         }
     }
 
+    @Test func 除外指定したセッションの録音は集計にも削除にも入らない() throws {
+        try withTemporaryStorageStore { _ in
+            let busy = try makeStorageSession(
+                startDate: Date().addingTimeInterval(-100 * storageTestDay), name: "書き出し中",
+                audioBytes: 4000)
+            let other = try makeStorageSession(
+                startDate: Date().addingTimeInterval(-101 * storageTestDay), name: "ほか",
+                audioBytes: 1000)
+
+            let summary = SessionStore.oldRecordingsSummary(
+                olderThanDays: 90, target: .audioAndVideo, excluding: [busy.id])
+            #expect(summary.sessionCount == 1)
+            #expect(summary.bytes == 1000)
+
+            let freed = SessionStore.deleteOldRecordings(
+                olderThanDays: 90, target: .audioAndVideo, excluding: [busy.id])
+            #expect(freed == 1000)
+            #expect(busy.audioURL != nil)
+            #expect(other.audioURL == nil)
+        }
+    }
+
     @Test func 古い録音を削除すると文字起こしは残り新しい録音は消えない() throws {
         try withTemporaryStorageStore { _ in
             let old = try makeStorageSession(

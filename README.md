@@ -136,6 +136,27 @@ hearcat write-cleaned [<session>]  # 標準入力の清書を cleaned.md に書�
 - マイクと音声認識の許可ダイアログが出る。許可する。
 - 日本語（ja-JP）の認識モデルが未ダウンロードなら自動で取得する（時間がかかる場合あり）
 
+## Google Drive への書き出し
+
+要約・文字起こし・録音を、自分の Google Drive へ書き出せる（設定 → Google Drive）。要約と文字起こしは Google ドキュメントに変換され、置き場所はマイドライブの `HearCat/<グループ名>/<セッション名>`。HearCat が作ったファイルにしかアクセスしない（`drive.file` スコープ）。
+
+資格情報はリポジトリに入れず、自分の Google Cloud プロジェクトのものを使う。
+
+1. Google Cloud コンソールでプロジェクトを作る
+2. 「API とサービス」→「ライブラリ」で Google Drive API を有効にする
+3. 「OAuth 同意画面」を設定する（外部、テストユーザーに自分のアカウントを追加）
+4. 「認証情報」→「OAuth クライアント ID」を、アプリケーションの種類「デスクトップ アプリ」で作る
+5. リポジトリ直下に `.google-oauth.env` を作り、クライアント ID とシークレットを書く（git 管理外）
+
+   ```sh
+   GOOGLE_OAUTH_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+   GOOGLE_OAUTH_CLIENT_SECRET=xxxxxxxx
+   ```
+
+6. `make app`（または `./install.sh`）で組み立て直す。ファイルが無いビルドでは、設定画面に「このビルドでは Google Drive 連携が使えません」と出て機能が無効になる
+
+テストユーザーのままだとリフレッシュトークンは 7 日で失効する。長く使うなら同意画面を「本番」に公開する。
+
 ## AI で質疑応答する
 
 設定画面の「AI エージェント連携」→「導入する」で、2 種類の skill の実体が共通の置き場（`~/.agents/skills/hearcat/` と `~/.agents/skills/hearcat-clean/`）に置かれ、使用中の各エージェント（`~/.claude` や `~/.codex` など）の skills フォルダには実体へのシンボリックリンクが張られる。CLI は `~/.local/bin/hearcat` へ配置される。Claude Code / Codex / Copilot / Gemini / Cursor など agent skill 対応の AI アシスタントが、`hearcat` CLI でセッションを制御し、`hearcat read` で得た文字起こしを読んで質疑応答できるようになる。

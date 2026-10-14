@@ -13,3 +13,6 @@ web/dist/
 
 # Firebase CLI のローカルログ
 firebase-debug.log
+
+# Google Drive 連携の OAuth クライアント資格情報(make app が Info.plist へ注入する)
+.google-oauth.env

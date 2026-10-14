@@ -13,6 +13,14 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
     /// 所属するプロジェクトフォルダ。未分類なら nil。
     public let folder: String?
 
+    public init(id: String, directory: URL, startDate: Date, name: String, folder: String?) {
+        self.id = id
+        self.directory = directory
+        self.startDate = startDate
+        self.name = name
+        self.folder = folder
+    }
+
     /// セッションディレクトリに置く成果物の名前。ここが「どのファイルがどう名付けられるか」の
     /// 正本で、保存・リネーム・受け渡し(SessionPackage)はすべてこれを通す
     /// (規則が散ると、成果物を1つ増やしたときに一部の経路だけ取り残される)。
@@ -24,6 +32,9 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
         case summary
         case summaryEngine
         case cleaned
+        /// Google Drive への書き出し記録(中身の種類ごとの Drive 上のファイル ID)。
+        /// この Mac と Drive の対応でしかないため、受け渡しパッケージには含めない。
+        case driveRecord
 
         /// そのセッションディレクトリでのファイル名。文字起こしと録音はディレクトリ名と
         /// 同じ基底名を持つ(Finder で1ファイルだけ取り出しても、どの会議か分かるように)。
@@ -36,6 +47,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
             case .summary: return "summary.md"
             case .summaryEngine: return "summary.engine"
             case .cleaned: return "cleaned.md"
+            case .driveRecord: return "drive.json"
             }
         }
 
@@ -44,9 +56,12 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
         public var isAudio: Bool {
             switch self {
             case .audio, .audioOther: return true
-            case .transcript, .video, .summary, .summaryEngine, .cleaned: return false
+            case .transcript, .video, .summary, .summaryEngine, .cleaned, .driveRecord: return false
             }
         }
+
+        /// この Mac の中だけで意味を持つ記録か。受け渡しパッケージ(SessionPackage)は除く。
+        public var isLocalOnly: Bool { self == .driveRecord }
 
         /// 画面録画か。巨大になるため、受け渡しパッケージには含めない(SessionPackage が除く)。
         public var isVideo: Bool { self == .video }
@@ -60,7 +75,7 @@ public struct SessionInfo: Identifiable, Sendable, Equatable {
             case .audio: return "audio.m4a"
             case .audioOther: return "audio-other.m4a"
             case .video: return "video.mov"
-            case .summary, .summaryEngine, .cleaned:
+            case .summary, .summaryEngine, .cleaned, .driveRecord:
                 // ディレクトリ名を使わない成果物は、保存時の名前がそのまま固定名。
                 return fileName(inDirectoryNamed: "")
             }
@@ -426,13 +441,14 @@ public enum SessionStore {
         public let bytes: Int64
     }
 
+    /// excluding は対象から外すセッション ID(外部へ書き出し中のものなど、いま消すと困るもの)。
     public static func oldRecordingsSummary(
-        olderThanDays days: Int, target: MediaDeletionTarget
+        olderThanDays days: Int, target: MediaDeletionTarget, excluding: Set<String> = []
     ) -> OldRecordingsSummary {
         let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
         var count = 0
         var bytes: Int64 = 0
-        for session in list() where session.startDate < cutoff {
+        for session in list() where session.startDate < cutoff && !excluding.contains(session.id) {
             let sessionBytes = mediaBytes(of: session, target: target)
             guard sessionBytes > 0 else { continue }
             count += 1
@@ -446,11 +462,11 @@ public enum SessionStore {
     /// 個々のファイル削除が失敗しても他のセッションの削除は続け、実際に空いたバイト数を返す。
     @discardableResult
     public static func deleteOldRecordings(
-        olderThanDays days: Int, target: MediaDeletionTarget
+        olderThanDays days: Int, target: MediaDeletionTarget, excluding: Set<String> = []
     ) -> Int64 {
         let cutoff = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
         return list()
-            .filter { $0.startDate < cutoff }
+            .filter { $0.startDate < cutoff && !excluding.contains($0.id) }
             .reduce(0) { $0 + deleteMedia(of: $1, target: target) }
     }
 

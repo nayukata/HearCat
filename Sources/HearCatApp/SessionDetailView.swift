@@ -58,6 +58,8 @@ struct SessionDetailView: View {
     @State private var exporting = false
     /// 共有(画像コピー・書き出し)の結果。成功は一定時間で消え、失敗は理由を残す。
     @State private var shareNotice: ShareNotice?
+    /// Drive に書き出し済みのフォルダ。記録(drive.json)から読み、書き出しが終わるたびに更新する。
+    @State private var driveFolderID: String?
     /// 録音があるか。session.audioURL は実体の存在確認を伴うため、body の評価のたびに
     /// ディスクを見にいかないよう、読み込み時に控えた値を使う。
     @State private var hasAudio = false
@@ -186,6 +188,12 @@ struct SessionDetailView: View {
         // 停止直後に詳細へ遷移した場合、最後の発話の確定はまだファイルに
         // 書かれていないことがある。refreshSessions のたびに読み直して追従する。
         .onChange(of: model.sessionsVersion) { load(forceNewPlayer: false) }
+        .onChange(of: model.driveExports.state(for: session)) {
+            // 成功でも失敗でも、作れたフォルダがあれば開けるようにする。
+            if let folderID = DriveRecordStore.load(in: session.directory).folderID {
+                driveFolderID = folderID
+            }
+        }
         .onChange(of: selectedLineIDs.isEmpty) { updateLineSelectionMonitor() }
         .onChange(of: searchQuery) { updateSearchMatches() }
         // ライブ中に文字起こしが追記された場合、新しい行も検索対象に含める。
@@ -262,6 +270,8 @@ struct SessionDetailView: View {
             } label: {
                 Label("削除", systemImage: "trash")
             }
+            // 書き出し中は元のファイルを読んでいる最中なので消せない。
+            .disabled(model.driveExports.isRunning(session))
             .confirmationDialog(
                 SessionDeletionCopy.title(count: 1), isPresented: $confirmingDelete,
                 titleVisibility: .visible
@@ -595,6 +605,7 @@ struct SessionDetailView: View {
     private var scrollBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                driveRow
                 if let message = summaryError ?? autoSummaryFailureMessage {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
@@ -897,6 +908,7 @@ struct SessionDetailView: View {
         displayedSessionID = session.id
         summaryError = nil
         shareNotice = nil
+        driveFolderID = DriveRecordStore.load(in: session.directory).folderID
         currentLineID = nil
         followsPlayback = true
         confirmingDelete = false
@@ -1128,6 +1140,73 @@ struct SessionDetailView: View {
         }
 
         popUpMenu(menu, below: anchor)
+    }
+
+    // MARK: - Google Drive
+
+    private var driveState: DriveExportState? { model.driveExports.state(for: session) }
+
+    private var driveIsRunning: Bool { model.driveExports.isActive(session) }
+
+    /// 書き出すものが何も無い(中身の選択が空、または実体が無い)。
+    private var driveHasNothingToExport: Bool {
+        model.settings.driveContent.isEmpty || (summary == nil && transcript == nil && !hasAudio)
+    }
+
+    /// Drive への書き出しの操作と結果。未ログインのときは設定の Google Drive 欄へ誘導する。
+    private var driveRow: some View {
+        HStack(spacing: 10) {
+            Button {
+                exportToDrive()
+            } label: {
+                Label("Google Drive へ書き出す", systemImage: "icloud.and.arrow.up")
+            }
+            .buttonStyle(.hcSecondary)
+            .disabled(driveIsRunning || driveHasNothingToExport || session.id == model.status.sessionID)
+            switch driveState {
+            case .running(let message):
+                ProgressView().controlSize(.small)
+                Text(message).font(HCFont.caption).foregroundStyle(.secondary)
+            case .finished(let outcome):
+                Label(driveSummaryText(outcome), systemImage: "checkmark.circle")
+                    .font(HCFont.caption).foregroundStyle(.secondary)
+            case .failed(let message):
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(HCFont.caption).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            case nil:
+                if driveFolderID != nil {
+                    Text("書き出し済み").font(HCFont.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let driveFolderID, !driveIsRunning {
+                Button("Drive で開く") {
+                    NSWorkspace.shared.open(DrivePaths.folderURL(id: driveFolderID))
+                }
+                .controlSize(.small)
+                .pointingHandOnHover()
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func driveSummaryText(_ outcome: DriveExportOutcome) -> String {
+        var parts: [String] = []
+        if !outcome.created.isEmpty { parts.append("新規 \(outcome.created.count) 件") }
+        if !outcome.updated.isEmpty { parts.append("更新 \(outcome.updated.count) 件") }
+        if !outcome.missing.isEmpty {
+            parts.append("\(outcome.missing.map(\.label).joined(separator: "・"))は無いため見送り")
+        }
+        return parts.isEmpty ? "書き出すものがありませんでした" : "Drive に書き出しました (\(parts.joined(separator: "、")))"
+    }
+
+    private func exportToDrive() {
+        guard model.driveAccount.isAvailable, model.driveAccount.isSignedIn else {
+            model.showSettings(page: .drive)
+            return
+        }
+        let target = session
+        Task { await model.exportToDrive(target) }
     }
 
     // MARK: - 共有

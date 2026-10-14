@@ -122,6 +122,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     case audio
     case ai
     case hotkey
+    case drive
     case update
 
     var id: String { rawValue }
@@ -135,6 +136,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .audio: "音声"
         case .ai: "AI"
         case .hotkey: "ホットキー"
+        case .drive: "Google Drive"
         case .update: "アップデート"
         }
     }
@@ -146,6 +148,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .audio: "mic"
         case .ai: "sparkles"
         case .hotkey: "keyboard"
+        case .drive: "externaldrive"
         case .update: "arrow.down.circle"
         }
     }
@@ -215,6 +218,7 @@ struct SettingsView: View {
             case .audio: audioTab
             case .ai: aiTab
             case .hotkey: hotkeyTab
+            case .drive: driveTab
             case .update: updateTab
             }
         }
@@ -350,6 +354,113 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear { refreshStorageUsage() }
+    }
+
+    /// Google Drive への書き出しの設定。ログイン・書き出す中身・自動書き出しの対象。
+    private var driveTab: some View {
+        let account = model.driveAccount
+        return Form {
+            Section {
+                if !account.isAvailable {
+                    Text("このビルドでは Google Drive 連携が使えません")
+                        .foregroundStyle(.secondary)
+                } else if account.isSignedIn {
+                    LabeledContent("ログイン中") {
+                        HStack(spacing: 8) {
+                            Text(account.email ?? "Google アカウント")
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            Button("ログアウト") { account.signOut() }
+                                .controlSize(.small)
+                                .pointingHandOnHover()
+                        }
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        if account.isSigningIn {
+                            ProgressView().controlSize(.small)
+                            Text("ブラウザでログインしてください")
+                                .font(HCFont.caption)
+                                .foregroundStyle(.secondary)
+                            Button("キャンセル") { account.cancelSignIn() }
+                                .controlSize(.small)
+                                .pointingHandOnHover()
+                        } else {
+                            Button("Google にログイン") { account.signIn() }
+                                .controlSize(.small)
+                                .pointingHandOnHover()
+                        }
+                    }
+                }
+                if let message = account.message {
+                    Text(message)
+                        .font(HCFont.caption)
+                        .foregroundStyle(.orange)
+                }
+            } header: {
+                Text("アカウント")
+            } footer: {
+                if account.isAvailable {
+                    settingsFooter("HearCat が作ったファイルとフォルダにだけアクセスします。Drive の他のファイルは読めません。")
+                } else {
+                    settingsFooter("Google の資格情報を入れずにビルドしたため、連携を無効にしています。有効にする手順は README の「Google Drive への書き出し」を参照してください。")
+                }
+            }
+
+            Section {
+                Toggle("要約", isOn: $settings.driveContent.summary)
+                    .pointingHandOnHover()
+                Toggle("文字起こし", isOn: $settings.driveContent.transcript)
+                    .pointingHandOnHover()
+                Toggle("録音", isOn: $settings.driveContent.audio)
+                    .pointingHandOnHover()
+            } header: {
+                Text("書き出す中身")
+            } footer: {
+                settingsFooter(
+                    "要約と文字起こしは Google ドキュメントに変換して置きます。録音はそのまま置きます (相手側の録音があれば一緒に)。置き場所は、マイドライブの HearCat / グループ名 / セッション名 です。",
+                    "録音と文字起こしを Google のサーバーへ送ります。",
+                    "書き出し直すと、Drive 上で手直ししたドキュメントは HearCat の内容で上書きされます。")
+            }
+            .disabled(!account.isAvailable)
+
+            Section {
+                Toggle("録音を止めたら自動で書き出す", isOn: $settings.driveAutoExport)
+                    .pointingHandOnHover()
+                if settings.driveAutoExport {
+                    Toggle("すべてのグループ", isOn: $settings.driveAutoTarget.allGroups)
+                        .pointingHandOnHover()
+                    if !settings.driveAutoTarget.allGroups {
+                        Toggle("未分類", isOn: $settings.driveAutoTarget.includesUnclassified)
+                            .pointingHandOnHover()
+                        ForEach(model.folders, id: \.self) { folder in
+                            Toggle(folder, isOn: driveAutoGroupBinding(folder))
+                                .pointingHandOnHover()
+                        }
+                    }
+                }
+            } header: {
+                Text("自動書き出し")
+            } footer: {
+                settingsFooter(
+                    "録音を止めて自動要約が終わってから、上で選んだ中身を書き出します。自動要約をしない録音は、止めてすぐ書き出します。対象外のグループへ移した会議は、自動で書き出したファイルを Drive のごみ箱へ移します。",
+                    "前に書き出した会議で要約を後から作ったときは、要約も書き出します。手動の書き出しは、履歴の画面の「Google Drive へ書き出す」から、グループに関係なく行えます。")
+            }
+            .disabled(!account.isAvailable || !account.isSignedIn)
+        }
+        .formStyle(.grouped)
+    }
+
+    private func driveAutoGroupBinding(_ folder: String) -> Binding<Bool> {
+        Binding(
+            get: { settings.driveAutoTarget.groups.contains(folder) },
+            set: { on in
+                if on {
+                    settings.driveAutoTarget.groups.insert(folder)
+                } else {
+                    settings.driveAutoTarget.groups.remove(folder)
+                }
+            })
     }
 
     /// 手元のバージョン・更新の実行・最近何が変わったかをまとめるページ。
@@ -751,9 +862,10 @@ struct SettingsView: View {
         olderThanDays days: Int, target: SessionStore.MediaDeletionTarget
     ) {
         deleteOldRecordingsMessage = nil
+        let busy = model.driveBusySessionIDs
         Task {
             let summary = await Task.detached(priority: .userInitiated) {
-                SessionStore.oldRecordingsSummary(olderThanDays: days, target: target)
+                SessionStore.oldRecordingsSummary(olderThanDays: days, target: target, excluding: busy)
             }.value
             guard summary.sessionCount > 0 else {
                 deleteOldRecordingsMessage = "\(days) 日より前の\(target.noun)はありませんでした"
@@ -785,11 +897,13 @@ struct SettingsView: View {
         guard let days = pendingDeleteOldRecordingsDays else { return }
         let target = pendingDeleteOldRecordingsTarget
         clearPendingDeleteOldRecordings()
+        // 確認を待つ間に書き出しが始まったセッションは、いまの時点で改めて外す。
+        let busy = model.driveBusySessionIDs
         // 削除は保存先を全部走査して数十 MB のファイルを消す。メインスレッドで回すと
         // その間ずっと設定ウィンドウが固まるため、対象件数の集計と同じく裏へ逃がす。
         Task {
             let freed = await Task.detached(priority: .userInitiated) {
-                SessionStore.deleteOldRecordings(olderThanDays: days, target: target)
+                SessionStore.deleteOldRecordings(olderThanDays: days, target: target, excluding: busy)
             }.value
             deleteOldRecordingsMessage = "\(formattedBytes(freed)) の空き容量を確保しました"
             refreshStorageUsage()

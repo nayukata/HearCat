@@ -205,6 +205,9 @@ final class AppModel {
 
     let engine = SessionEngine()
     let settings = AppSettings.shared
+    /// Google Drive のログイン状態と、書き出しの実行係。
+    let driveAccount = GoogleDriveAccount()
+    let driveExports: DriveExportCoordinator
     private var ipcServer: IPCServer?
 
     private(set) var status = SessionEngine.Status()
@@ -490,6 +493,17 @@ final class AppModel {
     }
 
     private init() {
+        let account = driveAccount
+        driveExports = DriveExportCoordinator(
+            lookup: { id in SessionStore.list().first { $0.id == id } },
+            makeExporter: {
+                account.isSignedIn ? account.makeAPI().map { DriveExporter(api: $0) } : nil
+            })
+        driveExports.onSignedOut = { [weak account] in account?.noteSignedOut() }
+        driveExports.onTransferFinished = { [weak self] id, kinds, completed, automatic in
+            self?.driveTransferFinished(
+                sessionID: id, kinds: kinds, completed: completed, automatic: automatic)
+        }
         engine.onStatusChange = { [weak self] status in
             guard let self else { return }
             self.status = status
@@ -1252,8 +1266,12 @@ final class AppModel {
         micLevel = 0
         systemLevel = 0
         refreshSessions()
-        if let lastEndedSessionID, Self.shouldAutoSummarize(startedAt: startedAt, endedAt: Date()) {
-            autoSummarize(sessionID: lastEndedSessionID)
+        if let lastEndedSessionID {
+            if Self.shouldAutoSummarize(startedAt: startedAt, endedAt: Date()) {
+                autoSummarize(sessionID: lastEndedSessionID)
+            } else {
+                scheduleDriveAutoExport(sessionID: lastEndedSessionID, settle: true)
+            }
         }
         // 録音中に控えた更新のお知らせを、busy が解けた後に出す。
         if deferredUpdateLatest != nil {
@@ -1312,6 +1330,7 @@ final class AppModel {
         // 握りつぶす(チップが出ないだけで実害はない)。
         try? SessionStore.writeSummaryEngine(.appleIntelligence, for: session)
         refreshSessions()
+        scheduleDriveSummaryExport(for: session)
         return result
     }
 
@@ -1355,6 +1374,7 @@ final class AppModel {
         }
 
         refreshSessions()
+        scheduleDriveSummaryExport(for: session)
         return summaryBody
     }
 
@@ -2420,14 +2440,19 @@ final class AppModel {
     /// 握りつぶしていたため、CLI のログイン切れのような直せる失敗でも
     /// 「要約が生成されない」ことしか分からなかった。
     private func autoSummarize(sessionID: String) {
-        guard let engine = settings.autoSummaryEngine else { return }
+        guard let engine = settings.autoSummaryEngine else {
+            scheduleDriveAutoExport(sessionID: sessionID, settle: true)
+            return
+        }
         pendingAutoSummarySessionIDs.insert(sessionID)
         Task {
             // 題名付けの rename で ID が変わるため、予約の実行はその後の ID で行う。
             var currentID = sessionID
             defer {
                 pendingAutoSummarySessionIDs.remove(sessionID)
-                flushPendingMove(sessionID: currentID)
+                // 要約・題名付けの改名・予約していた移動がすべて済んだ後の ID で書き出す。
+                let finalID = flushPendingMove(sessionID: currentID)
+                scheduleDriveAutoExport(sessionID: finalID, settle: false)
             }
             // 最後の発話の確定は、停止よりファイル書き込みがわずかに遅れることがある。
             try? await Task.sleep(for: .seconds(2))
@@ -2463,11 +2488,14 @@ final class AppModel {
                 // カレンダー予定にも紐づかず手動でも変えていない(=名称未設定)セッションだけ、
                 // 要約から題名を付ける。既に名前が付いていれば触らないため、要約の再生成では
                 // 前回付けた題名(手動改名も含む)がそのまま保持される。
-                if session.name.isEmpty, let title = deriveSessionTitle(fromSummary: summaryText),
-                    let renamedID = rename(session, to: title)
-                {
-                    // rename は ID を変える。直前のセッションの追従は rename 側で済んでいる。
-                    currentID = renamedID
+                if session.name.isEmpty, let title = deriveSessionTitle(fromSummary: summaryText) {
+                    if driveExports.isRunning(session) {
+                        // 書き出し中は改名できない。終わってからやり直す。
+                        pendingDriveRenames[session.id] = title
+                    } else if let renamedID = rename(session, to: title) {
+                        // rename は ID を変える。直前のセッションの追従は rename 側で済んでいる。
+                        currentID = renamedID
+                    }
                 }
             } catch {
                 autoSummaryFailure = AutoSummaryFailure(
@@ -3099,9 +3127,17 @@ final class AppModel {
         sessionsVersion += 1
     }
 
+    /// Drive へ書き出し中のセッションは、元のファイルを読んでいる最中なので動かさない。
+    private static let driveBusyMessage = "Google Drive へ書き出し中のため変更できません。終わってからやり直してください"
+
     func delete(_ session: SessionInfo) {
+        if driveExports.isRunning(session) {
+            lastError = Self.driveBusyMessage
+            return
+        }
         do {
             try SessionStore.delete(session)
+            markDeleted(session)
         } catch {
             lastError = error.localizedDescription
         }
@@ -3112,6 +3148,10 @@ final class AppModel {
     /// 録音中のセッションは書き込み先を失うため対象から外す。
     func deleteRecordings(of sessions: [SessionInfo]) {
         for session in sessions where session.id != status.sessionID {
+            if driveBusySessionIDs.contains(session.id) {
+                lastError = Self.driveBusyMessage
+                continue
+            }
             SessionStore.deleteRecordings(of: session)
         }
         refreshSessions()
@@ -3150,7 +3190,7 @@ final class AppModel {
     /// 要約の作成中は実際には動かさず、行き先を予約して nil を返す(要約は移動前のパスへ
     /// 書くため、動かすと要約が失われる)。予約は要約が終わった時に実行される。
     func move(_ session: SessionInfo, toFolder folder: String?) -> String? {
-        if isAwaitingSummary(session) {
+        if isAwaitingSummary(session) || driveExports.isRunning(session) {
             reserveMove(session, toFolder: folder)
             return nil
         }
@@ -3172,19 +3212,165 @@ final class AppModel {
     }
 
     /// 要約が終わった(または途中で抜けた)セッションの予約を実行する。まだ要約中なら何もしない。
-    private func flushPendingMove(sessionID: String) {
-        guard let pending = pendingMoves[sessionID] else { return }
-        guard !(summarizingSessionID == sessionID || pendingAutoSummarySessionIDs.contains(sessionID))
-        else { return }
+    /// 移動後の ID(動かさなかった・失敗した場合は引数のまま)を返す。
+    @discardableResult
+    private func flushPendingMove(sessionID: String) -> String {
+        guard let pending = pendingMoves[sessionID] else { return sessionID }
+        guard !(summarizingSessionID == sessionID || pendingAutoSummarySessionIDs.contains(sessionID)
+            || driveExports.runningSessions[sessionID] != nil)
+        else { return sessionID }
         pendingMoves[sessionID] = nil
-        guard let session = SessionStore.list().first(where: { $0.id == sessionID }) else { return }
-        _ = move(session, toFolder: pending.folder)
+        guard let session = SessionStore.list().first(where: { $0.id == sessionID }) else {
+            return sessionID
+        }
+        return move(session, toFolder: pending.folder) ?? sessionID
+    }
+
+    // MARK: - Google Drive への書き出し
+
+    /// 書き出し中で見送った題名付け。セッション ID が鍵、値は付けたい名前。
+    @ObservationIgnored private var pendingDriveRenames: [String: String] = [:]
+    /// 利用者が削除したセッションの ID とディレクトリ名。書き出し待ちが空振りしても知らせないために控える。
+    @ObservationIgnored private var deletedSessionKeys: Set<String> = []
+
+    private func markDeleted(_ session: SessionInfo) {
+        deletedSessionKeys.insert(session.id)
+        deletedSessionKeys.insert(session.directory.lastPathComponent)
+    }
+
+    /// 書き出しの予定がある(順番待ち・停止後の待ちを含む)セッション ID。
+    /// 古い録音の一括削除などが、書き出す前のファイルを消さないために使う。
+    var driveBusySessionIDs: Set<String> {
+        driveExports.activeSessionIDs.union(pendingDriveAutoExports.values)
+    }
+
+    /// 転送が終わったら、待たせていた題名付けと移動を実行する。
+    /// 名前や場所が変わったなら、同じ中身でもう一度書き出して Drive 側も新しい場所へ移す。
+    /// 自動で始まった転送で、移動先が自動書き出しの対象外グループなら、再書き出しはせず
+    /// Drive 上のファイルをごみ箱へ移す(対象外のグループ名のフォルダを Drive に作らないため)。
+    /// 再書き出しの対象は、記録に残る全種類と今回の種類の和。
+    private func driveTransferFinished(
+        sessionID: String, kinds: [DriveContentKind], completed: Bool, automatic: Bool
+    ) {
+        var currentID = sessionID
+        var changed = false
+        if let title = pendingDriveRenames.removeValue(forKey: currentID),
+            let session = SessionStore.list().first(where: { $0.id == currentID }),
+            session.name.isEmpty, let renamedID = rename(session, to: title)
+        {
+            currentID = renamedID
+            changed = true
+        }
+        let flushedID = flushPendingMove(sessionID: currentID)
+        if flushedID != currentID {
+            currentID = flushedID
+            changed = true
+        }
+        guard changed, completed, !kinds.isEmpty else { return }
+        let finalID = currentID
+        Task {
+            guard let session = SessionStore.list().first(where: { $0.id == finalID }) else { return }
+            let record = DriveRecordStore.load(in: session.directory)
+            let recorded = record.recordedKinds
+            var all = DriveContentKind.allCases.filter { kinds.contains($0) || recorded.contains($0) }
+            if !settings.driveAutoTarget.includes(folder: session.folder) {
+                // 自動で書いた種類だけを片付ける。手動で書いた種類は、移動先へ書き出し直す。
+                let autoKinds = recorded.filter(record.isAutomatic)
+                if !autoKinds.isEmpty,
+                    let message = await driveExports.removeRecorded(session: session, kinds: autoKinds)
+                {
+                    lastError = "Google Drive 上のファイルをごみ箱へ移せませんでした: \(message)"
+                }
+                all = recorded.filter { !record.isAutomatic($0) }
+                if all.isEmpty { return }
+            }
+            if let outcome = await driveExports.export(session: session, kinds: all),
+                let message = outcome.failureMessage
+            {
+                lastError = "Google Drive への書き出しに失敗しました: \(message)"
+            }
+        }
+    }
+
+    /// 自動書き出し待ちのセッション。題名付けや移動で ID が変わっても追従できるよう、
+    /// 待っている間の「今の ID」を noteSessionIDChange で更新する。
+    @ObservationIgnored private var pendingDriveAutoExports: [UUID: String] = [:]
+
+    /// 自動書き出し。設定がオフ・未ログイン・対象外のグループなら何もしない。
+    /// settle は、録音の最後の書き込みが落ち着くまで少し待つかどうか
+    /// (自動要約を通る経路は、その中で既に待っている)。
+    private func scheduleDriveAutoExport(sessionID: String, settle: Bool) {
+        guard settings.driveAutoExport, driveAccount.isSignedIn else { return }
+        let token = UUID()
+        pendingDriveAutoExports[token] = sessionID
+        Task {
+            if settle { try? await Task.sleep(for: .seconds(2)) }
+            let currentID = pendingDriveAutoExports.removeValue(forKey: token) ?? sessionID
+            guard let session = SessionStore.list().first(where: { $0.id == currentID }) else {
+                // 利用者が消したセッションは、見つからなくて当然なので知らせない。
+                if deletedSessionKeys.contains(currentID) { return }
+                lastError = "Google Drive への書き出しを見送りました: 書き出し待ちのセッションが見つかりません"
+                return
+            }
+            await runDriveAutoExport(session, kinds: settings.driveContent.kinds)
+        }
+    }
+
+    /// 要約が後から手動で作られたとき、すでに Drive へ書き出したことのあるセッションなら要約だけ書き出す。
+    /// 自動要約の経路は、停止後の後処理が済んだ時点でまとめて書き出すのでここでは扱わない。
+    private func scheduleDriveSummaryExport(for session: SessionInfo) {
+        guard settings.driveAutoExport, driveAccount.isSignedIn, settings.driveContent.summary,
+            !pendingAutoSummarySessionIDs.contains(session.id),
+            !DriveRecordStore.load(in: session.directory).files.isEmpty
+        else { return }
+        let directoryName = session.directory.lastPathComponent
+        Task {
+            // 要約の完了で実行される移動の予約を待ってから、その時点の所属で判定する。
+            try? await Task.sleep(for: .seconds(1))
+            guard let current = SessionStore.list().first(where: {
+                $0.directory.lastPathComponent == directoryName
+            }) else {
+                if deletedSessionKeys.contains(directoryName) { return }
+                lastError = "Google Drive への書き出しを見送りました: 要約を作ったセッションが見つかりません"
+                return
+            }
+            await runDriveAutoExport(current, kinds: [.summary])
+        }
+    }
+
+    private func runDriveAutoExport(_ session: SessionInfo, kinds: [DriveContentKind]) async {
+        guard !kinds.isEmpty, settings.driveAutoTarget.includes(folder: session.folder) else { return }
+        guard let outcome = await driveExports.export(session: session, kinds: kinds, automatic: true) else {
+            // 待っている間に改名・移動で ID が変わっていても、今の状態を引く。
+            if case .failed(let message) = driveExports.state(forID: session.id) {
+                lastError = "Google Drive への書き出しに失敗しました: \(message)"
+            }
+            return
+        }
+        if let message = outcome.failureMessage {
+            lastError = "Google Drive への書き出しに失敗しました: \(message)"
+        }
+    }
+
+    /// 詳細画面からの手動書き出し。グループに関係なく、設定で選んだ中身を書き出す。
+    func exportToDrive(_ session: SessionInfo) async {
+        // 録音中のセッションは書き込み途中のファイルを抱えているため、止めてから書き出す。
+        guard session.id != status.sessionID else {
+            lastError = "録音中のセッションは Google Drive へ書き出せません。止めてからやり直してください"
+            return
+        }
+        await driveExports.export(session: session, kinds: settings.driveContent.kinds)
     }
 
     /// セッション ID が変わったことを画面側へ流す。直前のセッションの追従と予約の付け替えもここで行う。
     private func noteSessionIDChange(from oldID: String, to newID: String) {
         guard oldID != newID else { return }
         if lastEndedSessionID == oldID { lastEndedSessionID = newID }
+        for (token, id) in pendingDriveAutoExports where id == oldID {
+            pendingDriveAutoExports[token] = newID
+        }
+        if let title = pendingDriveRenames.removeValue(forKey: oldID) { pendingDriveRenames[newID] = title }
+        driveExports.retarget(from: oldID, to: newID)
         if let pending = pendingMoves.removeValue(forKey: oldID) { pendingMoves[newID] = pending }
         sessionIDChangeSerial += 1
         lastSessionIDChange = SessionIDChange.next(
@@ -3219,6 +3405,7 @@ final class AppModel {
         if let path = settings.referenceFolders.removeValue(forKey: folder), let newName {
             settings.referenceFolders[newName] = path
         }
+        settings.driveAutoTarget.retarget(from: folder, to: newName)
         if plannedFolder == folder {
             plannedFolder = newName
         }
@@ -3246,6 +3433,10 @@ final class AppModel {
     /// フォルダ名を変更し、新しい名前を返す。失敗時は nil。
     /// 古い名前を覚えている設定も一緒に追従させる(残すと宙に浮くため)。
     func renameFolder(_ folder: String, to newName: String) -> String? {
+        guard !driveExports.isRunning(inFolder: folder) else {
+            lastError = Self.driveBusyMessage
+            return nil
+        }
         defer { refreshSessions() }
         do {
             let renamed = try SessionStore.renameFolder(folder, to: newName)
@@ -3263,6 +3454,10 @@ final class AppModel {
     /// そのフォルダを指していた設定は未分類(nil)へ戻す。
     @discardableResult
     func deleteFolder(_ folder: String, deletingSessions: Bool = false) -> Bool {
+        guard !driveExports.isRunning(inFolder: folder) else {
+            lastError = Self.driveBusyMessage
+            return false
+        }
         defer { refreshSessions() }
         let doomed: Set<String> = deletingSessions
             ? Set(
@@ -3270,8 +3465,10 @@ final class AppModel {
                     .filter { $0.folder == folder && $0.id != status.sessionID }
                     .map { $0.directory.lastPathComponent })
             : []
+        let doomedSessions = sessions.filter { doomed.contains($0.directory.lastPathComponent) && $0.folder == folder }
         do {
             try SessionStore.deleteFolder(folder, deletingSessionDirectories: doomed)
+            doomedSessions.forEach(markDeleted)
             retargetFolderReferences(from: folder, to: nil)
             return true
         } catch {
@@ -3414,6 +3611,10 @@ final class AppModel {
         // 「進行中」判定が素通りしてリネーム/移動が走ってしまう不具合があった。
         guard session.id != status.sessionID else {
             lastError = "進行中のセッションは変更できません"
+            return nil
+        }
+        guard !driveExports.isRunning(session) else {
+            lastError = Self.driveBusyMessage
             return nil
         }
         defer { refreshSessions() }
