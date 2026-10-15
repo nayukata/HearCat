@@ -60,6 +60,9 @@ struct SessionDetailView: View {
     @State private var shareNotice: ShareNotice?
     /// Drive に書き出し済みのフォルダ。記録(drive.json)から読み、書き出しが終わるたびに更新する。
     @State private var driveFolderID: String?
+    /// 書き出し済みで中身も置き場所も前回と同じか。文書のハッシュを描画のたびに計算しないよう、
+    /// 画面を開いたとき・書き出しの後・セッションや設定が変わったときだけ計算し直す。
+    @State private var driveUpToDate = false
     /// 録音があるか。session.audioURL は実体の存在確認を伴うため、body の評価のたびに
     /// ディスクを見にいかないよう、読み込み時に控えた値を使う。
     @State private var hasAudio = false
@@ -187,8 +190,13 @@ struct SessionDetailView: View {
         }
         // 停止直後に詳細へ遷移した場合、最後の発話の確定はまだファイルに
         // 書かれていないことがある。refreshSessions のたびに読み直して追従する。
-        .onChange(of: model.sessionsVersion) { load(forceNewPlayer: false) }
+        .onChange(of: model.sessionsVersion) {
+            load(forceNewPlayer: false)
+            refreshDriveUpToDate()
+        }
+        .onChange(of: model.settings.driveContent) { refreshDriveUpToDate() }
         .onChange(of: model.driveExports.state(for: session)) {
+            refreshDriveUpToDate()
             // 成功でも失敗でも、作れたフォルダがあれば開けるようにする。
             if let folderID = DriveRecordStore.load(in: session.directory).folderID {
                 driveFolderID = folderID
@@ -912,6 +920,8 @@ struct SessionDetailView: View {
         summaryError = nil
         shareNotice = nil
         driveFolderID = DriveRecordStore.load(in: session.directory).folderID
+        driveUpToDate = false
+        refreshDriveUpToDate()
         currentLineID = nil
         followsPlayback = true
         confirmingDelete = false
@@ -1156,22 +1166,44 @@ struct SessionDetailView: View {
         model.settings.driveContent.isEmpty || (summary == nil && transcript == nil && !hasAudio)
     }
 
-    /// ログイン中だけ見出しの並びに出す書き出しボタン。押した場所で進み具合が分かるよう、
-    /// 書き出している間はボタンの中で回す。
-    private var driveButton: some View {
-        Button {
-            exportToDrive()
-        } label: {
-            if driveIsRunning {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("書き出し中")
-                }
-            } else {
-                Label("Google Drive へ書き出す", systemImage: "icloud.and.arrow.up")
-            }
+    private func refreshDriveUpToDate() {
+        let target = session
+        let kinds = model.settings.driveContent.kinds
+        Task {
+            let upToDate = await Task.detached(priority: .utility) {
+                DriveExportedCheck.isUpToDate(
+                    record: DriveRecordStore.load(in: target.directory), kinds: kinds, session: target)
+            }.value
+            guard session.id == target.id else { return }
+            driveUpToDate = upToDate
         }
-        .disabled(driveExportDisabled)
+    }
+
+    /// ログイン中だけ見出しの並びに出す書き出しボタン。書き出し済みで変わりが無ければ、開くボタンになる。押した場所で進み具合が分かるよう、
+    /// 書き出している間はボタンの中で回す。
+    @ViewBuilder
+    private var driveButton: some View {
+        if driveUpToDate, !driveIsRunning, let driveFolderID {
+            Button {
+                NSWorkspace.shared.open(DrivePaths.folderURL(id: driveFolderID))
+            } label: {
+                Label("Google Drive で開く", systemImage: "arrow.up.forward.app")
+            }
+        } else {
+            Button {
+                exportToDrive()
+            } label: {
+                if driveIsRunning {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("書き出し中")
+                    }
+                } else {
+                    Label("Google Drive へ書き出す", systemImage: "icloud.and.arrow.up")
+                }
+            }
+            .disabled(driveExportDisabled)
+        }
     }
 
     /// 「Google Drive へ書き出す」を押せない状態か。
@@ -1293,7 +1325,8 @@ struct SessionDetailView: View {
         menu.addItem(textOnly)
 
         // 下に続く項目が無いときに、区切り線だけが残らないようにする。
-        if !model.driveAccount.isSignedIn || driveFolderID != nil {
+        let canReexport = model.driveAccount.isSignedIn && driveUpToDate
+        if !model.driveAccount.isSignedIn || driveFolderID != nil || canReexport {
             menu.addItem(.separator())
         }
 
@@ -1306,6 +1339,14 @@ struct SessionDetailView: View {
             drive.subtitle = "設定で選んだものを、自分の Google Drive に置く"
             drive.isEnabled = !driveExportDisabled
             menu.addItem(drive)
+        }
+        if canReexport {
+            let again = summarizeMenuActionHandler.makeItem("Google Drive へ書き出し直す") {
+                exportToDrive()
+            }
+            again.subtitle = "設定で選んだものを、もう一度 Google Drive に置く"
+            again.isEnabled = !driveExportDisabled
+            menu.addItem(again)
         }
         if let driveFolderID {
             let open = summarizeMenuActionHandler.makeItem("Google Drive で開く") {

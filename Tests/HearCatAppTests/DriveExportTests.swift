@@ -107,6 +107,8 @@ final class FakeDriveAPI: DriveAPI, @unchecked Sendable {
     private(set) var bodyUpdatedIDs: [String] = []
     /// 本文なしで親だけ付け替えた ID。
     private(set) var moveOnlyIDs: [String] = []
+    /// 本文も親も触らず、名前だけ直した ID。
+    private(set) var renameOnlyIDs: [String] = []
     private(set) var trashedIDs: [String] = []
     /// true なら親の付け替えが権限で断られる(元の親のまま)。
     var moveForbidden = false
@@ -123,10 +125,21 @@ final class FakeDriveAPI: DriveAPI, @unchecked Sendable {
             let oldParent = files[fileID]?.parent
             let needsMove = oldParent != parentID
             let moved = needsMove && !moveForbidden
-            if contentChanged { bodyUpdatedIDs.append(fileID) } else if needsMove { moveOnlyIDs.append(fileID) }
+            if contentChanged {
+                bodyUpdatedIDs.append(fileID)
+            } else if needsMove {
+                moveOnlyIDs.append(fileID)
+            } else if files[fileID]?.name != upload.name {
+                renameOnlyIDs.append(fileID)
+            }
             files[fileID] = (upload.name, moved ? parentID : (oldParent ?? parentID))
             return DriveFileRef(id: fileID, trashed: false, moveFailed: needsMove && moveForbidden)
         }
+    }
+
+    /// Drive 上で名前を変えられた状態にする。
+    func rename(_ id: String, to name: String) {
+        lock.withLock { files[id]?.name = name }
     }
 
     func trash(fileID: String) async throws {
@@ -138,7 +151,18 @@ final class FakeDriveAPI: DriveAPI, @unchecked Sendable {
 }
 
 struct DriveExportTests {
-    private func makeSession(folder: String? = "案件A") throws -> (SessionInfo, URL) {
+    /// 偽のセッション(2026-01-01 00:00 UTC、名前「定例」)の書き出し名。日付はローカル時刻。
+    private static func localDay(_ date: Date, _ format: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter.string(from: date)
+    }
+    private static let sessionStart = Date(timeIntervalSince1970: 1_767_225_600)
+    private static var summaryName: String { "\(localDay(sessionStart, "yyyy-MM-dd")) 定例 要約" }
+    private static var transcriptName: String { "\(localDay(sessionStart, "yyyy-MM-dd")) 定例 文字起こし" }
+
+    private func makeSession(folder: String? = "案件A", name: String = "定例") throws -> (SessionInfo, URL) {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("HearCatDrive-\(UUID().uuidString)", isDirectory: true)
         let dirName = "2026-01-01_090000 定例"
@@ -150,7 +174,7 @@ struct DriveExportTests {
         try Data(repeating: 1, count: 8).write(to: dir.appendingPathComponent("\(dirName).m4a"))
         let session = SessionInfo(
             id: dirName, directory: dir, startDate: Date(timeIntervalSince1970: 1_767_225_600),
-            name: "定例", folder: folder)
+            name: name, folder: folder)
         return (session, temp)
     }
 
@@ -325,7 +349,7 @@ struct DriveExportTests {
         let first = try await exporter.export(session: session, kinds: [.summary, .transcript])
         #expect(first.created == [.summary, .transcript])
         #expect(first.updated.isEmpty)
-        #expect(api.createdUploads == ["要約", "文字起こし"])
+        #expect(api.createdUploads == [Self.summaryName, Self.transcriptName])
 
         let second = try await exporter.export(session: session, kinds: [.summary, .transcript])
         #expect(second.created.isEmpty)
@@ -333,6 +357,167 @@ struct DriveExportTests {
         // 新規作成は増えていない。
         #expect(api.createdUploads.count == 2)
         #expect(api.updatedIDs.count == 2)
+    }
+
+    @Test func ドキュメント名は日付とセッション名を前に付ける() throws {
+        let (session, temp) = try makeSession()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let day = Self.localDay(Self.sessionStart, "yyyy-MM-dd")
+        #expect(DriveContentKind.summary.driveName(fileName: "a.md", session: session) == "\(day) 定例 要約")
+        #expect(DriveContentKind.transcript.driveName(fileName: "b.md", session: session) == "\(day) 定例 文字起こし")
+        #expect(DriveContentKind.audio.driveName(fileName: "c.m4a", session: session) == "c.m4a")
+    }
+
+    @Test func セッション名が空なら日付のあとに開始時刻を入れる() throws {
+        let (session, temp) = try makeSession(name: "")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let stamp = "\(Self.localDay(Self.sessionStart, "yyyy-MM-dd")) \(Self.localDay(Self.sessionStart, "HH:mm"))"
+        #expect(DriveContentKind.summary.driveName(fileName: "", session: session) == "\(stamp) 要約")
+        #expect(DriveContentKind.transcript.driveName(fileName: "", session: session) == "\(stamp) 文字起こし")
+    }
+
+    @Test func 古い名前のファイルは更新時に新しい名前になる() async throws {
+        let (session, temp) = try makeSession()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let api = FakeDriveAPI()
+        let exporter = DriveExporter(api: api)
+        _ = try await exporter.export(session: session, kinds: [.summary])
+        let record = DriveRecordStore.load(in: session.directory)
+        let id = try #require(record.fileID(for: .summary))
+        api.rename(id, to: "要約")
+
+        // 本文が同じでも、名前だけ直す。
+        let outcome = try await exporter.export(session: session, kinds: [.summary])
+        #expect(outcome.updated == [.summary])
+        #expect(api.files[id]?.name == Self.summaryName)
+        #expect(api.renameOnlyIDs == [id])
+        #expect(api.bodyUpdatedIDs.isEmpty)
+        #expect(api.createdUploads.count == 1)
+
+        // 名前が合っていれば何も送らない。
+        _ = try await exporter.export(session: session, kinds: [.summary])
+        #expect(api.renameOnlyIDs == [id])
+    }
+
+    @Test func セッションの改名にも名前が追従する() async throws {
+        let (session, temp) = try makeSession()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let api = FakeDriveAPI()
+        let exporter = DriveExporter(api: api)
+        _ = try await exporter.export(session: session, kinds: [.transcript])
+        let id = try #require(DriveRecordStore.load(in: session.directory).fileID(for: .transcript))
+        let renamed = SessionInfo(
+            id: session.id, directory: session.directory, startDate: session.startDate,
+            name: "朝会", folder: session.folder)
+        _ = try await exporter.export(session: renamed, kinds: [.transcript])
+        #expect(api.files[id]?.name == "\(Self.localDay(Self.sessionStart, "yyyy-MM-dd")) 朝会 文字起こし")
+        #expect(api.createdUploads.count == 1)
+    }
+
+    @Test func 記録が無くても古い名前の同名ファイルを再利用して名前を直す() async throws {
+        let (session, temp) = try makeSession()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let api = FakeDriveAPI()
+        let exporter = DriveExporter(api: api)
+        _ = try await exporter.export(session: session, kinds: [.summary])
+        let id = try #require(DriveRecordStore.load(in: session.directory).fileID(for: .summary))
+        api.rename(id, to: "要約")
+        try FileManager.default.removeItem(at: DriveRecordStore.url(in: session.directory))
+
+        let outcome = try await exporter.export(session: session, kinds: [.summary])
+        #expect(outcome.updated == [.summary])
+        #expect(outcome.created.isEmpty)
+        #expect(api.createdUploads.count == 1)
+        #expect(api.files[id]?.name == Self.summaryName)
+    }
+
+    // MARK: - 書き出し済みの判定
+
+    private func exportedFixture(kinds: [DriveContentKind] = [.summary, .transcript]) async throws
+        -> (SessionInfo, URL)
+    {
+        let (session, temp) = try makeSession()
+        _ = try await DriveExporter(api: FakeDriveAPI()).export(session: session, kinds: kinds)
+        return (session, temp)
+    }
+
+    private func upToDate(_ session: SessionInfo, kinds: [DriveContentKind] = [.summary, .transcript]) -> Bool {
+        DriveExportedCheck.isUpToDate(
+            record: DriveRecordStore.load(in: session.directory), kinds: kinds, session: session)
+    }
+
+    @Test func 書き出した直後は書き出し済みになる() async throws {
+        let (session, temp) = try await exportedFixture()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        #expect(upToDate(session))
+        // 選ばれていない種類の記録が無くても関係しない。
+        #expect(upToDate(session, kinds: [.summary]))
+    }
+
+    @Test func 書き出していなければ書き出し済みにならない() throws {
+        let (session, temp) = try makeSession()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        #expect(!upToDate(session))
+    }
+
+    @Test func 選んだ中身に記録の無いものがあれば書き出し済みにならない() async throws {
+        let (session, temp) = try await exportedFixture(kinds: [.summary])
+        defer { try? FileManager.default.removeItem(at: temp) }
+        #expect(!upToDate(session, kinds: [.summary, .transcript]))
+    }
+
+    @Test func 手元に実体の無い種類は判定から外す() async throws {
+        let (session, temp) = try await exportedFixture(kinds: [.summary, .transcript])
+        defer { try? FileManager.default.removeItem(at: temp) }
+        // 録音は元から無い扱い(書き出していない)。実体の無い種類は記録が無くてもよい。
+        try FileManager.default.removeItem(
+            at: session.directory.appendingPathComponent("\(session.directory.lastPathComponent).m4a"))
+        #expect(upToDate(session, kinds: [.summary, .transcript, .audio]))
+    }
+
+    @Test func 中身が変わったら書き出し済みにならない() async throws {
+        let (session, temp) = try await exportedFixture()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try "# 変えた".write(
+            to: session.directory.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
+        #expect(!upToDate(session))
+    }
+
+    @Test func グループかセッション名が変わったら書き出し済みにならない() async throws {
+        let (session, temp) = try await exportedFixture()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let moved = SessionInfo(
+            id: session.id, directory: session.directory, startDate: session.startDate,
+            name: session.name, folder: "案件B")
+        #expect(!upToDate(moved))
+        let renamed = SessionInfo(
+            id: session.id, directory: session.directory, startDate: session.startDate,
+            name: "朝会", folder: session.folder)
+        #expect(!upToDate(renamed))
+    }
+
+    @Test func 場所の記録が無い古い記録は書き出し済みにならない() async throws {
+        let (session, temp) = try await exportedFixture()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        var record = DriveRecordStore.load(in: session.directory)
+        record.locations = nil
+        try DriveRecordStore.save(record, in: session.directory)
+        #expect(!upToDate(session))
+    }
+
+    @Test func 親の付け替えを断られたら書き出し済みにならない() async throws {
+        let (session, temp) = try makeSession()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let api = FakeDriveAPI()
+        let exporter = DriveExporter(api: api)
+        _ = try await exporter.export(session: session, kinds: [.summary])
+        let moved = SessionInfo(
+            id: session.id, directory: session.directory, startDate: session.startDate,
+            name: session.name, folder: "案件B")
+        api.moveForbidden = true
+        _ = try await exporter.export(session: moved, kinds: [.summary])
+        #expect(!DriveExportedCheck.isUpToDate(
+            record: DriveRecordStore.load(in: session.directory), kinds: [.summary], session: moved))
     }
 
     @Test func フォルダは階層どおりに作り再利用する() async throws {
@@ -353,7 +538,7 @@ struct DriveExportTests {
         let (session, temp) = try makeSession()
         defer { try? FileManager.default.removeItem(at: temp) }
         let api = FakeDriveAPI()
-        api.failingNames = ["文字起こし"]
+        api.failingNames = [Self.transcriptName]
 
         let outcome = try await DriveExporter(api: api).export(
             session: session, kinds: [.summary, .transcript, .audio])
@@ -407,7 +592,7 @@ struct DriveExportTests {
         let (session, temp) = try makeSession()
         defer { try? FileManager.default.removeItem(at: temp) }
         let api = FakeDriveAPI()
-        api.failingNames = ["要約"]
+        api.failingNames = [Self.summaryName]
         api.failure = .notSignedIn
         await #expect(throws: DriveError.notSignedIn) {
             _ = try await DriveExporter(api: api).export(session: session, kinds: [.summary, .transcript])
@@ -426,7 +611,7 @@ struct DriveExportTests {
         async let b = coordinator.export(session: session, kinds: [.summary])
         let results = await [a, b]
         #expect(results.allSatisfy { $0?.created == [.summary] })
-        #expect(api.createdUploads == ["要約"])
+        #expect(api.createdUploads == [Self.summaryName])
         #expect(!coordinator.isRunning(session))
         if case .finished = coordinator.state(for: session) {} else { Issue.record("完了状態になっていない") }
     }
@@ -466,7 +651,7 @@ struct DriveExportTests {
         let (session, temp) = try makeSession()
         defer { try? FileManager.default.removeItem(at: temp) }
         let api = FakeDriveAPI()
-        api.failingNames = ["要約"]
+        api.failingNames = [Self.summaryName]
         let outcome = try await DriveExporter(api: api).export(session: session, kinds: [.summary])
         #expect(outcome.hasFailure)
         let record = DriveRecordStore.load(in: session.directory)
@@ -485,17 +670,17 @@ struct DriveExportTests {
         let outcome = try await exporter.export(session: session, kinds: [.summary])
         #expect(outcome.created.isEmpty)
         #expect(outcome.updated == [.summary])
-        #expect(api.createdUploads == ["要約"])
+        #expect(api.createdUploads == [Self.summaryName])
     }
 
     @Test func 作成が通信断で失敗しても届いていれば二重に作らない() async throws {
         let (session, temp) = try makeSession()
         defer { try? FileManager.default.removeItem(at: temp) }
         let api = FakeDriveAPI()
-        api.createLandsButFailsNames = ["要約"]
+        api.createLandsButFailsNames = [Self.summaryName]
         let outcome = try await DriveExporter(api: api).export(session: session, kinds: [.summary])
         #expect(!outcome.hasFailure)
-        #expect(api.createdUploads == ["要約"])
+        #expect(api.createdUploads == [Self.summaryName])
         #expect(DriveRecordStore.load(in: session.directory).fileID(for: .summary) != nil)
     }
 
@@ -544,7 +729,7 @@ struct DriveExportTests {
         async let b = coordinator.export(session: session, kinds: [.summary, .transcript])
         _ = await [a, b]
         // どちらの順で始まっても、各中身は 1 回ずつだけ作られる。
-        #expect(Set(api.createdUploads) == ["要約", "文字起こし"])
+        #expect(Set(api.createdUploads) == [Self.summaryName, Self.transcriptName])
         #expect(api.createdUploads.count == 2)
         let record = DriveRecordStore.load(in: session.directory)
         #expect(record.fileID(for: .summary) != nil && record.fileID(for: .transcript) != nil)
@@ -753,7 +938,7 @@ struct DriveExportTests {
         let (session, temp) = try makeSession()
         defer { try? FileManager.default.removeItem(at: temp) }
         let api = FakeDriveAPI()
-        api.failOnceNames = ["文字起こし"]
+        api.failOnceNames = [Self.transcriptName]
         let coordinator = DriveExportCoordinator { DriveExporter(api: api) }
 
         async let a = coordinator.export(session: session, kinds: [.summary, .transcript])
@@ -761,7 +946,7 @@ struct DriveExportTests {
         let results = await [a, b]
         // 合流した側の結果は、先の失敗を取り下げた合算になる。
         #expect(results.contains { $0 != nil && $0?.hasFailure == false && $0?.succeededCount == 2 })
-        #expect(Set(api.createdUploads) == ["要約", "文字起こし"])
+        #expect(Set(api.createdUploads) == [Self.summaryName, Self.transcriptName])
         if case .finished = coordinator.state(for: session) {} else { Issue.record("合算後は完了状態のはず") }
         let record = DriveRecordStore.load(in: session.directory)
         #expect(record.fileID(for: .summary) != nil && record.fileID(for: .transcript) != nil)

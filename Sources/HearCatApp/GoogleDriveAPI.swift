@@ -69,7 +69,8 @@ protocol DriveAPI: Sendable {
     func findFile(name: String, parentID: String) async throws -> String?
     func create(_ upload: DriveUpload, parentID: String) async throws -> DriveFileRef
     /// 既存ファイルの親が parentID でなければ parentID へ移し、contentChanged なら中身も差し替える。
-    /// 中身が変わっていなければ本文は送らず、移動だけをメタデータで行う。
+    /// 名前が upload.name と違えば直す(セッションの改名や、日付つきの名前への移行に追従する)。
+    /// 中身が変わっていなければ本文は送らず、移動と改名だけをメタデータで行う。
     /// ID が存在しなければ DriveError.notFound。ごみ箱の中なら何も触らず trashed で返す。
     func update(
         fileID: String, with upload: DriveUpload, parentID: String, contentChanged: Bool
@@ -195,7 +196,7 @@ struct GoogleDriveAPI: DriveAPI {
     func update(
         fileID: String, with upload: DriveUpload, parentID: String, contentChanged: Bool
     ) async throws -> DriveFileRef {
-        let data = try await send(path: "/files/\(fileID)?fields=id,parents,trashed")
+        let data = try await send(path: "/files/\(fileID)?fields=id,name,parents,trashed")
         let current = try Self.fileRef(from: data)
         if current.trashed { return current }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -204,24 +205,27 @@ struct GoogleDriveAPI: DriveAPI {
         if !parents.contains(parentID) { extra += "&addParents=\(parentID)" }
         let stale = parents.filter { $0 != parentID }
         if !stale.isEmpty { extra += "&removeParents=\(stale.joined(separator: ","))" }
+        let renamed = (json?["name"] as? String) != upload.name
+        let renameMetadata: [String: Any] = renamed ? ["name": upload.name] : [:]
         if !contentChanged {
-            guard !extra.isEmpty else { return current }
+            guard !extra.isEmpty || renamed else { return current }
             do {
                 let moved = try await send(
                     path: "/files/\(fileID)?fields=id,trashed" + extra, method: "PATCH",
-                    body: Data("{}".utf8), contentType: "application/json")
+                    body: try JSONSerialization.data(withJSONObject: renameMetadata),
+                    contentType: "application/json")
                 return try Self.fileRef(from: moved)
-            } catch DriveError.forbidden(let reasons, _) where Self.isPermissionFailure(reasons) {
+            } catch DriveError.forbidden(let reasons, _) where !extra.isEmpty && Self.isPermissionFailure(reasons) {
                 var unmoved = current
                 unmoved.moveFailed = true
                 return unmoved
             }
         }
         do {
-            return try await transfer(upload, metadata: [:], fileID: fileID, extraQuery: extra)
+            return try await transfer(upload, metadata: renameMetadata, fileID: fileID, extraQuery: extra)
         } catch DriveError.forbidden(let reasons, _) where !extra.isEmpty && Self.isPermissionFailure(reasons) {
             // 親の付け替えだけ権限が無いことがある。移さずに本文だけは最新にする。
-            var unmoved = try await transfer(upload, metadata: [:], fileID: fileID, extraQuery: "")
+            var unmoved = try await transfer(upload, metadata: renameMetadata, fileID: fileID, extraQuery: "")
             unmoved.moveFailed = true
             return unmoved
         }

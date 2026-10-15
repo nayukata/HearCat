@@ -31,14 +31,36 @@ enum DriveContentKind: String, Codable, CaseIterable, Sendable {
     /// 文書は Google ドキュメントへ変換して置く。録音はそのまま。
     var isDocument: Bool { self == .summary || self == .transcript }
 
-    /// Drive 上の名前。文書は拡張子の無い短い名前(セッションのフォルダの中なので十分)、
+    /// Drive 上の名前。文書は「<日付> <セッション名> 要約」のように、フォルダの外(検索や共有)でも
+    /// どの回か分かる名前にする。セッション名が空なら日付のあとに開始時刻を入れる。
     /// 録音はローカルと同じファイル名にする。
-    func driveName(fileName: String) -> String {
+    func driveName(fileName: String, session: SessionInfo) -> String {
+        switch self {
+        case .summary: "\(Self.documentPrefix(of: session)) 要約"
+        case .transcript: "\(Self.documentPrefix(of: session)) 文字起こし"
+        case .audio, .audioOther: fileName
+        }
+    }
+
+    /// 日付つきの名前にする前に使っていた名前。書き出し済みのファイルを探して直すのに使う。
+    var legacyDriveName: String? {
         switch self {
         case .summary: "要約"
         case .transcript: "文字起こし"
-        case .audio, .audioOther: fileName
+        case .audio, .audioOther: nil
         }
+    }
+
+    private static func documentPrefix(of session: SessionInfo) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        let day = formatter.string(from: session.startDate)
+        let name = session.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return "\(day) \(name)" }
+        formatter.dateFormat = "HH:mm"
+        return "\(day) \(formatter.string(from: session.startDate))"
     }
 }
 
@@ -106,6 +128,9 @@ struct DriveRecord: Codable, Equatable, Sendable {
     /// 種類ごとに、最後に書いた転送が自動だったか。手動で一度でも書いたら手動のまま。
     /// 印の無い種類(古い記録)は手動として扱い、勝手に片付けない。
     var automaticKinds: [String: Bool]?
+    /// 種類ごとに、最後に書き出して実際に置かれた場所と名前。「書き出し済み」の判定に使う。
+    /// 親の付け替えを断られたときは、置き場所が変わっていないので更新しない。古い記録には無い。
+    var locations: [String: DriveLocation]?
 
     /// 記録のある種類。
     var recordedKinds: [DriveContentKind] {
@@ -126,6 +151,14 @@ struct DriveRecord: Codable, Equatable, Sendable {
         fingerprints = all
     }
 
+    mutating func setLocation(_ location: DriveLocation, for kind: DriveContentKind) {
+        var all = locations ?? [:]
+        all[kind.rawValue] = location
+        locations = all
+    }
+
+    func location(for kind: DriveContentKind) -> DriveLocation? { locations?[kind.rawValue] }
+
     func fingerprint(for kind: DriveContentKind) -> String? { fingerprints?[kind.rawValue] }
 
     func isAutomatic(_ kind: DriveContentKind) -> Bool { automaticKinds?[kind.rawValue] == true }
@@ -134,6 +167,35 @@ struct DriveRecord: Codable, Equatable, Sendable {
         automaticKinds?[kind.rawValue] = nil
         files[kind.rawValue] = nil
         fingerprints?[kind.rawValue] = nil
+        locations?[kind.rawValue] = nil
+    }
+}
+
+/// Drive 上の置き場所(フォルダの階層)と名前。
+struct DriveLocation: Codable, Equatable, Sendable {
+    var path: [String]
+    var name: String
+}
+
+/// 詳細画面で「書き出し済み」と見なしてよいかの判定。
+enum DriveExportedCheck {
+    /// 設定で選んだ中身のうち手元に実体があるものがすべて記録にあり、中身の指紋と
+    /// Drive 上の置き場所・名前が今と同じなら true。古い記録(指紋や場所が無い)は false。
+    static func isUpToDate(record: DriveRecord, kinds: [DriveContentKind], session: SessionInfo) -> Bool {
+        let present = kinds.compactMap { kind in session.url(of: kind.artifact).map { (kind, $0) } }
+        guard !present.isEmpty, record.folderID != nil else { return false }
+        let path = DrivePaths.folderPath(
+            group: session.folder, sessionDirectoryName: session.directory.lastPathComponent)
+        for (kind, url) in present {
+            guard record.fileID(for: kind) != nil,
+                let recorded = record.fingerprint(for: kind),
+                recorded == DriveFingerprint.of(kind, fileURL: url),
+                record.location(for: kind)
+                    == DriveLocation(
+                        path: path, name: kind.driveName(fileName: url.lastPathComponent, session: session))
+            else { return false }
+        }
+        return true
     }
 }
 
@@ -245,7 +307,7 @@ struct DriveExporter: Sendable {
             }
             onProgress("\(kind.label)を送信中")
             let upload = DriveUpload(
-                name: kind.driveName(fileName: source.lastPathComponent), fileURL: source,
+                name: kind.driveName(fileName: source.lastPathComponent, session: session), fileURL: source,
                 kind: kind.isDocument ? .document : .raw(mimeType: "audio/mp4"))
             do {
                 if folderID == nil {
@@ -281,7 +343,12 @@ struct DriveExporter: Sendable {
                 }
                 if ref == nil {
                     // 記録を失った・前回の作成が届いていたなどで同名があれば、新しく作らずそれを使う。
-                    if let found = try await api.findFile(name: upload.name, parentID: parent) {
+                    // 日付つきの名前にする前に書き出したファイルも同じ扱いで、更新時に名前を直す。
+                    var found = try await api.findFile(name: upload.name, parentID: parent)
+                    if found == nil, let legacy = kind.legacyDriveName {
+                        found = try await api.findFile(name: legacy, parentID: parent)
+                    }
+                    if let found {
                         ref = try await api.update(
                             fileID: found, with: upload, parentID: parent, contentChanged: true)
                         outcome.updated.append(kind)
@@ -291,6 +358,13 @@ struct DriveExporter: Sendable {
                     }
                 }
                 record.set(ref!.id, for: kind, fingerprint: fingerprint, automatic: automatic)
+                if !ref!.moveFailed {
+                    record.setLocation(
+                        DriveLocation(
+                            path: DrivePaths.folderPath(group: session.folder, sessionDirectoryName: directoryName),
+                            name: upload.name),
+                        for: kind)
+                }
                 if ref!.moveFailed {
                     // 実際の親は変わっていない。「Drive で開く」は元のフォルダのままにする。
                     outcome.folderID = record.folderID
